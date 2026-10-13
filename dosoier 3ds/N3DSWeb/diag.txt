@@ -1,0 +1,30 @@
+N3DSWeb diagnostic
+version=0.1.0
+top=240x400 top_dump=ok
+ui=0x0 ui_dump=echec
+page_height=835 scroll=200 tabs=1
+
+[police systeme]
+font_ready=1
+cell=14x24
+sheet_width=0
+sheet_height=0
+rows=0
+lines=0
+per_sheet=0
+sheets=0
+sheet_fmt=99
+sheet_size=0
+text_scale=1.0000
+fallback=0
+glyph_index_min=2147483647
+glyph_index_max=-1
+sheet_index_max=-1
+probe[A]=index 65, advance 11.26
+probe[a]=index 97, advance 9.89
+probe[M]=index 77, advance 15.98
+probe[W]=index 87, advance 16.39
+probe[0]=index 48, advance 10.08
+probe[ ]=index 32, advance 4.58
+probe[?]=index 233, advance 9.94
+probe[.]=index 46, advance 4.72
