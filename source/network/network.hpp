@@ -24,7 +24,7 @@ public:
 
 	// Lance une requete GET (http ou https) en arriere-plan.
 	// maxBytes : 0 = illimite (downloads), sinon limite de la memoire page.
-	void start(const std::string& url, size_t maxBytes, bool allowTlsBypass);
+	bool start(const std::string& url, size_t maxBytes, bool verifyTls);
 
 	// Annule le transfert en cours.
 	void cancel();
@@ -38,8 +38,6 @@ public:
 	// Appeler une seule fois apres l'avoir observe (marque Idle).
 	bool takeResult(NetResponse& out);
 
-	const NetResponse* pendingResult() const;
-
 private:
 	mutable LightLock lock_ = {};
 	volatile int cancelFlag_ = 0;
@@ -50,10 +48,15 @@ private:
 	NetState lastState_ = NetState::Idle;
 	NetResponse result_{};
 	bool resultReady_ = false;
-	std::string url_;
-	size_t maxBytes_ = 0;
-	bool allowBypass_ = false;
-	bool threadDone_ = false;
+	struct Request
+	{
+		std::string url;
+		size_t maxBytes = 0;
+		bool verifyTls = true;
+	};
+	Request queuedRequest_;
+	bool queuedRequestReady_ = false;
+	bool workerRunning_ = false;
 
 	static void threadFunc(void* arg);
 	void worker();

@@ -77,9 +77,10 @@ void Browser::openSearch(const std::string& query)
 	loadUrlInto(current_, searchUrl(query, searchEngineName()), true);
 }
 
-void Browser::openUrl(const std::string& url, bool record, bool allowBypass)
+void Browser::openUrl(const std::string& url, bool record)
 {
 	if (url.empty()) return;
+	cancelTabRequest(current_);
 	if (strStartsWith(toLower(url), "nw://"))
 	{
 		if (toLower(url) == "nw://home" || toLower(url) == "nw:/home") { showInternalHome(); return; }
@@ -88,11 +89,12 @@ void Browser::openUrl(const std::string& url, bool record, bool allowBypass)
 	}
 	Tab& t = currentTab();
 	resetTab(t);
-	loadUrlInto(current_, url, record, allowBypass);
+	loadUrlInto(current_, url, record);
 }
 
-void Browser::loadUrlInto(int tabIdx, const std::string& url, bool record, bool allowBypass)
+void Browser::loadUrlInto(int tabIdx, const std::string& url, bool record)
 {
+	cancelTabRequest(tabIdx);
 	responsePending_ = false;
 	layoutPending_ = false;
 	pendingResponse_ = NetResponse();
@@ -117,9 +119,16 @@ void Browser::loadUrlInto(int tabIdx, const std::string& url, bool record, bool 
 	{
 		if (t.back.empty() || t.back.back() != url)
 			t.back.push_back(url);
+		t.fwd.clear();
 	}
-	t.fwd.clear();
-	net_.start(url, (size_t)set_.maxHtmlBytes, allowBypass);
+	requestTab_ = tabIdx;
+	if (!net_.start(url, (size_t)set_.maxHtmlBytes, set_.verifyTLS))
+	{
+		pendingResponse_.url = url;
+		pendingResponse_.error = "Impossible de demarrer la requete reseau.";
+		responsePending_ = true;
+		layoutPending_ = true;
+	}
 }
 
 void Browser::reload()
@@ -132,12 +141,34 @@ void Browser::reload()
 	if (t.url.empty()) { goHome(); return; }
 	t.pageReady = false;
 	diagStage("fetch");
-	net_.start(t.url, (size_t)set_.maxHtmlBytes, false);
+	cancelTabRequest(current_);
+	requestTab_ = current_;
+	if (!net_.start(t.url, (size_t)set_.maxHtmlBytes, set_.verifyTLS))
+	{
+		pendingResponse_.url = t.url;
+		pendingResponse_.error = "Impossible de demarrer la requete reseau.";
+		responsePending_ = true;
+		layoutPending_ = true;
+	}
 }
 
 void Browser::stop()
 {
 	net_.cancel();
+	requestTab_ = -1;
+	responsePending_ = false;
+	layoutPending_ = false;
+	pendingResponse_ = NetResponse();
+}
+
+void Browser::cancelTabRequest(int tabIdx)
+{
+	if (requestTab_ != tabIdx) return;
+	net_.cancel();
+	requestTab_ = -1;
+	responsePending_ = false;
+	layoutPending_ = false;
+	pendingResponse_ = NetResponse();
 }
 
 void Browser::back()
@@ -179,6 +210,7 @@ void Browser::goHome()
 
 void Browser::showInternalHome()
 {
+	cancelTabRequest(current_);
 	pendingImages_.clear();
 	responsePending_ = false;
 	layoutPending_ = false;
@@ -357,7 +389,18 @@ void Browser::newTab(const std::string& url)
 
 void Browser::closeTab(int index)
 {
+	if (index < 0 || index >= (int)tabs_.size()) return;
 	if ((int)tabs_.size() <= 1) return;
+	if (requestTab_ == index)
+	{
+		net_.cancel();
+		requestTab_ = -1;
+		responsePending_ = false;
+		layoutPending_ = false;
+		pendingResponse_ = NetResponse();
+	}
+	else if (requestTab_ > index)
+		--requestTab_;
 	tabs_.erase(tabs_.begin() + index);
 	if (current_ >= (int)tabs_.size()) current_ = (int)tabs_.size() - 1;
 }
@@ -430,8 +473,16 @@ bool Browser::tickImages()
 void Browser::onResponse(NetResponse& resp)
 {
 	diagStage("response processing");
-	Tab& t = currentTab();
-	int tabIdx = current_;
+	const int tabIdx = requestTab_;
+	requestTab_ = -1;
+	if (tabIdx < 0 || tabIdx >= (int)tabs_.size()) return;
+	Tab& t = tabs_[tabIdx];
+
+	if (resp.ok && searchPageIsVerificationChallenge(resp.body))
+	{
+		resp.ok = false;
+		resp.error = "Le site demande une verification anti-robot, non prise en charge.";
+	}
 
 	if (!resp.ok)
 	{
@@ -486,11 +537,12 @@ void Browser::onResponse(NetResponse& resp)
 		std::string path;
 		if (downloadsSave(resp.body, fn, path))
 		{
+			const size_t downloadedBytes = resp.body.size();
 			std::string().swap(resp.body);
 			Document d;
 			std::string h = "<html><body><h3>Telechargement termine</h3><p>" +
 				htmlEscape(fn) + "</p><p>Enregistre :<br/>" + htmlEscape(path) +
-				"</p><p>" + itos((long)(resp.body.size() / 1024)) + " Ko</p></body></html>";
+				"</p><p>" + itos((long)(downloadedBytes / 1024)) + " Ko</p></body></html>";
 			htmlParse(h, d);
 			renderInto(tabIdx, std::move(d));
 		}
@@ -650,8 +702,7 @@ void Browser::tap(int x, int y)
 		const std::string& url = tab.page.links[idx].url;
 		if (strStartsWith(url, "javascript:")) return;
 		if (strStartsWith(url, "mailto:")) return;
-		bool bypass = (url == tab.url);
-		openUrl(url, true, bypass);
+		openUrl(url);
 		return;
 	}
 
@@ -711,6 +762,12 @@ void Browser::submitFormByPage(int submitIndex)
 	Tab& tab = currentTab();
 	if (submitIndex < 0 || submitIndex >= (int)tab.page.submits.size()) return;
 	const FormSubmit& fs = tab.page.submits[submitIndex];
+	if (toLower(fs.method) == "post")
+	{
+		renderInternal(current_, "<html><body><h3>Formulaire non pris en charge</h3>"
+			"<p>Cette version ne peut envoyer que les formulaires GET.</p></body></html>");
+		return;
+	}
 
 	std::string target = fs.action;
 	if (target.empty()) target = tab.url;

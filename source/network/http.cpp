@@ -69,10 +69,11 @@ static bool httpGetInternal(const std::string& url0, const HttpOptions& opt,
 				(((r >> 10) & 0xFF) == 0x28 && (r & 0x3FF) == 0x3C) ||
 				(((r >> 10) & 0xFF) == 0x20);
 
-			if (isHttps && !bypassTls && isSslErr)
+			if (isHttps && opt.verifyTls && opt.allowTlsBypass && !bypassTls && isSslErr)
 			{
 				// Repli automatique avec bypass
 				bypassTls = true;
+				out.sslBypassUsed = true;
 				continue;
 			}
 			if (isHttps && isSslErr)
@@ -110,10 +111,11 @@ static bool httpGetInternal(const std::string& url0, const HttpOptions& opt,
 					(((rs >> 10) & 0xFF) == 0x28 && (rs & 0x3FF) == 0x3C) ||
 					(((rs >> 10) & 0xFF) == 0x20);
 
-				if (isHttps && !bypassTls && isSslErr)
+				if (isHttps && opt.verifyTls && opt.allowTlsBypass && !bypassTls && isSslErr)
 				{
 					// Repli automatique avec bypass
 					bypassTls = true;
+					out.sslBypassUsed = true;
 					continue;
 				}
 				if (isHttps && isSslErr)
@@ -276,6 +278,7 @@ bool httpGetCurl(const std::string& url, const HttpOptions& opt, NetResponse& ou
 	curl_easy_setopt(h, CURLOPT_URL, url.c_str());
 	curl_easy_setopt(h, CURLOPT_HTTPHEADER, hdr);
 	curl_easy_setopt(h, CURLOPT_USERAGENT, opt.userAgent.c_str());
+	curl_easy_setopt(h, CURLOPT_COOKIEFILE, "");
 	curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L);
 	curl_easy_setopt(h, CURLOPT_MAXREDIRS, (long)NW_MAX_REDIRECTS);
 	curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT, 8L);

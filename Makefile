@@ -37,6 +37,7 @@ SOURCES		:=	source \
 				source/cache \
 				source/storage \
 				source/settings \
+				source/updater \
 				source/input \
 				source/video \
 				source/diag \

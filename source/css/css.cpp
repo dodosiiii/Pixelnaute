@@ -283,12 +283,33 @@ void CssEngine::parseStylesheet(const std::string& css)
 	{
 		size_t brace = clean.find('{', pos);
 		if (brace == std::string::npos) break;
-		size_t endBrace = clean.find('}', brace);
-		if (endBrace == std::string::npos) break;
-		// Ne copie que la regle courante : copier tout le suffixe pour chaque
-		// regle transformait les grandes feuilles embarquees en O(n^2).
-		parseRule(clean.substr(pos, endBrace - pos + 1));
-		pos = endBrace + 1;
+		const std::string selector = strTrim(clean.substr(pos, brace - pos));
+		size_t endBrace = brace + 1;
+		int depth = 1;
+		while (endBrace < clean.size() && depth > 0)
+		{
+			if (clean[endBrace] == '{') ++depth;
+			else if (clean[endBrace] == '}') --depth;
+			++endBrace;
+		}
+		if (depth != 0) break;
+
+		if (selector.empty() || selector[0] != '@')
+		{
+			const std::string body = clean.substr(brace + 1, endBrace - brace - 2);
+			size_t start = 0;
+			while (start <= selector.size() && rules_.size() < MaxRules)
+			{
+				size_t comma = selector.find(',', start);
+				const std::string single = strTrim(selector.substr(start,
+					comma == std::string::npos ? std::string::npos : comma - start));
+				if (!single.empty())
+					parseRule(single + " {" + body + "}");
+				if (comma == std::string::npos) break;
+				start = comma + 1;
+			}
+		}
+		pos = endBrace;
 	}
 }
 
@@ -329,7 +350,14 @@ void collectStyleBlocks(const Document& doc, CssEngine& css)
 //-----------------------------------------------------------------------------
 Style CssEngine::resolve(const Document& doc, int nodeIdx, const Style& parent) const
 {
-	Style out = parent;
+	Style out;
+	out.color = parent.color;
+	out.colorSet = parent.colorSet;
+	out.fontSize = parent.fontSize;
+	out.bold = parent.bold;
+	out.italic = parent.italic;
+	out.align = parent.align;
+	out.mono = parent.mono;
 	if (nodeIdx < 0) return out;
 	const Node& node = doc.nodes[nodeIdx];
 	if (!node.isElement()) return out;
@@ -423,6 +451,36 @@ int cssSelfTest()
 		if (css.rules().size() != 2) fails++;
 		else if (css.rules()[0].tag != "p" || css.rules()[0].style.fontSize != 18 ||
 				 css.rules()[1].tag != "a" || css.rules()[1].style.fontSize != 24) fails++;
+	}
+	{
+		CssEngine css;
+		css.parseStylesheet(".first, h2 { color: red; } "
+			"@media screen and (max-width: 400px) { p { color: blue; } "
+			".nested { padding: 8px; } }");
+		if (css.rules().size() != 2) fails++;
+		else if (css.rules()[0].cls != "first" || css.rules()[1].tag != "h2")
+			fails++;
+	}
+	{
+		Document doc;
+		const int root = doc.createElement(-1, "div");
+		const int child = doc.createElement(root, "span");
+		CssEngine css;
+		Style parent;
+		parent.bgSet = true;
+		parent.bg = 0x12345678;
+		parent.paddingLeft = 12;
+		parent.marginTop = 8;
+		parent.block = true;
+		parent.colorSet = true;
+		parent.color = 0x87654321;
+		parent.fontSize = 20;
+		parent.bold = true;
+		Style inherited = css.resolve(doc, child, parent);
+		if (inherited.color != parent.color || inherited.fontSize != parent.fontSize ||
+			!inherited.bold || inherited.bgSet || inherited.paddingLeft ||
+			inherited.marginTop || inherited.block)
+			fails++;
 	}
 	{
 		CssEngine css;

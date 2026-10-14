@@ -20,9 +20,15 @@
 // Vrai si le document ressemble a une page de resultats reconnue.
 bool searchPageDetected(const std::string& html);
 
+// Vrai uniquement pour une page contenant des marqueurs explicites de defi.
+bool searchPageIsVerificationChallenge(const std::string& html);
+
 // Reecrit la page de resultats. Renvoie false si la page n'est pas reconnue,
 // auquel cas l'appelant doit utiliser le HTML d'origine.
 bool searchPageRewrite(const std::string& html, std::string& out);
 
 // Nombre de resultats extraits par le dernier appel reussi (diagnostic).
 int searchPageLastResultCount();
+
+// Tests unitaires (compilables sur PC).
+int searchPageSelfTest();

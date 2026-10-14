@@ -6,6 +6,8 @@
 #include <limits.h>
 #include "../diag/diag.hpp"
 
+static const long long kMaxDecodedImagePixels = 500000LL;
+
 ImageStore::ImageStore()
 {
 	images_.reserve(IMG_MAX_COUNT);
@@ -85,7 +87,7 @@ static void downscaleTo565(const stbi_uc* src, int sw, int sh, int channels,
 }
 
 //--------------------------------------------------------------------------
-bool ImageStore::decode(const std::vector<u8>& data, StoredImage& out)
+bool ImageStore::decode(const std::string& data, StoredImage& out)
 {
 	if (data.empty()) return false;
 	if (data.size() > (size_t)INT_MAX)
@@ -95,20 +97,21 @@ bool ImageStore::decode(const std::vector<u8>& data, StoredImage& out)
 	}
 
 	int w = 0, h = 0, channels = 0;
-	if (!stbi_info_from_memory(data.data(), (int)data.size(), &w, &h, &channels) ||
+	const stbi_uc* bytes = reinterpret_cast<const stbi_uc*>(data.data());
+	if (!stbi_info_from_memory(bytes, (int)data.size(), &w, &h, &channels) ||
 		w <= 0 || h <= 0)
 	{
 		lastError_ = "dimensions d'image illisibles";
 		return false;
 	}
-	if ((long long)w * (long long)h > 1500000LL)
+	if ((long long)w * (long long)h > kMaxDecodedImagePixels)
 	{
-		lastError_ = "image trop grande";
+		lastError_ = "image trop grande pour le budget memoire de la New 3DS";
 		return false;
 	}
 
 	diagStage("image decode");
-	stbi_uc* pixels = stbi_load_from_memory(data.data(), (int)data.size(),
+	stbi_uc* pixels = stbi_load_from_memory(bytes, (int)data.size(),
 		&w, &h, &channels, 4);
 	if (!pixels || w <= 0 || h <= 0)
 	{
@@ -118,6 +121,7 @@ bool ImageStore::decode(const std::vector<u8>& data, StoredImage& out)
 		return false;
 	}
 
+	diagStage("image downscale");
 	downscaleTo565(pixels, w, h, 4, out);
 	stbi_image_free(pixels);
 	return true;
@@ -167,7 +171,7 @@ const StoredImage* ImageStore::fetch(const std::string& url,
 
 	StoredImage img;
 	img.url = url;
-	if (!decode(std::vector<u8>(resp.body.begin(), resp.body.end()), img))
+	if (!decode(resp.body, img))
 		return nullptr;
 
 	images_.push_back(std::move(img));

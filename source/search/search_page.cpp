@@ -28,10 +28,54 @@ bool searchPageDetected(const std::string& html)
 	if (html.find("result-link") != std::string::npos &&
 		html.find("result-snippet") != std::string::npos)
 		return true;
-	// Autres formes courantes : moteurs qui balisent autrement.
-	if (html.find("class=\"result__a\"") != std::string::npos)
-		return true;
 	return false;
+}
+
+bool searchPageIsVerificationChallenge(const std::string& html)
+{
+	const size_t length = html.size() < 65536 ? html.size() : 65536;
+	const std::string body = toLower(html.substr(0, length));
+	static const char* const markers[] =
+	{
+		"verify you are human",
+		"verify you are a human",
+		"confirm you are not a robot",
+		"checking your browser",
+		"checking if the site connection is secure",
+		"performing security verification",
+		"complete the security check",
+		"bots use duckduckgo too",
+		"enable javascript and cookies to continue",
+		"cf-challenge"
+	};
+	for (const char* marker : markers)
+		if (body.find(marker) != std::string::npos)
+			return true;
+	return false;
+}
+
+int searchPageSelfTest()
+{
+	int fails = 0;
+	if (searchPageIsVerificationChallenge(
+			"<p>This article explains what a CAPTCHA is.</p>"))
+		fails++;
+	if (searchPageIsVerificationChallenge(
+			"<p>Automated queries are discussed in this documentation.</p>"))
+		fails++;
+	if (searchPageIsVerificationChallenge(
+			"<html><body>Accepted</body></html>"))
+		fails++;
+	if (!searchPageIsVerificationChallenge(
+			"<html><title>Just a moment</title><p>Checking your browser before accessing</p></html>"))
+		fails++;
+	if (!searchPageIsVerificationChallenge(
+			"<p>Unfortunately, bots use DuckDuckGo too.</p>"))
+		fails++;
+	if (!searchPageIsVerificationChallenge(
+			"<p>Enable JavaScript and cookies to continue.</p>"))
+		fails++;
+	return fails;
 }
 
 //--------------------------------------------------------------------------

@@ -592,31 +592,39 @@ void BottomUi::drawBookmarksList(Browser& b)
 	}
 }
 
-void BottomUi::drawSettingsList(Browser& b, WebSettings& set)
+void BottomUi::drawSettingsList(Browser& b, WebSettings& set,
+	const ReleaseUpdater& updater)
 {
 	text(bmp_, "Reglages", 10, 92, 0.75f, C_TEXT_D);
 
 	const std::string engine = searchEngineDisplayName(set.searchEngine);
 	const std::string tls = set.verifyTLS ? "Oui" : "Non";
 	const std::string img = set.loadImages ? "Oui" : "Non";
+	std::string update = updater.message();
+	if (updater.state() == UpdateState::Downloading)
+		update = "Telechargement " + itos((long)(updater.progress() * 100.0f)) + "%";
+	else if (updater.state() == UpdateState::Checking)
+		update = "Recherche...";
 
 	struct Row { const char* label; std::string value; bool accent; };
-	Row rows[5] =
+	Row rows[6] =
 	{
 		{ "Moteur de recherche", engine, true },
 		{ "Page d'accueil", fitStr(set.homePage.empty() ? "(par defaut)" : set.homePage, 120, 0.7f), false },
 		{ "Verifier les certificats", tls, false },
 		{ "Charger les images", img, false },
 		{ "Effacer l'historique", "", false },
+		{ "Mises a jour", update, true },
 	};
-	for (int i = 0; i < 5; i++)
+	for (int i = 0; i < 6; i++)
 	{
-		const int y = 110 + i * 21;
-		roundRect(bmp_, 4, y, 312, 20, 5, (i & 1) ? C_SURFACE : C_BG_2);
-		text(bmp_, rows[i].label, 10, y + 2, 0.75f, C_TEXT);
+		const int y = 110 + i * 18;
+		roundRect(bmp_, 4, y, 312, 17, 5, (i & 1) ? C_SURFACE : C_BG_2);
+		text(bmp_, rows[i].label, 10, y + 1, 0.7f, C_TEXT);
 		if (!rows[i].value.empty())
-			text(bmp_, rows[i].value,
-				316 - 6 - textW(rows[i].value, 0.68f), y + 3, 0.68f,
+			text(bmp_, fitStr(rows[i].value, 190, 0.58f),
+				310 - textW(fitStr(rows[i].value, 190, 0.58f), 0.58f),
+				y + 2, 0.58f,
 				rows[i].accent ? C_ACCENT : C_TEXT_D);
 	}
 }
@@ -635,8 +643,18 @@ void BottomUi::drawAbout()
 //--------------------------------------------------------------------------
 // Frame principale de l'ecran bas
 //--------------------------------------------------------------------------
-void BottomUi::frame(Browser& b, NetworkManager& net, WebSettings& set)
+void BottomUi::frame(Browser& b, NetworkManager& net, WebSettings& set,
+	ReleaseUpdater& updater)
 {
+	const UpdateState updateState = updater.state();
+	const int updateProgress = (int)(updater.progress() * 100.0f);
+	if (updateState != lastUpdateState_ ||
+		(updateState == UpdateState::Downloading &&
+		 updateProgress != lastUpdateProgress_))
+		dirty_ = true;
+	lastUpdateState_ = updateState;
+	lastUpdateProgress_ = updateProgress;
+
 	bmp_.clear(C_NAVY);
 	drawChrome(b, net, set);
 
@@ -662,7 +680,7 @@ void BottomUi::frame(Browser& b, NetworkManager& net, WebSettings& set)
 			drawBookmarksList(b);
 			break;
 		case UiMode::Settings:
-			drawSettingsList(b, set);
+			drawSettingsList(b, set, updater);
 			break;
 		case UiMode::About:
 			drawAbout();
@@ -823,7 +841,8 @@ void BottomUi::commitBuf(Browser& b, WebSettings& set)
 	dirty_ = true;
 }
 
-void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set, const InputState& in)
+void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
+	ReleaseUpdater& updater, const InputState& in)
 {
 	const bool keyboardMode = mode_ == UiMode::Address || mode_ == UiMode::FieldEdit;
 	if (keyboardMode && in.touch && !in.touchDown &&
@@ -947,12 +966,13 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set, co
 		{
 			if (y >= 220)
 			{
+				if (updater.active()) break;
 				mode_ = UiMode::Browsing;
 				dirty_ = true;
 			}
-			else if (y >= 110 && y < 215)
+			else if (y >= 110 && y < 218)
 			{
-				int idx = (y - 110) / 21;
+				int idx = (y - 110) / 18;
 				switch (idx)
 				{
 					case 0:
@@ -974,6 +994,17 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set, co
 					case 2: set.verifyTLS = !set.verifyTLS; settingsSave(set); dirty_ = true; break;
 					case 3: set.loadImages = !set.loadImages; settingsSave(set); dirty_ = true; break;
 					case 4: b.history().clear(); toast("Historique efface"); dirty_ = true; break;
+					case 5:
+						if (updater.active())
+							toast("Mise a jour deja en cours");
+						else if (net.busy())
+							toast("Attendez la fin du chargement");
+						else if (updater.startCheck())
+							toast("Recherche de mise a jour...");
+						else
+							toast(updater.message());
+						dirty_ = true;
+						break;
 				}
 			}
 			break;
@@ -987,7 +1018,8 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set, co
 	}
 }
 
-void BottomUi::handleKeys(Browser& b, NetworkManager& net, WebSettings& set, u32 kDown)
+void BottomUi::handleKeys(Browser& b, NetworkManager& net, WebSettings& set,
+	ReleaseUpdater& updater, u32 kDown)
 {
 	if (!kDown) return;
 
@@ -1047,7 +1079,14 @@ void BottomUi::handleKeys(Browser& b, NetworkManager& net, WebSettings& set, u32
 		case UiMode::Menu:
 		case UiMode::Settings:
 		case UiMode::About:
-			if (kDown & KEY_B) { mode_ = UiMode::Browsing; dirty_ = true; return; }
+			if (kDown & KEY_B)
+			{
+				if (mode_ == UiMode::Settings && updater.active())
+					return;
+				mode_ = UiMode::Browsing;
+				dirty_ = true;
+				return;
+			}
 			break;
 
 		default:

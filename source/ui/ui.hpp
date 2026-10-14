@@ -11,6 +11,7 @@
 #include "../render/bitmap.hpp"
 #include "../settings/settings.hpp"
 #include "../network/network.hpp"
+#include "../updater/updater.hpp"
 #include <citro2d.h>
 #include <string>
 #include <vector>
@@ -43,11 +44,14 @@ public:
 	void shutdown();
 
 	// Dessine l'ecran bas (appeler apres C2D_SceneBegin de l'ecran bas).
-	void frame(Browser& b, NetworkManager& net, WebSettings& set);
+	void frame(Browser& b, NetworkManager& net, WebSettings& set,
+		ReleaseUpdater& updater);
 
 	// Touches / toucher (appeler une fois par frame).
-	void handleKeys(Browser& b, NetworkManager& net, WebSettings& set, u32 kDown);
-	void handleTouch(Browser& b, NetworkManager& net, WebSettings& set, const InputState& in);
+	void handleKeys(Browser& b, NetworkManager& net, WebSettings& set,
+		ReleaseUpdater& updater, u32 kDown);
+	void handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
+		ReleaseUpdater& updater, const InputState& in);
 
 	UiMode mode() const { return mode_; }
 
@@ -78,6 +82,8 @@ private:
 	int repeatKey_ = -1;
 	uint64_t repeatNext_ = 0;
 	int repeatCount_ = 0;
+	UpdateState lastUpdateState_ = UpdateState::Idle;
+	int lastUpdateProgress_ = -1;
 
 	// --- rendu ---
 	Bitmap bmp_;                 // 320x240 (echelle 1 pixel = 1 px ecran)
@@ -114,7 +120,8 @@ private:
 	void drawMenu(Browser& b);
 	void drawHistoryList(Browser& b);
 	void drawBookmarksList(Browser& b);
-	void drawSettingsList(Browser& b, WebSettings& set);
+	void drawSettingsList(Browser& b, WebSettings& set,
+		const ReleaseUpdater& updater);
 	void drawAbout();
 
 	// --- interactions ---

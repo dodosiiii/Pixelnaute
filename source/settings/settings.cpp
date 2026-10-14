@@ -1,5 +1,6 @@
 #include "settings.hpp"
 #include "../storage/storage.hpp"
+#include "../search/search.hpp"
 
 //--------------------------------------------------------------------------
 // Format simple "cle=valeur" (StorageKV)
@@ -21,14 +22,19 @@ bool settingsLoad(WebSettings& s)
 
 	s.loadImages   = readBool(kv.get("loadImages", "1"));
 	s.enableJS     = readBool(kv.get("enableJS", "0"));
-	s.verifyTLS    = readBool(kv.get("verifyTLS", "0"));
-	s.searchEngine = kv.get("searchEngine", "duckduckgo");
+	s.verifyTLS    = readBool(kv.get("verifyTLS", "1"));
+	s.searchEngine = kv.get("searchEngine", defaultSearchEngine());
 	s.homePage     = kv.get("homePage", "");
 	s.tlsExceptions.clear();
 	for (int i = 0; i < 16; i++)
 	{
 		std::string v = kv.get("tlsExp" + itos(i), "");
 		if (!v.empty()) s.tlsExceptions.push_back(v);
+	}
+	if (!searchEngineKnown(s.searchEngine))
+	{
+		s.searchEngine = defaultSearchEngine();
+		settingsSave(s);
 	}
 	return true;
 }

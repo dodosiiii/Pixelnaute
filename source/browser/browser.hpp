@@ -35,7 +35,7 @@ public:
 
 	// --- navigation ---
 	void openInput(const std::string& input);        // URL intelligente ou recherche
-	void openUrl(const std::string& url, bool record = true, bool allowBypass = false);
+	void openUrl(const std::string& url, bool record = true);
 	void openSearch(const std::string& query);
 	void back();
 	void forward();
@@ -104,11 +104,13 @@ private:
 	NetResponse pendingResponse_;
 	bool responsePending_ = false;
 	bool layoutPending_ = false;
+	int requestTab_ = -1;
 	std::vector<std::string> pendingImages_;
 	std::string pendingImagesReferer_;
 
-	void loadUrlInto(int tabIdx, const std::string& url, bool record, bool allowBypass = false);
+	void loadUrlInto(int tabIdx, const std::string& url, bool record);
 	void resetTab(Tab& t);
+	void cancelTabRequest(int tabIdx);
 	void onResponse(NetResponse& resp);
 	void renderInto(int tabIdx, Document&& doc);
 	void queueImages(int tabIdx, int maximum);

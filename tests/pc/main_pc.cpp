@@ -1,9 +1,9 @@
 //=============================================================================
-// tests/pc/main_pc.cpp - Verification hors console du moteur de texte
+// tests/pc/main_pc.cpp - Verification hors console recherche/CSS/police
 //
-// Le but est de valider SANS New 3DS le point le plus risque du navigateur :
-// le decodage des feuilles de glyphes de la police systeme (A4 + entrelacement
-// 8x8). Le test :
+// Le test valide les resolvers de recherche et CSS, puis le point le plus
+// risque du moteur de texte : le decodage des feuilles de glyphes systeme
+// (A4 + entrelacement 8x8). Il :
 //   1. fabrique une feuille A4 entrelacee exactement comme la console ;
 //   2. remplit des glyphes connus (petite police 5x7) ;
 //   3. les relit via fontdecode (le code partage avec la 3DS) et compare ;
@@ -15,6 +15,8 @@
 
 #include "../../source/css/css.hpp"
 #include "../../source/render/font_decode.hpp"
+#include "../../source/search/search.hpp"
+#include "../../source/search/search_page.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -467,7 +469,23 @@ static void renderSheet()
 
 int main()
 {
-	printf("=== Verification PC du CSS et du decodeur de police ===\n\n");
+	printf("=== Verification PC de la recherche, du CSS et de la police ===\n\n");
+	int searchFailures = searchSelfTest();
+	if (searchFailures == 0)
+		printf("Recherche : OK\n");
+	else
+	{
+		printf("Recherche : %d echec(s)\n", searchFailures);
+		g_failures += searchFailures;
+	}
+	int challengeFailures = searchPageSelfTest();
+	if (challengeFailures == 0)
+		printf("Detection anti-bot : OK\n");
+	else
+	{
+		printf("Detection anti-bot : %d echec(s)\n", challengeFailures);
+		g_failures += challengeFailures;
+	}
 	int cssFailures = cssSelfTest();
 	if (cssFailures == 0)
 		printf("CSS : OK\n");

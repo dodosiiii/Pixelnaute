@@ -23,6 +23,7 @@ extern "C" {
 #include "ui/ui.hpp"
 #include "input/input.hpp"
 #include "diag/diag.hpp"
+#include "updater/updater.hpp"
 #include <cstdio>
 
 static void onTerminate()
@@ -228,7 +229,7 @@ static const float kInertiaStop = 0.25f;
 
 static bool sIrrstOk = false;
 
-int main()
+int main(int argc, char** argv)
 {
 	std::set_terminate(onTerminate);
 	std::set_new_handler(onNoMemory);
@@ -301,6 +302,8 @@ int main()
 	NetworkManager net;
 	net.begin();
 	diagBoot(11, "NetworkManager");
+	ReleaseUpdater updater;
+	updater.configure(argc > 0 && argv ? argv[0] : "");
 
 	Browser browser(net, settings);
 	browser.history().load();
@@ -354,8 +357,8 @@ int main()
 		if (in.down & KEY_SELECT)
 			diagRequested = true;
 
-		ui.handleKeys(browser, net, settings, in.down);
-		ui.handleTouch(browser, net, settings, in);
+		ui.handleKeys(browser, net, settings, updater, in.down);
+		ui.handleTouch(browser, net, settings, updater, in);
 
 		// Action interne demandee par un lien nw://
 		if (browser.internalNavPending())
@@ -657,10 +660,10 @@ int main()
 		//------------------------------------------------------------------
 		C2D_TargetClear(bottomTarget, C_BLACK);
 		C2D_SceneBegin(bottomTarget);
-		ui.frame(browser, net, settings);
+		ui.frame(browser, net, settings, updater);
 
 		C3D_FrameEnd(0);
-		if (browser.tickImages())
+		if (!updater.active() && browser.tickImages())
 			renderer.forceRedraw();
 
 		// Instantane : une fois apres la premiere image (le framebuffer n'est
@@ -708,6 +711,7 @@ int main()
 
 	ui.shutdown();
 	renderer.shutdown();
+	updater.shutdown();
 	net.end();
 	if (sIrrstOk) irrstExit();
 	romfsExit();

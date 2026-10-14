@@ -249,6 +249,10 @@ void PageLayout::renderNode(int idx, const Style& st)
 	// Un element se comporte comme un bloc s'il s'agit d'une balise de bloc
 	// ou si son style declare display:block.
 	const bool block = node.isElement() && (isBlockTag(node.tag) || st.block);
+	const bool isForm = node.isElement() && node.tag == "form";
+	const int previousFormId = curFormId_;
+	const std::string previousFormAction = isForm ? curFormAction_ : "";
+	const std::string previousFormMethod = isForm ? curFormMethod_ : "";
 
 	if (node.isElement())
 	{
@@ -327,6 +331,20 @@ void PageLayout::renderNode(int idx, const Style& st)
 				else if (t == "email") kind = FieldEmail;
 			}
 
+			if (tag == "input" && type && toLower(type) == "hidden")
+			{
+				if (curFormId_ >= 0)
+				{
+					FormField ff;
+					ff.name = name ? name : "";
+					ff.value = node.getAttr("value") ? node.getAttr("value") : "";
+					ff.node = idx;
+					ff.formId = curFormId_;
+					out_->fields.push_back(ff);
+				}
+				return;
+			}
+
 			int w = attrInt(node, "size", 20) * 8;
 			if (w > x1_ - x0_) w = x1_ - x0_;
 			int h = fieldHeight(kind);
@@ -344,6 +362,7 @@ void PageLayout::renderNode(int idx, const Style& st)
 				fs.x = ix_; fs.y = iy_; fs.w = bw; fs.h = 22;
 				fs.node = idx; fs.formId = curFormId_;
 				fs.label = label;
+				fs.method = curFormMethod_;
 				const char* fsa = node.getAttr("formaction");
 				fs.action = fsa && *fsa ? fsa : curFormAction_;
 				out_->submits.push_back(fs);
@@ -484,7 +503,14 @@ void PageLayout::renderNode(int idx, const Style& st)
 		}
 
 		// --- balises structurelles ---
-		if (tag == "form") { curFormId_ = ++formCounter_; const char* fa = node.getAttr("action"); curFormAction_ = fa && *fa ? fa : ""; }
+		if (tag == "form")
+		{
+			curFormId_ = ++formCounter_;
+			const char* fa = node.getAttr("action");
+			curFormAction_ = fa && *fa ? fa : "";
+			const char* fm = node.getAttr("method");
+			curFormMethod_ = fm && *fm ? toLower(fm) : "get";
+		}
 		if (tag == "ul" || tag == "ol")
 		{
 			int savedX0 = x0_, savedX1 = x1_, savedIx = ix_;
@@ -610,6 +636,12 @@ void PageLayout::renderNode(int idx, const Style& st)
 		newline(0);
 		by_ += uaMarginBottom(node.tag) + st.marginBottom + st.paddingBottom;
 		iy_ = by_;
+		if (isForm)
+		{
+			curFormId_ = previousFormId;
+			curFormAction_ = previousFormAction;
+			curFormMethod_ = previousFormMethod;
+		}
 		return;
 	}
 
@@ -712,7 +744,7 @@ bool PageLayout::render(PageModel& out, const std::string& pageUrl)
 	x0_ = 4; x1_ = NW_PAGE_WIDTH - 4;
 	ix_ = x0_; iy_ = 0; by_ = 0; lineMaxH_ = 0;
 	renderDepth_ = 0;
-	formCounter_ = 0; curFormId_ = -1; curFormAction_.clear();
+	formCounter_ = 0; curFormId_ = -1; curFormAction_.clear(); curFormMethod_.clear();
 	linkActive_ = false; linkHref_.clear();
 
 	// corps de la page : <body> ou <html> ou racine

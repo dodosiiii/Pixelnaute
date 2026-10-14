@@ -1,8 +1,8 @@
-# Verification hors console du decodeur de police
+# Verification hors console des moteurs de recherche/CSS et de la police
 #
-# Compile et execute tests/pc, qui valide le decodage des feuilles de glyphes
-# de la police systeme 3DS (format A4 + entrelacement 8x8) sans avoir besoin
-# d'une console ni d'un emulateur, puis produit une planche de controle PNG.
+# Compile et execute tests/pc, qui valide les resolvers de recherche et CSS,
+# ainsi que le decodage des glyphes de police systeme 3DS, sans console ni
+# emulateur, puis produit une planche de controle PNG.
 #
 # Usage :
 #   powershell -ExecutionPolicy Bypass -File tests\pc\run.ps1
@@ -25,7 +25,8 @@ if (-not $vcvars) {
 Write-Host "Compilation du test PC..." -ForegroundColor Cyan
 $sources = "main_pc.cpp ..\..\source\render\text.cpp ..\..\source\render\bitmap.cpp " +
            "..\..\source\render\stb_truetype_impl.c " +
-           "..\..\source\css\css.cpp ..\..\source\html\dom.cpp"
+           "..\..\source\css\css.cpp ..\..\source\html\dom.cpp " +
+           "..\..\source\search\search.cpp ..\..\source\search\search_page.cpp"
 $cmd = "`"$vcvars`" >nul 2>&1 && cd /d `"$pcDir`" && " +
        "cl /nologo /std:c++17 /EHsc /O2 /W3 /D_CRT_SECURE_NO_WARNINGS /I. " +
        "$sources /Fe:pc_test.exe"

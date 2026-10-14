@@ -10,12 +10,8 @@
 
 static const std::vector<SearchEngineInfo> kEngines = {
 	{ "duckduckgo-lite", "DuckDuckGo Lite", "duckduckgo.com", true  },
-	{ "duckduckgo",      "DuckDuckGo",      "duckduckgo.com", true  },
-	{ "google",          "Google",          "google.com",     true  },
-	{ "bing",            "Bing",            "bing.com",       true  },
 	{ "wikipedia",       "Wikipedia (fr)",  "wikipedia.org",  true  },
 	{ "mojeek",          "Mojeek",          "mojeek.com",     true  },
-	{ "startpage",       "Startpage",       "startpage.com",  false },
 };
 
 const std::vector<SearchEngineInfo>& searchEngines()
@@ -41,7 +37,7 @@ bool searchEngineKnown(const std::string& engine)
 //-----------------------------------------------------------------------------
 static const SearchEngineInfo& resolveEngine(const std::string& engine)
 {
-	// ancienne clef "duckduckgo" conservee telle quelle ; alias historiques
+	// Anciennes clefs et alias historiques.
 	if (engine == "ddg" || engine == "ddg-lite" || engine == "lite")
 		return kEngines[0];
 	for (const auto& e : kEngines)
@@ -56,18 +52,10 @@ std::string searchUrl(const std::string& query, const std::string& engine)
 
 	if (std::string(e.key) == "duckduckgo-lite")
 		return "https://lite.duckduckgo.com/lite/?q=" + q;
-	if (std::string(e.key) == "duckduckgo")
-		return "https://html.duckduckgo.com/html/?q=" + q;
-	if (std::string(e.key) == "google")
-		return "http://www.google.fr/search?q=" + q + "&num=20&hl=fr";
-	if (std::string(e.key) == "bing")
-		return "https://www.bing.com/search?q=" + q + "&format=rss&count=20";
 	if (std::string(e.key) == "wikipedia")
 		return "https://fr.m.wikipedia.org/w/index.php?search=" + q;
 	if (std::string(e.key) == "mojeek")
 		return "https://www.mojeek.com/search?q=" + q;
-	if (std::string(e.key) == "startpage")
-		return "https://www.startpage.com/sp/search?query=" + q;
 
 	return "https://lite.duckduckgo.com/lite/?q=" + q;
 }
@@ -79,7 +67,7 @@ const char* searchEngineDisplayName(const std::string& engine)
 
 const char* searchEngineShortName(const std::string& engine)
 {
-	if (engine == "duckduckgo-lite" || engine == "duckduckgo") return "DuckDuckGo";
+	if (engine == "duckduckgo-lite") return "DuckDuckGo Lite";
 	return resolveEngine(engine).name;
 }
 
@@ -95,6 +83,30 @@ const char* searchEngineNext(const std::string& engine)
 //-----------------------------------------------------------------------------
 // Adresse ou recherche ?
 //-----------------------------------------------------------------------------
+static bool isIpv4Address(const std::string& host)
+{
+	int octets = 0;
+	size_t start = 0;
+	while (start <= host.size())
+	{
+		const size_t dot = host.find('.', start);
+		const std::string part = host.substr(start,
+			dot == std::string::npos ? std::string::npos : dot - start);
+		if (part.empty() || part.size() > 3) return false;
+		int value = 0;
+		for (char c : part)
+		{
+			if (c < '0' || c > '9') return false;
+			value = value * 10 + c - '0';
+		}
+		if (value > 255) return false;
+		++octets;
+		if (dot == std::string::npos) break;
+		start = dot + 1;
+	}
+	return octets == 4;
+}
+
 bool looksLikeAddress(const std::string& input)
 {
 	if (input.empty()) return false;
@@ -110,6 +122,15 @@ bool looksLikeAddress(const std::string& input)
 	size_t cut = host.find_first_of("/?#");
 	if (cut != std::string::npos) host = host.substr(0, cut);
 	if (host.empty()) return false;
+	const size_t colon = host.find(':');
+	if (colon != std::string::npos)
+	{
+		const std::string port = host.substr(colon + 1);
+		if (port.empty() || port.find_first_not_of("0123456789") != std::string::npos)
+			return false;
+		host = host.substr(0, colon);
+	}
+	if (isIpv4Address(host)) return true;
 
 	// Un point final ou un point sans suite alphanumerique n'est pas un domaine.
 	size_t dot = host.rfind('.');
@@ -152,16 +173,15 @@ int searchSelfTest()
 	if (searchUrl("bonjour monde", "duckduckgo-lite")
 			.find("bonjour%20monde") == std::string::npos)
 		fails++;
-	if (searchUrl("a b", "bing").find("bing.com/search") == std::string::npos)
-		fails++;
 	if (searchUrl("test", "moteur-inexistant")
 			.find("duckduckgo") == std::string::npos)
 		fails++;
 
 	if (std::string(defaultSearchEngine()) != "duckduckgo-lite") fails++;
-	if (!searchEngineKnown("google")) fails++;
-	if (searchEngineKnown("yahoo")) fails++;
-	if (std::string(searchEngineNext("duckduckgo-lite")) != "duckduckgo") fails++;
+	if (searchEngineKnown("google") || searchEngineKnown("bing") ||
+		searchEngineKnown("startpage")) fails++;
+	if (!searchEngineKnown("mojeek") || !searchEngineKnown("wikipedia")) fails++;
+	if (std::string(searchEngineNext("duckduckgo-lite")) != "wikipedia") fails++;
 
 	// detection d'adresse
 	if (!looksLikeAddress("exemple.fr")) fails++;

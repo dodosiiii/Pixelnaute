@@ -47,7 +47,7 @@ struct CssRule
 // CssEngine
 // Parse des blocs <style> (selecteurs simples) et calcule les styles
 // appliques a chaque noeud (l'heritage parent -> enfant est gere par le
-// moteur de mise en page via Style::inheritFrom()).
+// moteur de mise en page via les proprietes CSS heritees.
 //=============================================================================
 class CssEngine
 {

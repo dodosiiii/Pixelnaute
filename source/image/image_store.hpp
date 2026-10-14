@@ -59,6 +59,6 @@ private:
 	std::vector<StoredImage> images_;
 	std::string lastError_;
 
-	// Decode un fichier image et le convertit en RGB565 reduit.
-	bool decode(const std::vector<u8>& data, StoredImage& out);
+	// Decode une reponse image et la convertit en RGB565 reduit.
+	bool decode(const std::string& data, StoredImage& out);
 };

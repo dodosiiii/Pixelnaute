@@ -24,6 +24,14 @@ bool NetworkManager::begin()
 void NetworkManager::end()
 {
 	cancel();
+	for (;;)
+	{
+		LightLock_Lock(&lock_);
+		const bool running = workerRunning_;
+		LightLock_Unlock(&lock_);
+		if (!running) break;
+		svcSleepThread(10000000LL);
+	}
 	if (httpInit_) { httpServiceExit(); httpInit_ = false; }
 	if (socInit_)
 	{
@@ -41,12 +49,18 @@ void NetworkManager::end()
 
 bool NetworkManager::busy() const
 {
-	return state_ == NetState::Connecting || state_ == NetState::Receiving;
+	LightLock_Lock(&lock_);
+	const bool result = state_ == NetState::Connecting || state_ == NetState::Receiving;
+	LightLock_Unlock(&lock_);
+	return result;
 }
 
 NetState NetworkManager::state() const
 {
-	return state_;
+	LightLock_Lock(&lock_);
+	const NetState result = state_;
+	LightLock_Unlock(&lock_);
+	return result;
 }
 
 float NetworkManager::progress() const
@@ -59,45 +73,72 @@ size_t NetworkManager::bytesReceived() const
 	return bytes_.load(std::memory_order_relaxed);
 }
 
-const NetResponse* NetworkManager::pendingResult() const
-{
-	return resultReady_ ? &result_ : nullptr;
-}
-
 //--------------------------------------------------------------------------
-void NetworkManager::start(const std::string& url, size_t maxBytes, bool allowTlsBypass)
+bool NetworkManager::start(const std::string& url, size_t maxBytes, bool verifyTls)
 {
-	if (busy()) return;
-	url_ = url;
-	maxBytes_ = maxBytes;
-	allowBypass_ = allowTlsBypass;
-	cancelFlag_ = 0;
+	LightLock_Lock(&lock_);
+	queuedRequest_.url = url;
+	queuedRequest_.maxBytes = maxBytes;
+	queuedRequest_.verifyTls = verifyTls;
+	queuedRequestReady_ = true;
 	resultReady_ = false;
 	result_ = NetResponse();
 	progress_.store(0.0f, std::memory_order_relaxed);
 	bytes_.store(0, std::memory_order_relaxed);
+	if (workerRunning_)
+	{
+		cancelFlag_ = 1;
+		LightLock_Unlock(&lock_);
+		return true;
+	}
+	workerRunning_ = true;
+	cancelFlag_ = 0;
 	state_ = NetState::Connecting;
+	LightLock_Unlock(&lock_);
 
 	Thread t = threadCreate(threadFunc, this, 256 * 1024, 0x30, 0, true);
 	if (t)
 		threadDetach(t);
 	else
+	{
+		LightLock_Lock(&lock_);
+		workerRunning_ = false;
+		queuedRequestReady_ = false;
 		state_ = NetState::Idle;
+		LightLock_Unlock(&lock_);
+		return false;
+	}
+	return true;
 }
 
 void NetworkManager::cancel()
 {
+	LightLock_Lock(&lock_);
+	queuedRequestReady_ = false;
 	cancelFlag_ = 1;
+	if (!workerRunning_)
+	{
+		resultReady_ = false;
+		result_ = NetResponse();
+		state_ = NetState::Idle;
+	}
+	LightLock_Unlock(&lock_);
 }
 
 //--------------------------------------------------------------------------
 bool NetworkManager::takeResult(NetResponse& out)
 {
-	if (!resultReady_) return false;
+	LightLock_Lock(&lock_);
+	if (!resultReady_)
+	{
+		LightLock_Unlock(&lock_);
+		return false;
+	}
 	out = result_;
 	resultReady_ = false;
 	result_ = NetResponse();
 	state_ = NetState::Idle;
+	LightLock_Unlock(&lock_);
 	return true;
 }
 
@@ -110,29 +151,59 @@ void NetworkManager::threadFunc(void* arg)
 
 void NetworkManager::worker()
 {
-	HttpOptions opt;
-	opt.maxBytes = maxBytes_;
-	opt.verifyTls = !allowBypass_;
-	opt.allowTlsBypass = allowBypass_;
-	state_ = NetState::Receiving;
-
-
-	NetResponse resp;
-	bool ok = httpGet(url_, opt, resp, &cancelFlag_, &progress_, &bytes_);
-	if (!ok)
+	for (;;)
 	{
-		if (resp.cancelled)
+		LightLock_Lock(&lock_);
+		if (!queuedRequestReady_)
 		{
+			workerRunning_ = false;
+			if (!resultReady_) state_ = NetState::Idle;
+			LightLock_Unlock(&lock_);
+			return;
+		}
+		const Request request = queuedRequest_;
+		queuedRequestReady_ = false;
+		cancelFlag_ = 0;
+		state_ = NetState::Receiving;
+		LightLock_Unlock(&lock_);
+
+		HttpOptions opt;
+		opt.maxBytes = request.maxBytes;
+		opt.verifyTls = request.verifyTls;
+		opt.allowTlsBypass = request.verifyTls;
+
+		NetResponse resp;
+		const bool ok = httpGet(request.url, opt, resp, &cancelFlag_, &progress_, &bytes_);
+
+		LightLock_Lock(&lock_);
+		if (queuedRequestReady_)
+		{
+			progress_.store(0.0f, std::memory_order_relaxed);
+			bytes_.store(0, std::memory_order_relaxed);
+			state_ = NetState::Connecting;
+			LightLock_Unlock(&lock_);
+			continue;
+		}
+		if (cancelFlag_)
+		{
+			workerRunning_ = false;
 			state_ = NetState::Idle;
+			LightLock_Unlock(&lock_);
+			return;
+		}
+		if (!ok && resp.cancelled)
+		{
+			workerRunning_ = false;
+			state_ = NetState::Idle;
+			LightLock_Unlock(&lock_);
 			return;
 		}
 		result_ = resp;
+		if (ok) bytes_.store(resp.body.size(), std::memory_order_relaxed);
 		resultReady_ = true;
+		workerRunning_ = false;
 		state_ = NetState::Done;
+		LightLock_Unlock(&lock_);
 		return;
 	}
-	result_ = resp;
-	bytes_.store(resp.body.size(), std::memory_order_relaxed);
-	resultReady_ = true;
-	state_ = NetState::Done;
 }

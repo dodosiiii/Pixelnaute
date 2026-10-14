@@ -22,12 +22,12 @@ struct NetResponse
 
 struct HttpOptions
 {
-	std::string userAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1 Pixelnaute/0.2";
+	std::string userAgent = "Pixelnaute/" NW_VERSION_STRING " (Nintendo 3DS; homebrew browser)";
 	std::string accept = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.5";
 	size_t maxBytes = NW_MAX_HTML_BYTES; // 0 = taille illimitee (downloads)
 	int timeoutMs = 30000;
-	bool verifyTls = false;  // verification des certificats (faux par defaut pour autoriser Let's Encrypt / Web moderne)
-	bool allowTlsBypass = false; // autorise le bypass apres echec (choix utilisateur)
+	bool verifyTls = true;  // verifier avant le repli TLS automatique
+	bool allowTlsBypass = true; // repli sans verification si la validation echoue
 };
 
 // Effectue une requete GET synchrone avec redirections.

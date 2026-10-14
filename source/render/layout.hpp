@@ -144,6 +144,7 @@ private:
 	int formCounter_ = 0;
 	int curFormId_ = -1;
 	std::string curFormAction_;
+	std::string curFormMethod_;
 	std::string pageUrl_;
 	bool linkActive_ = false;
 	std::string linkHref_;
