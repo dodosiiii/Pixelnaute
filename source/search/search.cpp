@@ -111,9 +111,10 @@ bool looksLikeAddress(const std::string& input)
 {
 	if (input.empty()) return false;
 	if (input.find(' ') != std::string::npos) return false;
-	if (strStartsWith(input, "http://") || strStartsWith(input, "https://") ||
-		strStartsWith(input, "nw://") || strStartsWith(input, "about:") ||
-		strStartsWith(input, "file://"))
+	const std::string lowerInput = toLower(input);
+	if (strStartsWith(lowerInput, "http://") || strStartsWith(lowerInput, "https://") ||
+		strStartsWith(lowerInput, "nw://") || strStartsWith(lowerInput, "about:") ||
+		strStartsWith(lowerInput, "file://"))
 		return true;
 	if (input.find('.') == std::string::npos) return false;
 
@@ -155,9 +156,17 @@ std::string resolveInput(const std::string& input, const std::string& engine)
 	std::string text = strTrim(input);
 	if (text.empty()) return "";
 
-	if (strStartsWith(text, "nw://") || strStartsWith(text, "about:") ||
-		strStartsWith(text, "http://") || strStartsWith(text, "https://"))
-		return text;
+	const std::string lowerText = toLower(text);
+	if (strStartsWith(lowerText, "http://"))
+		return "http://" + text.substr(7);
+	if (strStartsWith(lowerText, "https://"))
+		return "https://" + text.substr(8);
+	if (strStartsWith(lowerText, "nw://"))
+		return "nw://" + text.substr(5);
+	if (strStartsWith(lowerText, "about:"))
+		return "about:" + text.substr(6);
+	if (strStartsWith(lowerText, "file://"))
+		return "file://" + text.substr(7);
 
 	if (looksLikeAddress(text))
 		return "https://" + text;
@@ -198,6 +207,12 @@ int searchSelfTest()
 			== std::string::npos) fails++;
 	if (resolveInput("  ", "duckduckgo-lite") != "") fails++;
 	if (resolveInput("nw://settings", "duckduckgo-lite") != "nw://settings") fails++;
+	if (resolveInput("NW://settings", "duckduckgo-lite") != "nw://settings") fails++;
+	if (resolveInput("file://sdmc/page.html", "duckduckgo-lite") !=
+		"file://sdmc/page.html") fails++;
+	if (!looksLikeAddress("HTTPS://Example.com/x")) fails++;
+	if (resolveInput("HtTp://Example.com/x", "duckduckgo-lite") !=
+		"http://Example.com/x") fails++;
 
 	return fails;
 }

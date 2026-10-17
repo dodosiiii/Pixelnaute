@@ -24,7 +24,7 @@ include $(DEVKITARM)/3ds_rules
 # APP_AUTHOR is the author of the app stored in the SMDH file (Optional)
 # ICON is the filename of the icon (.png), relative to the project folder.
 #---------------------------------------------------------------------------------
-TARGET		:=	Pixelnaute
+TARGET		:=	N3DSWeb
 BUILD		:=	build
 SOURCES		:=	source \
 				source/network \

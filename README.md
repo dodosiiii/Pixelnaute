@@ -4,7 +4,7 @@
 New Nintendo 2DS XL. Il est conçu pour rester léger et afficher des pages web
 avec un moteur HTML/CSS natif simplifié.
 
-> **Version actuelle : 0.2.0**
+> **Version en développement : 0.3.0**
 >
 > Pixelnaute est un projet en développement. Il peut ouvrir certaines pages,
 > mais ne remplace pas un navigateur moderne : les sites complexes, les
@@ -24,20 +24,55 @@ avec un moteur HTML/CSS natif simplifié.
 - [Contribuer](#contribuer)
 - [Licence](#licence)
 
-## Fonctionnalités
+## Fonctionnalités & Progrès récents (v0.3.0)
 
-- Navigation par adresse et recherche avec **DuckDuckGo Lite**.
-- Moteurs alternatifs : **Wikipedia** et **Mojeek**.
-- Onglets, historique, favoris, retour, avance et rechargement.
-- Rendu natif simplifié de HTML et CSS, sans moteur JavaScript.
-- Chargement facultatif d’images.
-- Gestion de base des formulaires GET.
-- Client réseau HTTP/HTTPS avec suivi des redirections.
-- Vérification des certificats TLS, avec repli de compatibilité configurable.
-- Contrôle manuel des mises à jour depuis les réglages.
+Pixelnaute dispose d'un moteur de rendu web autonome tournant nativement sur le matériel de la New 3DS, sans serveur intermédiaire :
 
-Les réglages et données du navigateur sont stockés sur la carte SD, dans
-`sdmc:/N3DSWeb/`.
+- **Réseau moderne & sessions partagées :**
+  - Session partagée `CURLSH` mutualisant le cache DNS, les sessions TLS (accélération des handshakes) et les cookies.
+  - User-Agent standard mobile (Safari Mobile) complété par le suffixe Pixelnaute.
+  - Prise en charge des requêtes **GET** et **POST** (permettant la navigation paginée et l'envoi de formulaires).
+  - Détection automatique et conversion de charset (**ISO-8859-1** et **Windows-1252** vers UTF-8 propre).
+  - Préservation du corps HTML sur les codes d'erreur HTTP 4xx/5xx et téléchargement partiel en cas de dépassement de limite de taille.
+  - Suivi des redirections automatiques `<meta http-equiv="refresh">`.
+
+- **Moteur HTML tolérant & sécurisé :**
+  - Traitement natif des balises `<pre>`, `<textarea>` et `<title>` avec décodage des entités HTML.
+  - Gestion des balises auto-fermantes `/>` et saut intelligent des sous-arbres lourds invisibles (`<svg>`, `<template>`).
+  - Filtrage des éléments invisibles (`[hidden]`, `[aria-hidden="true"]`, `.sr-only`, `.visually-hidden`, `.skip-link`).
+  - Mode lecteur de repli (*Reader Mode*) automatique pour extraire et rendre le contenu texte lisible sur les pages complexes.
+
+- **Moteur CSS enrichi :**
+  - Prise en charge des sélecteurs composés et combinateurs : descendant (` `), fils direct (`>`), classes multiples (`.a.b`), attributs (`[attr]`, `[attr=val]`), et pseudo-classe `:first-child`.
+  - Évaluation des règles `@media` en vue mobile (largeur logique 400 px), et déballage transparent de `@supports` et `@layer`.
+  - Téléchargement et application de feuilles de style externes (`<link rel="stylesheet">`).
+  - Cascade et spécificité affinées, gestion du `!important` et conversion multi-unités (`px`, `em`, `rem`, `pt`).
+
+- **Mise en page, formulaires et rendu graphique (PICA200) :**
+  - Tableaux HTML (`table`, `tr`, `td`, `th`) alignés horizontalement par colonnes réparties.
+  - Contrôles de formulaires complets : affichage des textes de `<button>`, sélection dynamique dans `<select>`, cases à cocher (`checkbox`) et boutons radio.
+  - Gestion multi-lignes fluide dans les blocs `<pre>`.
+  - Allocation mémoire adaptative (réduction dynamique de la hauteur du bitmap en cas de contrainte mémoire pour éliminer les crashs OOM).
+  - Rendu GPU tuilé Morton sans conflit mémoire avec le framebuffer Citro2D.
+
+- **Recherche & navigation :**
+  - Moteur DuckDuckGo Lite par défaut avec réécriture lisible des résultats, moteurs alternatifs Wikipedia et Mojeek.
+  - Historique, favoris, onglets multiples, défilement gestuel tactile et curseur virtuel C-Stick.
+
+## Feuille de route pour la v0.4 (Roadmap)
+
+La version 0.4 sera axée sur l'introduction de l'interactivité dynamique et l'optimisation des performances :
+
+1. **Intégration d'un moteur JavaScript léger (QuickJS) :**
+   - Portage et initialisation de QuickJS adapté aux contraintes de mémoire de la New 3DS.
+   - Bindings de base pour l'API DOM minimale (`document.getElementById`, `addEventListener`, manipulation de texte et de styles).
+   - Exécution ciblée des scripts essentiels et gestion d'événements (clics, validations de formulaires).
+2. **Gestion réseau asynchrone des médias :**
+   - Déplacement du chargement des images et des feuilles de style secondaires sur un thread d'arrière-plan pour supprimer tout gel de l'interface lors de la navigation.
+3. **Persistance des sessions et cookies :**
+   - Sauvegarde sur carte SD des cookies de session pour maintenir les connexions utilisateur entre redémarrages.
+4. **Moteur CSS étendu :**
+   - Amélioration de la gestion des unités relatives (`%`, `vh`/`vw`) et amorce d'un modèle de boîte flexible (flexbox basique).
 
 ## Installation sur la console
 
@@ -124,7 +159,7 @@ Cette installation intégrée est prévue pour la version **`.3dsx` lancée depu
 le Homebrew Launcher**; elle ne met pas à jour une installation `.cia`. Après
 une mise à jour, fermez puis relancez l’application manuellement.
 
-Pour publier une release, poussez un tag de version tel que `v0.2.0`. Le
+Pour publier la v0.3, poussez un tag de version tel que `v0.3.0`. Le
 workflow GitHub Actions compile l’application et joint `N3DSWeb.3dsx` à la
 release. La vérification intégrée nécessite qu’une release stable soit publiée
 et contienne cet asset.
@@ -168,18 +203,12 @@ n’est requis ou utilisé par la version actuelle.**
 
 ## Limites connues
 
-- Pas de moteur JavaScript : les sites qui dépendent de JavaScript, notamment
-  les applications web modernes, peuvent être incomplets ou inutilisables.
-- Pas de flexbox ni de grille CSS; la prise en charge HTML/CSS reste limitée.
-- Les défis anti-bot interactifs, CAPTCHA et vérifications nécessitant
-  JavaScript ne peuvent pas être résolus par le navigateur natif. La détection
-  affiche un avertissement pour certains défis explicites, mais cela ne les
-  contourne pas.
-- Les cookies sont conservés en mémoire pendant une requête et ses
-  redirections, mais pas entre les pages.
-- Une connexion directe à Internet depuis la console peut être refusée par
-  certains sites ou réseaux.
-- Les formulaires POST ne sont pas pris en charge.
+- Pas de moteur JavaScript (programmé pour la v0.4) : les applications web monopages (SPA) ou les scripts dynamiques ne s'exécutent pas encore.
+- Pas de flexbox complexe ni de grille CSS moderne.
+- Les défis anti-bot interactifs (Cloudflare Turnstile, reCAPTCHA complexe) ne peuvent pas être résolus sans moteur JS complet.
+- Le parseur DOM conserve jusqu'à 32 768 nœuds et le budget de règles CSS autorise jusqu'à 512 règles et 128 Ko de feuilles de style.
+- L'envoi de formulaires supporte GET et POST encodé en URL (`application/x-www-form-urlencoded`). Les formulaires multi-parties (téléversement de fichiers multipart/form-data) ne sont pas pris en charge.
+- Le chargement des images volumineuses et des polices reste limité pour préserver la mémoire linéaire de la console.
 
 ## Contribuer
 

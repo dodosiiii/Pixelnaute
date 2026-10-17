@@ -11,8 +11,8 @@
 #include <cstdlib>
 
 #define NW_VERSION_MAJOR 0
-#define NW_VERSION_MINOR 2
-#define NW_VERSION_STRING "0.2.0"
+#define NW_VERSION_MINOR 3
+#define NW_VERSION_STRING "0.3.0"
 
 //-----------------------------------------------------------------------------
 // Limites memoire (stabilite avant tout sur New 3DS)
@@ -20,9 +20,9 @@
 enum
 {
 	NW_MAX_HTML_BYTES    = 2 * 1024 * 1024,   // taille maximale d'une page HTML en RAM
-	NW_MAX_DOM_NODES     = 32768,             // plafond des noeuds DOM pour borner la RAM
+	NW_MAX_DOM_NODES     = 8192,              // evite qu'une page complexe epuise la RAM
 	NW_MAX_BODY_BYTES    = 8 * 1024 * 1024,   // taille maximale d'un telechargement
-	NW_MAX_PAGE_HEIGHT   = 4000,              // hauteur maximale du rendu (px)
+	NW_MAX_PAGE_HEIGHT   = 2000,              // limite la memoire du rendu logiciel (px)
 	NW_PAGE_WIDTH        = 400,               // largeur de la page / ecran top
 	NW_TOP_HEIGHT        = 240,               // hauteur ecran haut
 	NW_BOTTOM_WIDTH      = 320,               // largeur ecran bas
@@ -31,7 +31,7 @@ enum
 	NW_MAX_HISTORY       = 64,                // entree de l'historique par onglet
 	NW_MAX_REDIRECTS     = 6,                 // redirections suivies
 	NW_MAX_FIELDS        = 64,                // champs de formulaire sur une page
-	NW_MAX_LINKS         = 512,               // liens sur une page
+	NW_MAX_LINKS         = 4096,              // liens sur une page
 	NW_HTTP_CHUNK        = 16 * 1024,         // taille de lecture reseau
 	NW_SCALE_TEXT        = 8,                 // echelle de grille du rendu texte (aucun)
 };

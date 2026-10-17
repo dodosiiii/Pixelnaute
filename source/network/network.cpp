@@ -12,13 +12,13 @@ bool NetworkManager::begin()
 	{
 		socMem_ = (u32*)memalign(0x1000, 0x100000);
 		if (socMem_ && R_SUCCEEDED(socInit((u32*)socMem_, 0x100000)))
-		{
 			socInit_ = true;
-			curl_global_init(CURL_GLOBAL_DEFAULT);
-		}
 	}
 
-	return httpInit_ || socInit_;
+	if (socInit_ && !curlInit_)
+		curlInit_ = curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK;
+
+	return socInit_ && curlInit_;
 }
 
 void NetworkManager::end()
@@ -35,7 +35,11 @@ void NetworkManager::end()
 	if (httpInit_) { httpServiceExit(); httpInit_ = false; }
 	if (socInit_)
 	{
-		curl_global_cleanup();
+		if (curlInit_)
+		{
+			curl_global_cleanup();
+			curlInit_ = false;
+		}
 		socExit();
 		socInit_ = false;
 	}
@@ -74,12 +78,20 @@ size_t NetworkManager::bytesReceived() const
 }
 
 //--------------------------------------------------------------------------
-bool NetworkManager::start(const std::string& url, size_t maxBytes, bool verifyTls)
+bool NetworkManager::start(const std::string& url, size_t maxBytes, bool verifyTls,
+	const std::string& method, const std::string& postData)
 {
+	if (!socInit_ || !curlInit_)
+	{
+		if (!begin()) return false;
+	}
+
 	LightLock_Lock(&lock_);
 	queuedRequest_.url = url;
 	queuedRequest_.maxBytes = maxBytes;
 	queuedRequest_.verifyTls = verifyTls;
+	queuedRequest_.method = method;
+	queuedRequest_.postData = postData;
 	queuedRequestReady_ = true;
 	resultReady_ = false;
 	result_ = NetResponse();
@@ -171,6 +183,8 @@ void NetworkManager::worker()
 		opt.maxBytes = request.maxBytes;
 		opt.verifyTls = request.verifyTls;
 		opt.allowTlsBypass = request.verifyTls;
+		opt.method = request.method;
+		opt.postData = request.postData;
 
 		NetResponse resp;
 		const bool ok = httpGet(request.url, opt, resp, &cancelFlag_, &progress_, &bytes_);

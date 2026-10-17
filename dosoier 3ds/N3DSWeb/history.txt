@@ -1,3 +1,1 @@
-https://html.duckduckgo.com/html/?q=bonjour	bonjour at DuckDuckGo
-https://lite.duckduckgo.com/lite/	DuckDuckGo Lite: Fast, Lightweight Private Search
-	Google Search
+https://lite.duckduckgo.com/lite/?q=bonjour	bonjour at DuckDuckGo

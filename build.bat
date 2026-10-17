@@ -16,6 +16,7 @@ if exist "%DST%" rmdir /s /q "%DST%"
 mkdir "%DST%" 2>nul
 xcopy /E /I /Y /Q "%~dp0source" "%DST%\source"  >nul
 xcopy /E /I /Y /Q "%~dp0assets" "%DST%\assets"  >nul
+xcopy /E /I /Y /Q "%~dp0romfs" "%DST%\romfs" >nul
 copy /Y "%~dp0Makefile" "%DST%\Makefile" >nul
 
 REM conversion du chemin Windows vers le style msys (/c/Users/...)

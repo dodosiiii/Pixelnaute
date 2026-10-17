@@ -39,7 +39,7 @@ static bool isBlockTag(const std::string& t)
 static bool isHeadTag(const std::string& t)
 {
 	return t == "head" || t == "title" || t == "meta" || t == "link" || t == "base" ||
-		t == "style" || t == "script" || t == "noscript";
+		t == "style" || t == "script";
 }
 
 // Fusion d'une URL relative avec l'URL de base de la page (utilise urlJoin dans common.hpp).
@@ -173,9 +173,9 @@ void PageLayout::drawTextWrapped(const std::string& text, const Style& st, bool 
 	{
 		std::string cand = line.empty() ? segment : line + " " + segment;
 		float wc = te.measure(cand, scale);
-		if (!line.empty() && (ix_ + wc > x1_))
+		if (ix_ + wc > x1_ && (!line.empty() || ix_ > x0_))
 		{
-			drawSeg(line, lineW);
+			if (!line.empty()) drawSeg(line, lineW);
 			newline(0);
 			line = segment;
 			lineW = te.measure(segment, scale);
@@ -352,7 +352,17 @@ void PageLayout::renderNode(int idx, const Style& st)
 			if (isSubmit)
 			{
 				newline(0);
-				std::string label = node.getAttr("value") ? node.getAttr("value") : (node.getAttr("alt") ? node.getAttr("alt") : "OK");
+				std::string label;
+				if (tag == "button")
+				{
+					label = strTrim(doc_->textOf(idx));
+					if (label.empty() && node.getAttr("value")) label = node.getAttr("value");
+				}
+				else
+				{
+					label = node.getAttr("value") ? node.getAttr("value") : (node.getAttr("alt") ? node.getAttr("alt") : "");
+				}
+				if (label.empty()) label = "OK";
 				int bw = (int)TextEngine::instance().measure(label, baseScale_ * 0.9f) + 16;
 				if (bw < 48) bw = 48;
 				(*target_).fillRect(ix_, iy_, bw, 22, 0x2E5A9EFF);
@@ -375,7 +385,44 @@ void PageLayout::renderNode(int idx, const Style& st)
 			(*target_).fillRect(ix_, iy_, w, h, 0xFFF4F4F4);
 			(*target_).addRect(ix_, iy_, w, h, 0x8A8A96FF, 1);
 			std::string val = node.getAttr("value") ? node.getAttr("value") : "";
-			if (!val.empty())
+			if (tag == "select")
+			{
+				// Chercher l'option sélectionnée ou la première option
+				std::string optText;
+				for (int childIdx : node.children)
+				{
+					const Node& cn = doc_->nodes[childIdx];
+					if (cn.isElement() && cn.tag == "option")
+					{
+						std::string text = strTrim(doc_->textOf(childIdx));
+						if (optText.empty() || cn.hasAttr("selected"))
+						{
+							optText = text;
+							val = cn.getAttr("value") ? cn.getAttr("value") : text;
+							if (cn.hasAttr("selected")) break;
+						}
+					}
+				}
+				if (!optText.empty())
+				{
+					TextEngine& te = TextEngine::instance();
+					std::string shown = optText.size() > 18 ? optText.substr(0, 17) + "..." : optText;
+					te.drawLine((*target_), shown + " v", ix_ + 4, iy_ + 3, 0.65f, 0xFF2C2222, false, false);
+				}
+			}
+			else if (type && (toLower(type) == "checkbox" || toLower(type) == "radio"))
+			{
+				bool checked = node.hasAttr("checked");
+				int sz = 14;
+				w = sz; h = sz;
+				(*target_).fillRect(ix_, iy_ + 2, sz, sz, 0xFFFFFFFF);
+				(*target_).addRect(ix_, iy_ + 2, sz, sz, 0x8A8A96FF, 1);
+				if (checked)
+				{
+					(*target_).fillRect(ix_ + 3, iy_ + 5, sz - 6, sz - 6, 0x2E5A9EFF);
+				}
+			}
+			else if (!val.empty())
 			{
 				TextEngine& te = TextEngine::instance();
 				std::string shown = val.size() > 18 ? val.substr(0, 17) + "..." : val;
@@ -490,8 +537,11 @@ void PageLayout::renderNode(int idx, const Style& st)
 				// peint le fond, puis on restaure le contenu par-dessus.
 				const int bgHeight = by_ - bgY0;
 				saveRegion(bgX0, bgY0, bgX1 - bgX0, bgHeight);
-				(*target_).fillRect(bgX0, bgY0, bgX1 - bgX0, bgHeight, st.bg);
-				restoreRegion(bgX0, bgY0, bgX1 - bgX0, bgHeight);
+				if (!regionSave_.empty())
+				{
+					(*target_).fillRect(bgX0, bgY0, bgX1 - bgX0, bgHeight, st.bg);
+					restoreRegion(bgX0, bgY0, bgX1 - bgX0, bgHeight);
+				}
 			}
 #endif
 
@@ -541,27 +591,67 @@ void PageLayout::renderNode(int idx, const Style& st)
 
 		if (tag == "table")
 		{
+			newline(0);
 			for (int c : node.children) resolveAndRender(c, st);
 			newline(0);
 			return;
 		}
-		if (tag == "tr") { for (int c : node.children) resolveAndRender(c, st); return; }
+		if (tag == "tbody" || tag == "thead" || tag == "tfoot")
+		{
+			for (int c : node.children) resolveAndRender(c, st);
+			return;
+		}
+		if (tag == "tr")
+		{
+			newline(0);
+			std::vector<int> cells;
+			for (int c : node.children)
+			{
+				if (c >= 0 && (size_t)c < doc_->nodes.size())
+				{
+					const std::string& ct = doc_->nodes[c].tag;
+					if (ct == "td" || ct == "th") cells.push_back(c);
+				}
+			}
+			if (cells.empty())
+			{
+				for (int c : node.children) resolveAndRender(c, st);
+				newline(0);
+				return;
+			}
+			const int numCells = (int)cells.size();
+			const int totalW = x1_ - x0_;
+			const int colW = std::max(20, totalW / numCells);
+			const int savedX0 = x0_;
+			const int savedX1 = x1_;
+			const int rowY = iy_;
+			int maxRowBottom = rowY + 14;
+
+			for (int i = 0; i < numCells; i++)
+			{
+				int cellIdx = cells[i];
+				x0_ = savedX0 + i * colW;
+				x1_ = (i == numCells - 1) ? savedX1 : (x0_ + colW - 2);
+				ix_ = x0_;
+				iy_ = rowY;
+				by_ = rowY;
+				lineMaxH_ = 0;
+				resolveAndRender(cellIdx, st);
+				if (by_ > maxRowBottom) maxRowBottom = by_;
+			}
+			x0_ = savedX0;
+			x1_ = savedX1;
+			by_ = maxRowBottom;
+			iy_ = by_;
+			ix_ = x0_;
+			newline(0);
+			return;
+		}
 		if (tag == "td" || tag == "th")
 		{
-			int savedX0 = x0_, savedX1 = x1_, savedIx = ix_;
-			newline(0);
-			int cw = attrInt(node, "width", 0);
-			if (cw <= 0) cw = 120;
-			if (cw > x1_ - x0_) cw = x1_ - x0_;
-			x0_ = ix_; x1_ = ix_ + cw;
-			// fond de cellule
-			(*target_).fillRect(ix_, iy_, cw, 2, 0x8A8A96FF); // petit trait sous la cellule
 			Style cellSt = st;
 			if (tag == "th") cellSt.bold = true;
 			for (int c : node.children) resolveAndRender(c, cellSt);
-			ix_ = savedIx + cw + 6;
-			x0_ = savedX0; x1_ = savedX1;
-			newline(0);
 			return;
 		}
 
@@ -582,15 +672,30 @@ void PageLayout::renderNode(int idx, const Style& st)
 			newline(0);
 			int savedX0 = x0_, savedX1 = x1_;
 			x0_ += 6; x1_ -= 6; ix_ = x0_;
+			TextEngine& te = TextEngine::instance();
+			float scale = baseScale_ * 0.9f;
+			int pitch = te.linePitch(scale);
 			for (int c : node.children)
 			{
 				if (doc_->nodes[c].type == NodeType::Text || doc_->nodes[c].type == NodeType::RawText)
 				{
-					TextEngine& te = TextEngine::instance();
-					float scale = baseScale_ * 0.9f;
-					te.drawLine((*target_), doc_->nodes[c].text, ix_, iy_, scale, 0xCFCFDAFF, false, false);
-					by_ = iy_ += te.linePitch(scale);
-					ix_ = x0_;
+					const std::string& raw = doc_->nodes[c].text;
+					size_t start = 0;
+					while (start < raw.size())
+					{
+						size_t nl = raw.find('\n', start);
+						std::string lineStr = (nl == std::string::npos) ? raw.substr(start) : raw.substr(start, nl - start);
+						if (!lineStr.empty() && lineStr.back() == '\r') lineStr.pop_back();
+						te.drawLine((*target_), lineStr, ix_, iy_, scale, 0xCFCFDAFF, false, false);
+						by_ = iy_ += pitch;
+						ix_ = x0_;
+						if (nl == std::string::npos) break;
+						start = nl + 1;
+					}
+				}
+				else
+				{
+					resolveAndRender(c, st);
 				}
 			}
 			x0_ = savedX0; x1_ = savedX1;
@@ -674,7 +779,7 @@ void PageLayout::renderNode(int idx, const Style& st)
 void PageLayout::resolveAndRender(int idx, const Style& parentSt)
 {
 	if (idx < 0) return;
-	if (renderDepth_ >= 64) return;
+	if (renderDepth_ >= 256) return;
 	++renderDepth_;
 	struct DepthGuard
 	{
@@ -683,7 +788,23 @@ void PageLayout::resolveAndRender(int idx, const Style& parentSt)
 	} guard{ renderDepth_ };
 
 	const Node& node = doc_->nodes[idx];
-	if (node.isElement() && isHeadTag(node.tag)) return;
+	if (node.isElement())
+	{
+		if (isHeadTag(node.tag)) return;
+		if (node.hasAttr("hidden")) return;
+		const char* aria = node.getAttr("aria-hidden");
+		if (aria && (std::string(aria) == "true" || std::string(aria) == "1")) return;
+		const char* cls = node.getAttr("class");
+		if (cls)
+		{
+			std::string cl = toLower(cls);
+			if (cl.find("sr-only") != std::string::npos ||
+				cl.find("visually-hidden") != std::string::npos ||
+				cl.find("skip-link") != std::string::npos)
+				return;
+		}
+		if (node.tag == "dialog" && !node.hasAttr("open")) return;
+	}
 	if (node.type == NodeType::Comment) return;
 
 	Style st = css_->resolve(*doc_, idx, parentSt);
@@ -725,20 +846,28 @@ bool PageLayout::render(PageModel& out, const std::string& pageUrl)
 	}
 
 	int cap = set_->maxPageHeight > 0 ? set_->maxPageHeight : NW_MAX_PAGE_HEIGHT;
-	if (!out.bmp.create(NW_PAGE_WIDTH, cap))
+	while (!out.bmp.create(NW_PAGE_WIDTH, cap))
 	{
-		out.errorCode = 2;
-		out.errorText = "Memoire insuffisante pour le rendu";
-		return false;
+		if (cap <= 1200)
+		{
+			out.errorCode = 2;
+			out.errorText = "Memoire insuffisante pour le rendu";
+			return false;
+		}
+		cap = (cap * 2) / 3;
+		if (cap < 1200) cap = 1200;
 	}
 	// Surface de dessin par defaut : la page elle-meme.
 	target_ = &out.bmp;
-	// Fond des pages sans couleur declaree : gris tres sombre (R=0x16 G=0x1E
-	// B=0x16, donc 0xFF161E16 en 0xAABBGGRR).
-	// ATTENTION au format des couleurs dans ce projet : l'octet de poids
-	// faible est le ROUGE. Ecrire 0x16161EFF donnerait R=0xFF, G=0x1E,
-	// B=0x16, c'est-a-dire un fond ROUGE : c'etait la cause du rendu rouge.
-	(*target_).clear(0xFF161E16);
+	const bool isInternal = strStartsWith(toLower(pageUrl), "nw://") || strStartsWith(toLower(pageUrl), "nw:/");
+	uint32_t defaultBg = 0xFFFFFFFF; // Fond blanc pour le web standard
+	uint32_t defaultText = 0xFF202020; // Texte sombre standard
+	if (isInternal)
+	{
+		defaultBg = 0xFF1A1317; // Fond sombre prune interne
+		defaultText = C_TEXT;
+	}
+	(*target_).clear(defaultBg);
 	blockBackgrounds_.clear();
 
 	x0_ = 4; x1_ = NW_PAGE_WIDTH - 4;
@@ -753,7 +882,7 @@ bool PageLayout::render(PageModel& out, const std::string& pageUrl)
 	if (body < 0) body = doc_->root;
 
 	Style rootSt = defaultStyle();
-	rootSt.color = C_TEXT;
+	rootSt.color = defaultText;
 	rootSt.colorSet = true;
 	resolveAndRender(body, rootSt);
 

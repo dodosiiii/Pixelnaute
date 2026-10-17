@@ -600,6 +600,7 @@ void BottomUi::drawSettingsList(Browser& b, WebSettings& set,
 	const std::string engine = searchEngineDisplayName(set.searchEngine);
 	const std::string tls = set.verifyTLS ? "Oui" : "Non";
 	const std::string img = set.loadImages ? "Oui" : "Non";
+	const std::string js = "Non disponible";
 	std::string update = updater.message();
 	if (updater.state() == UpdateState::Downloading)
 		update = "Telechargement " + itos((long)(updater.progress() * 100.0f)) + "%";
@@ -607,24 +608,25 @@ void BottomUi::drawSettingsList(Browser& b, WebSettings& set,
 		update = "Recherche...";
 
 	struct Row { const char* label; std::string value; bool accent; };
-	Row rows[6] =
+	Row rows[7] =
 	{
 		{ "Moteur de recherche", engine, true },
 		{ "Page d'accueil", fitStr(set.homePage.empty() ? "(par defaut)" : set.homePage, 120, 0.7f), false },
 		{ "Verifier les certificats", tls, false },
 		{ "Charger les images", img, false },
+		{ "JavaScript (en preparation)", js, false },
 		{ "Effacer l'historique", "", false },
 		{ "Mises a jour", update, true },
 	};
-	for (int i = 0; i < 6; i++)
+	for (int i = 0; i < 7; i++)
 	{
-		const int y = 110 + i * 18;
-		roundRect(bmp_, 4, y, 312, 17, 5, (i & 1) ? C_SURFACE : C_BG_2);
-		text(bmp_, rows[i].label, 10, y + 1, 0.7f, C_TEXT);
+		const int y = 110 + i * 15;
+		roundRect(bmp_, 4, y, 312, 14, 4, (i & 1) ? C_SURFACE : C_BG_2);
+		text(bmp_, rows[i].label, 10, y + 1, 0.62f, C_TEXT);
 		if (!rows[i].value.empty())
-			text(bmp_, fitStr(rows[i].value, 190, 0.58f),
-				310 - textW(fitStr(rows[i].value, 190, 0.58f), 0.58f),
-				y + 2, 0.58f,
+			text(bmp_, fitStr(rows[i].value, 190, 0.52f),
+				310 - textW(fitStr(rows[i].value, 190, 0.52f), 0.52f),
+				y + 1, 0.52f,
 				rows[i].accent ? C_ACCENT : C_TEXT_D);
 	}
 }
@@ -970,9 +972,9 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 				mode_ = UiMode::Browsing;
 				dirty_ = true;
 			}
-			else if (y >= 110 && y < 218)
+			else if (y >= 110 && y < 215)
 			{
-				int idx = (y - 110) / 18;
+				int idx = (y - 110) / 15;
 				switch (idx)
 				{
 					case 0:
@@ -993,8 +995,9 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 						break;
 					case 2: set.verifyTLS = !set.verifyTLS; settingsSave(set); dirty_ = true; break;
 					case 3: set.loadImages = !set.loadImages; settingsSave(set); dirty_ = true; break;
-					case 4: b.history().clear(); toast("Historique efface"); dirty_ = true; break;
-					case 5:
+					case 4: toast("Interpreteur JavaScript non disponible"); dirty_ = true; break;
+					case 5: b.history().clear(); toast("Historique efface"); dirty_ = true; break;
+					case 6:
 						if (updater.active())
 							toast("Mise a jour deja en cours");
 						else if (net.busy())

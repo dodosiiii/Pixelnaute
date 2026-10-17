@@ -22,9 +22,10 @@ public:
 	bool begin();          // initservices (httpc)
 	void end();
 
-	// Lance une requete GET (http ou https) en arriere-plan.
+	// Lance une requete GET ou POST (http ou https) en arriere-plan.
 	// maxBytes : 0 = illimite (downloads), sinon limite de la memoire page.
-	bool start(const std::string& url, size_t maxBytes, bool verifyTls);
+	bool start(const std::string& url, size_t maxBytes, bool verifyTls,
+	           const std::string& method = "GET", const std::string& postData = "");
 
 	// Annule le transfert en cours.
 	void cancel();
@@ -53,6 +54,8 @@ private:
 		std::string url;
 		size_t maxBytes = 0;
 		bool verifyTls = true;
+		std::string method = "GET";
+		std::string postData;
 	};
 	Request queuedRequest_;
 	bool queuedRequestReady_ = false;
@@ -64,5 +67,6 @@ private:
 	// Services init par begin()/end()
 	bool httpInit_ = false;
 	bool socInit_ = false;
+	bool curlInit_ = false;
 	void* socMem_ = nullptr;
 };

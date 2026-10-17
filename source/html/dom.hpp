@@ -37,6 +37,12 @@ struct Node
 	int layoutLine = -1;
 
 	bool isElement() const { return type == NodeType::Element; }
+	bool hasAttr(const char* name) const
+	{
+		for (const auto& a : attrs)
+			if (a.name == name) return true;
+		return false;
+	}
 	const char* getAttr(const char* name) const
 	{
 		for (const auto& a : attrs)

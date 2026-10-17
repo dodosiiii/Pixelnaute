@@ -75,6 +75,19 @@ int searchPageSelfTest()
 	if (!searchPageIsVerificationChallenge(
 			"<p>Enable JavaScript and cookies to continue.</p>"))
 		fails++;
+
+	std::string rewritten;
+	const std::string html =
+		"<html><head><title>Results</title></head><body>"
+		"<a class='result-link'>Google Search</a>"
+		"<td class='result-snippet'>Navigation entry</td>"
+		"<a class='result-link' href = 'https://example.org/bonjour'>Valid result</a>"
+		"<td class='result-snippet'>A valid result</td></body></html>";
+	if (!searchPageRewrite(html, rewritten) ||
+		searchPageLastResultCount() != 1 ||
+		rewritten.find("Google Search") != std::string::npos ||
+		rewritten.find("https://example.org/bonjour") == std::string::npos)
+		fails++;
 	return fails;
 }
 
@@ -239,21 +252,83 @@ static bool extractElement(const std::string& html, size_t from,
 //--------------------------------------------------------------------------
 static std::string attrOf(const std::string& tagText, const char* name)
 {
-	const std::string key = std::string(name) + "=";
-	size_t p = tagText.find(key);
+	size_t p = tagText.find_first_of(" \t\r\n");
 	if (p == std::string::npos)
-	{
-		// attribute="value" avec des espaces
 		return "";
+
+	while (p < tagText.size())
+	{
+		while (p < tagText.size() &&
+			(tagText[p] == ' ' || tagText[p] == '\t' ||
+			 tagText[p] == '\r' || tagText[p] == '\n' || tagText[p] == '/'))
+			p++;
+		if (p >= tagText.size() || tagText[p] == '>') break;
+
+		const size_t nameStart = p;
+		while (p < tagText.size() && tagText[p] != '=' && tagText[p] != '>' &&
+			tagText[p] != ' ' && tagText[p] != '\t' &&
+			tagText[p] != '\r' && tagText[p] != '\n' && tagText[p] != '/')
+			p++;
+		if (p == nameStart) { p++; continue; }
+		const std::string attrName = toLower(tagText.substr(nameStart, p - nameStart));
+
+		while (p < tagText.size() &&
+			(tagText[p] == ' ' || tagText[p] == '\t' ||
+			 tagText[p] == '\r' || tagText[p] == '\n'))
+			p++;
+		if (p >= tagText.size() || tagText[p] != '=')
+		{
+			if (attrName == toLower(name)) return "";
+			continue;
+		}
+		p++;
+		while (p < tagText.size() &&
+			(tagText[p] == ' ' || tagText[p] == '\t' ||
+			 tagText[p] == '\r' || tagText[p] == '\n'))
+			p++;
+		if (p >= tagText.size()) return "";
+
+		std::string value;
+		if (tagText[p] == '"' || tagText[p] == '\'')
+		{
+			const char quote = tagText[p++];
+			const size_t end = tagText.find(quote, p);
+			if (end == std::string::npos) return "";
+			value = tagText.substr(p, end - p);
+			p = end + 1;
+		}
+		else
+		{
+			const size_t start = p;
+			while (p < tagText.size() && tagText[p] != '>' &&
+				tagText[p] != ' ' && tagText[p] != '\t' &&
+				tagText[p] != '\r' && tagText[p] != '\n')
+				p++;
+			value = tagText.substr(start, p - start);
+		}
+		if (attrName == toLower(name)) return value;
 	}
-	p += key.size();
-	if (p >= tagText.size()) return "";
-	const char quote = tagText[p];
-	if (quote != '"' && quote != '\'') return "";
-	p++;
-	size_t end = tagText.find(quote, p);
-	if (end == std::string::npos) return "";
-	return tagText.substr(p, end - p);
+	return "";
+}
+
+static bool isWebResultUrl(const std::string& url)
+{
+	const std::string lower = toLower(url);
+	size_t authorityStart = 0;
+	if (strStartsWith(lower, "http://")) authorityStart = 7;
+	else if (strStartsWith(lower, "https://")) authorityStart = 8;
+	else if (strStartsWith(url, "//")) authorityStart = 2;
+	else if (url.size() > 1 && url[0] == '/') return true;
+	else return false;
+
+	size_t authorityEnd = url.find_first_of("/?#", authorityStart);
+	if (authorityEnd == std::string::npos) authorityEnd = url.size();
+	if (authorityEnd == authorityStart) return false;
+	for (char c : url)
+		if ((unsigned char)c <= 0x20 || c == '\\' || c == '<' || c == '>' ||
+			c == '"' || c == '\'')
+			return false;
+	return true;
 }
 
 //--------------------------------------------------------------------------
@@ -300,7 +375,6 @@ static void extractResults(const std::string& html, std::vector<SearchResult>& o
 			if (!dec.empty()) href = dec; // lien direct vers le site
 		}
 
-
 		// Titre : contenu de l'ancre.
 		std::string closeA = "</a>";
 		size_t aEnd = html.find(closeA, tagEnd);
@@ -309,7 +383,7 @@ static void extractResults(const std::string& html, std::vector<SearchResult>& o
 			title = textOf(html.substr(tagEnd + 1, aEnd - tagEnd - 1));
 
 		pos = (aEnd == std::string::npos) ? tagEnd + 1 : aEnd + closeA.size();
-		if (title.empty()) continue;
+		if (title.empty() || !isWebResultUrl(href)) continue;
 
 		// Les annonces sont ecartees : elles encombrent l'ecran sans etre des
 		// resultats de recherche. Dans DuckDuckGo Lite elles portent la classe

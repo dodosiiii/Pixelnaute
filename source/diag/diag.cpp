@@ -1,4 +1,5 @@
 #include "diag.hpp"
+#include <3ds/allocator/linear.h>
 #include <stdio.h>
 
 static const char* g_stage = "boot";
@@ -40,7 +41,11 @@ void diagCrash(const char* reason)
 {
 	FILE* f = fopen("sdmc:/N3DSWeb/crash.txt", "a");
 	if (!f) return;
-	fprintf(f, "%s pendant : %s\n", reason ? reason : "arret", g_stage);
+	fprintf(f, "%s pendant : %s, heap=%lu, mem_app_libre=%lu, mem_lineaire_libre=%lu\n",
+		reason ? reason : "arret", g_stage,
+		(unsigned long)envGetHeapSize(),
+		(unsigned long)osGetMemRegionFree(MEMREGION_APPLICATION),
+		(unsigned long)linearSpaceFree());
 	fclose(f);
 }
 

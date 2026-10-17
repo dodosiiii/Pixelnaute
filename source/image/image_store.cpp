@@ -153,8 +153,9 @@ const StoredImage* ImageStore::fetch(const std::string& url,
 	}
 
 	HttpOptions opt;
-	opt.userAgent = "Mozilla/5.0 (Nintendo 3DS)";
-	opt.accept = "image/*";
+	opt.userAgent = NW_DEFAULT_USER_AGENT;
+	opt.accept = "image/png,image/jpeg,image/gif,image/bmp;q=0.9,*/*;q=0.1";
+	opt.referer = referer;
 	opt.verifyTls = false;
 	opt.timeoutMs = 6000;
 	// Les images sont volontairement bornees : au-dela, ce n'est pas une

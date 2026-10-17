@@ -1,8 +1,8 @@
 N3DSWeb diagnostic
-version=0.1.0
+version=0.3.0
 top=240x400 top_dump=ok
 ui=0x0 ui_dump=echec
-page_height=835 scroll=200 tabs=1
+page_height=757 scroll=200 tabs=1
 
 [police systeme]
 font_ready=1

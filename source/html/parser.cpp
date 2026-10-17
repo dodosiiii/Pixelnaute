@@ -22,14 +22,19 @@ static const NamedEntity kEntities[] =
 	{ "ntilde", 0x00F1 }, { "ograve", 0x00F2 }, { "oacute", 0x00F3 }, { "ocirc", 0x00F4 },
 	{ "otilde", 0x00F5 }, { "ouml", 0x00F6 }, { "oslash", 0x00F8 }, { "ugrave", 0x00F9 },
 	{ "uacute", 0x00FA }, { "ucirc", 0x00FB }, { "uuml", 0x00FC }, { "yuml", 0x00FF },
-	{ "szlig", 0x00DF }, { "eacute*", 0 }, // garde-fou (ne matche jamais)
+	{ "szlig", 0x00DF }, { "rarr", 0x2192 }, { "larr", 0x2190 }, { "uarr", 0x2191 },
+	{ "darr", 0x2193 }, { "hearts", 0x2665 }, { "thinsp", 0x2009 }, { "ensp", 0x2002 },
+	{ "emsp", 0x2003 }, { "check", 0x2713 }, { "le", 0x2264 }, { "ge", 0x2265 },
+	{ "ne", 0x2260 }, { "asymp", 0x2248 }, { "infin", 0x221E }, { "eacute*", 0 }, // garde-fou (ne matche jamais)
 	{ nullptr, 0 }
 };
 
 //-----------------------------------------------------------------------------
 // Decodage des entites a partir de 'pos' (pos doit pointer sur le '&')
+// Si requireSemicolon est vrai (cas des attributs), n'accepte que les entites
+// terminees par un point-virgule afin de ne pas corrompre les URLs (&section= etc)
 //-----------------------------------------------------------------------------
-size_t htmlDecodeEntity(const std::string& s, size_t pos, std::string& out)
+size_t htmlDecodeEntity(const std::string& s, size_t pos, std::string& out, bool requireSemicolon)
 {
 	size_t n = s.size();
 	if (pos >= n || s[pos] != '&') return pos + 1;
@@ -56,7 +61,13 @@ size_t htmlDecodeEntity(const std::string& s, size_t pos, std::string& out)
 		}
 		if (any)
 		{
-			if (i < n && s[i] == ';') i++;
+			bool hasSemi = (i < n && s[i] == ';');
+			if (hasSemi) i++;
+			if (requireSemicolon && !hasSemi)
+			{
+				out += '&';
+				return pos + 1;
+			}
 			if (val == 0 || val > 0x10FFFF) val = 0xFFFD;
 			utf8Append(out, val);
 			return i;
@@ -76,7 +87,7 @@ size_t htmlDecodeEntity(const std::string& s, size_t pos, std::string& out)
 				utf8Append(out, kEntities[k].cp);
 				return pos + 1 + len + 1;
 			}
-			if (len >= 2) // sans point-virgule (pratique courante)
+			if (!requireSemicolon && len >= 2) // sans point-virgule (uniquement hors attributs)
 			{
 				utf8Append(out, kEntities[k].cp);
 				return pos + 1 + len;
@@ -90,11 +101,11 @@ size_t htmlDecodeEntity(const std::string& s, size_t pos, std::string& out)
 
 //-----------------------------------------------------------------------------
 // Elements a contenu brut (pas de balises interpretées à l'interieur)
+// Note: pre, textarea et title decodent les entites et ne sont plus traites en brut.
 //-----------------------------------------------------------------------------
 static bool isRawTag(const std::string& tag)
 {
-	return tag == "script" || tag == "style" || tag == "textarea" || tag == "pre" ||
-		tag == "title" || tag == "xmp";
+	return tag == "script" || tag == "style" || tag == "xmp";
 }
 
 //-----------------------------------------------------------------------------
@@ -110,13 +121,55 @@ static bool isVoidTag(const std::string& tag)
 //-----------------------------------------------------------------------------
 // Regles de fermeture implicite (HTML5 tolérant)
 //-----------------------------------------------------------------------------
+static bool isBlockStart(const std::string& tag)
+{
+	static const char* blocks[] =
+	{
+		"address", "article", "aside", "blockquote", "body", "center", "dd", "div",
+		"dl", "dt", "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2",
+		"h3", "h4", "h5", "h6", "header", "hr", "main", "nav", "ol", "p",
+		"pre", "section", "select", "table", "textarea", "ul", nullptr
+	};
+	for (int i = 0; blocks[i]; ++i)
+		if (tag == blocks[i]) return true;
+	return false;
+}
+
 static bool autoCloses(const std::string& open, const std::string& newTag)
 {
-	if (open == "p") return true;
+	if (open == "p") return isBlockStart(newTag);
 	if (open == "li") return newTag == "li";
 	if (open == "tr" || open == "td" || open == "th") return newTag == "tr" || newTag == "td" || newTag == "th";
 	if (open == "dt" || open == "dd") return newTag == "dt" || newTag == "dd";
 	return false;
+}
+
+static bool rawCloseAt(const std::string& html, size_t pos, const std::string& tag)
+{
+	if (pos + tag.size() + 2 >= html.size() || html[pos] != '<' || html[pos + 1] != '/')
+		return false;
+	for (size_t i = 0; i < tag.size(); ++i)
+	{
+		char c = html[pos + 2 + i];
+		if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+		if (c != tag[i]) return false;
+	}
+	size_t end = pos + 2 + tag.size();
+	while (end < html.size() &&
+		(html[end] == ' ' || html[end] == '\t' || html[end] == '\r' || html[end] == '\n'))
+		++end;
+	return end < html.size() && html[end] == '>';
+}
+
+static size_t findRawClose(const std::string& html, size_t start, const std::string& tag)
+{
+	size_t pos = start;
+	while ((pos = html.find('<', pos)) != std::string::npos)
+	{
+		if (rawCloseAt(html, pos, tag)) return pos;
+		++pos;
+	}
+	return std::string::npos;
 }
 
 //-----------------------------------------------------------------------------
@@ -150,6 +203,29 @@ bool htmlParse(const std::string& html, Document& doc)
 		if (!textBuf.empty())
 		{
 			int cur = stack.back();
+			bool isPre = false;
+			for (int sIdx : stack)
+			{
+				const std::string& t = doc.nodes[sIdx].tag;
+				if (t == "pre" || t == "textarea")
+				{
+					isPre = true;
+					break;
+				}
+			}
+			if (!isPre)
+			{
+				bool onlyWs = true;
+				for (char ch : textBuf)
+				{
+					if ((unsigned char)ch > ' ') { onlyWs = false; break; }
+				}
+				if (onlyWs)
+				{
+					textBuf.clear();
+					return;
+				}
+			}
 			doc.createText(cur, textBuf);
 			textBuf.clear();
 		}
@@ -161,10 +237,13 @@ bool htmlParse(const std::string& html, Document& doc)
 
 	while (i < n)
 	{
-		if (doc.nodes.size() >= NW_MAX_DOM_NODES)
+		// Keep the DOM accumulated so far; a large page should render partially
+		// instead of being discarded as wholly invalid. Reserve room for a
+		// pending text node and a structural element created in one iteration.
+		if (doc.nodes.size() >= NW_MAX_DOM_NODES - 2)
 		{
-			doc.clear();
-			return false;
+			i = n;
+			break;
 		}
 
 		if (state == ST_DATA)
@@ -203,13 +282,20 @@ bool htmlParse(const std::string& html, Document& doc)
 				if (tag.empty()) { i++; continue; }
 				flushText();
 
+				bool selfClosing = false;
 				// Attributs
 				std::vector<Attribute> attrs;
 				while (j < n && html[j] != '>')
 				{
 					while (j < n && (html[j] == ' ' || html[j] == '\t' || html[j] == '\n' || html[j] == '\r')) j++;
 					if (j >= n || html[j] == '>') break;
-					if (html[j] == '/') { j++; break; }
+					if (html[j] == '/')
+					{
+						selfClosing = true;
+						j++;
+						while (j < n && (html[j] == ' ' || html[j] == '\t' || html[j] == '\n' || html[j] == '\r')) j++;
+						break;
+					}
 					std::string aname;
 					while (j < n && html[j] != '=' && html[j] != '>' && html[j] > ' ' && html[j] != '/')
 						aname += (char)(html[j] >= 'A' && html[j] <= 'Z' ? html[j] + 32 : html[j]), j++;
@@ -224,15 +310,63 @@ bool htmlParse(const std::string& html, Document& doc)
 						while (j < n)
 						{
 							if (q && html[j] == q) break;
-							if (!q && (html[j] == '>' || html[j] == ' ' || html[j] == '\t')) break;
-							if (html[j] == '&') { j = htmlDecodeEntity(html, j, aval); continue; }
+							if (!q && (html[j] == '>' || html[j] == ' ' || html[j] == '\t' || html[j] == '/')) break;
+							if (html[j] == '&') { j = htmlDecodeEntity(html, j, aval, true); continue; }
 							aval += html[j++];
 						}
 						if (q && j < n && html[j] == q) j++;
 					}
 					if (!aname.empty()) attrs.push_back({ aname, aval });
 				}
+				while (j < n && html[j] != '>')
+				{
+					if (html[j] == '/') selfClosing = true;
+					j++;
+				}
 				i = j < n ? j + 1 : n;
+
+				// Sauter les sous-arbres graphiques et invisibles (svg, template)
+				if (tag == "svg")
+				{
+					if (selfClosing) continue;
+					size_t p = findRawClose(html, i, "svg");
+					if (p != std::string::npos)
+					{
+						i = p + 6;
+						while (i < n && html[i] != '>') i++;
+						if (i < n) i++;
+					}
+					else i = n;
+					continue;
+				}
+				if (tag == "template")
+				{
+					if (selfClosing) continue;
+					size_t p = findRawClose(html, i, "template");
+					if (p != std::string::npos)
+					{
+						i = p + 11;
+						while (i < n && html[i] != '>') i++;
+						if (i < n) i++;
+					}
+					else i = n;
+					continue;
+				}
+
+				// Un nouveau bloc ferme le paragraphe ouvert et ses descendants inline.
+				if (isBlockStart(tag))
+				{
+					for (int k = (int)stack.size() - 1; k >= 1; --k)
+					{
+						if (doc.nodes[stack[k]].tag == "p")
+						{
+							stack.resize(k);
+							break;
+						}
+					}
+				}
+				while (stack.size() > 1 && autoCloses(doc.nodes[stack.back()].tag, tag))
+					stack.pop_back();
 
 				// Gestion structurelle html/head/body
 				int parentForNew = stack.back();
@@ -268,16 +402,7 @@ bool htmlParse(const std::string& html, Document& doc)
 
 				int node = doc.createElement(parentForNew, tag);
 				for (const auto& a : attrs) doc.setAttr(node, a.name, a.value);
-				if (isVoidTag(tag)) continue;
-
-				// Fermeture implicite des blocs precedents
-				while (stack.size() > 1)
-				{
-					int top = stack.back();
-					if (doc.nodes[top].tag == tag && doc.nodes[top].tag == "p") { stack.pop_back(); continue; }
-					if (autoCloses(doc.nodes[top].tag, tag)) { stack.pop_back(); continue; }
-					break;
-				}
+				if (isVoidTag(tag) || selfClosing) continue;
 
 				stack.push_back(node);
 				if (isRawTag(tag)) { state = ST_RAW; rawTag = tag; }
@@ -285,14 +410,13 @@ bool htmlParse(const std::string& html, Document& doc)
 			}
 
 			// Texte
-			if (c == '&') { i = htmlDecodeEntity(html, i, textBuf); continue; }
+			if (c == '&') { i = htmlDecodeEntity(html, i, textBuf, false); continue; }
 			textBuf += c;
 			i++;
 		}
 		else if (state == ST_RAW)
 		{
-			std::string close = "</" + rawTag + ">";
-			size_t p = html.find(close, i);
+			size_t p = findRawClose(html, i, rawTag);
 			int cur = stack.back();
 			if (cur != root && rawTag != "script")
 			{
@@ -302,7 +426,11 @@ bool htmlParse(const std::string& html, Document& doc)
 			if (p == std::string::npos) { i = n; state = ST_DATA; }
 			else
 			{
-				i = p + close.size();
+				i = p + rawTag.size() + 2;
+				while (i < n &&
+					(html[i] == ' ' || html[i] == '\t' || html[i] == '\r' || html[i] == '\n'))
+					++i;
+				++i;
 				for (int k = (int)stack.size() - 1; k >= 1; k--)
 					if (doc.nodes[stack[k]].tag == rawTag) { stack.resize(k); break; }
 				state = ST_DATA;
@@ -356,16 +484,34 @@ int htmlSelfTest()
 	}
 	{
 		Document doc;
+		htmlParse("<p>one<span>two</span><div>three</div>", doc);
+		int p = doc.firstByTag(doc.root, "p");
+		int span = doc.firstByTag(doc.root, "span");
+		int div = doc.firstByTag(doc.root, "div");
+		if (p < 0 || span < 0 || div < 0 || doc.nodes[span].parent != p ||
+			doc.nodes[div].parent != doc.nodes[p].parent)
+			fails++;
+	}
+	{
+		Document doc;
 		htmlParse("<html><body><script>large script text</script><p>visible</p></body></html>", doc);
 		int body = doc.firstByTag(doc.root, "body");
 		if (body < 0 || doc.textOf(body) != "visible") fails++;
 	}
 	{
-		std::string html;
-		for (int i = 0; i <= NW_MAX_DOM_NODES; i++)
-			html += "<i></i>";
 		Document doc;
-		if (htmlParse(html, doc) || !doc.empty()) fails++;
+		htmlParse("<script>hidden</SCRIPT ><p>shown</p>", doc);
+		if (doc.textOf(doc.root) != "shown") fails++;
+	}
+	{
+		std::string html;
+		html = "<p>early text survives</p>";
+		for (int i = 0; i < NW_MAX_DOM_NODES; i++)
+			html += "<i>x</i>";
+		Document doc;
+		if (!htmlParse(html, doc) || doc.nodes.size() > NW_MAX_DOM_NODES ||
+			doc.textOf(doc.root).find("early text survives") == std::string::npos)
+			fails++;
 	}
 	{
 		std::string html = "<div>";
@@ -375,6 +521,32 @@ int htmlSelfTest()
 		html += "</div>";
 		Document doc;
 		if (!htmlParse(html, doc) || doc.title() != "Deep title") fails++;
+	}
+	{
+		// Test entites dans attributs : &section=2 ne doit PAS devenir §ion=2
+		Document doc;
+		htmlParse("<a href=\"/test?a=1&section=2&copy=3&amp;real=1\">link</a>", doc);
+		int a = doc.firstByTag(doc.root, "a");
+		if (a < 0) fails++;
+		else {
+			const char* h = doc.nodes[a].getAttr("href");
+			if (!h || std::string(h) != "/test?a=1&section=2&copy=3&real=1") fails++;
+		}
+	}
+	{
+		// Test self-closing et svg skip
+		Document doc;
+		htmlParse("<div><svg><path d=\"M0 0\"/><circle r=\"5\"/></svg><p>apres</p></div>", doc);
+		int p = doc.firstByTag(doc.root, "p");
+		if (p < 0 || doc.textOf(p) != "apres") fails++;
+		if (doc.firstByTag(doc.root, "path") >= 0) fails++;
+	}
+	{
+		// Test <pre> avec balises internes et entites
+		Document doc;
+		htmlParse("<pre><code>&lt;hello&gt;</code></pre>", doc);
+		int code = doc.firstByTag(doc.root, "code");
+		if (code < 0 || doc.textOf(code) != "<hello>") fails++;
 	}
 	return fails;
 }

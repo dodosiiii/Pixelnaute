@@ -108,7 +108,7 @@ private:
 	std::vector<std::string> pendingImages_;
 	std::string pendingImagesReferer_;
 
-	void loadUrlInto(int tabIdx, const std::string& url, bool record);
+	void loadUrlInto(int tabIdx, const std::string& url, bool record, const std::string& method = "GET", const std::string& postData = "");
 	void resetTab(Tab& t);
 	void cancelTabRequest(int tabIdx);
 	void onResponse(NetResponse& resp);

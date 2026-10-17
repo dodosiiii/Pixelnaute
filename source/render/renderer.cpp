@@ -94,7 +94,6 @@ void PageRenderer::upload(const PageModel& page, int scrollY)
 		}
 	}
 
-	C3D_TexUpload(&tex, texData);
 	dirty_ = false;
 	lastScroll_ = y0;
 
@@ -117,7 +116,10 @@ void PageRenderer::draw(const PageModel& page, int scrollY)
 	if (page.height <= 0) return;
 
 	if (dirty_ || scrollY != lastScroll_ || layoutH_ != page.height || layoutW_ != page.bmp.w)
+	{
 		upload(page, scrollY);
+		drawImages(page, scrollY);
+	}
 
 	C2D_DrawParams params;
 	memset(&params, 0, sizeof(params));
@@ -128,35 +130,17 @@ void PageRenderer::draw(const PageModel& page, int scrollY)
 	params.depth = 0.0f;
 
 	C2D_DrawImage(image, &params, NULL);
-
-	// Les vignettes sont dessinees par-dessus la texture de page : elles
-	// viennent du cache et ne font pas partie du bitmap de page.
-	drawImages(page, scrollY);
 }
 
 //--------------------------------------------------------------------------
 // Dessine les images de la page.
-//
-// Rappel des reperes :
-//   - la mise en page travaille en coordonnees de page : x sur 400 (largeur de
-//     l'ecran), y sur la hauteur de la page ;
-//   - gfxGetFramebuffer renvoie un framebuffer range en colonnes : sa
-//     "largeur" vaut 240 (les lignes de l'ecran) et sa "hauteur" 400 (les
-//     colonnes de l'ecran). D'ou l'indice offset = x * fbWidth + (fbWidth-1-y).
-//
-// Chaque vignette est recadree selon le defilement, puis echantillonnee pour
-// occuper le rectangle prevu par la mise en page.
 //--------------------------------------------------------------------------
 void PageRenderer::drawImages(const PageModel& page, int scrollY)
 {
-	if (!images_ || page.images.empty()) return;
+	if (!images_ || page.images.empty() || !texReady || !texData) return;
 
-	u16 fbWidth = 0, fbHeight = 0;   // fbWidth = 240 (lignes), fbHeight = 400
-	u16* fb = (u16*)gfxGetFramebuffer(GFX_TOP, GFX_LEFT, &fbWidth, &fbHeight);
-	if (!fb) return;
-
-	const int screenCols = (int)fbHeight;   // 400
-	const int screenRows = (int)fbWidth;    // 240
+	int tilesX = TEX_W / 8;
+	uint16_t* dst = (uint16_t*)texData;
 
 	for (const auto& box : page.images)
 	{
@@ -164,23 +148,20 @@ void PageRenderer::drawImages(const PageModel& page, int scrollY)
 		if (!img || !img->valid || img->pixels.empty()) continue;
 		if (box.w <= 0 || box.h <= 0 || img->width <= 0 || img->height <= 0) continue;
 
-		// Ligne d'ecran ou commence et finit l'image.
 		int row0 = box.y - scrollY;
 		int row1 = row0 + box.h;
-		if (row1 <= 0 || row0 >= screenRows) continue;
+		if (row1 <= 0 || row0 >= VIEW_H) continue;
 		if (row0 < 0) row0 = 0;
-		if (row1 > screenRows) row1 = screenRows;
+		if (row1 > VIEW_H) row1 = VIEW_H;
 
-		// Colonnes occupees.
 		int col0 = box.x;
 		int col1 = box.x + box.w;
 		if (col0 < 0) col0 = 0;
-		if (col1 > screenCols) col1 = screenCols;
+		if (col1 > VIEW_W) col1 = VIEW_W;
 		if (col1 <= col0) continue;
 
 		for (int row = row0; row < row1; row++)
 		{
-			// Position verticale dans la boite (0..box.h-1).
 			const int boxY = (row + scrollY) - box.y;
 			const int srcY = boxY * img->height / box.h;
 			if (srcY < 0 || srcY >= img->height) continue;
@@ -191,11 +172,10 @@ void PageRenderer::drawImages(const PageModel& page, int scrollY)
 				const int srcX = boxX * img->width / box.w;
 				if (srcX < 0 || srcX >= img->width) continue;
 
-				const size_t offset = (size_t)col * fbWidth +
-					(fbWidth - 1 - (u16)row);
-				if (offset >= (size_t)fbWidth * fbHeight) continue;
-				fb[offset] = img->pixels[(size_t)srcY * img->width + srcX];
+				uint16_t px = img->pixels[(size_t)srcY * img->width + srcX];
+				dst[mortonTileIndex(col, row, tilesX)] = px;
 			}
 		}
 	}
+	C3D_TexUpload(&tex, texData);
 }
