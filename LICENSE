@@ -1,16 +1,35 @@
-MIT License
+Pixelnaute Attribution License (custom)
+Version 1.0, 2026
 
-Copyright (c) 2026
+Copyright (c) 2026 @dodosiiii
+Original project: Pixelnaute
+https://github.com/dodosiiii/Pixelnaute
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This license applies only to original Pixelnaute code and materials created
+for this project. It does not replace or change the licenses of third-party
+components, fonts, or other materials included with or used by Pixelnaute.
+Those components remain under their own notices and licenses.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Permission is granted, free of charge, to any person obtaining a copy of the
+covered Pixelnaute material (the "Software"), to use, reproduce, modify,
+merge, publish, distribute, sublicense, and/or sell copies of the Software,
+and to permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+1. Attribution must be preserved. Any copy or substantial portion of the
+   Software, including a modified version or a binary distribution, must be
+   accompanied by this license and the attribution notice below. The notice
+   may be provided in the license file, documentation, credits screen, or an
+   equivalent attribution file distributed with the Software.
+
+   Attribution notice: "Original project: Pixelnaute by @dodosiiii
+   (https://github.com/dodosiiii/Pixelnaute)."
+
+2. Modified versions must clearly identify that they have been modified and
+   must not present the original Pixelnaute project, or the complete modified
+   version, as having been created solely by the person redistributing it.
+   This condition does not prevent a modifier from identifying their own
+   contributions.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,

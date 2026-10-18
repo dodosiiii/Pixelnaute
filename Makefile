@@ -51,7 +51,7 @@ ROMFS		:=	romfs
 
 APP_TITLE		:=	Pixelnaute
 APP_DESCRIPTION	:=	Navigateur web autonome pour New 3DS
-APP_AUTHOR		:=	Pixelnaute
+APP_AUTHOR		:=	dodosiiii
 ICON			:=	assets/icon.png
 
 

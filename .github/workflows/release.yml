@@ -21,4 +21,6 @@ jobs:
           make
       - uses: softprops/action-gh-release@v2
         with:
-          files: N3DSWeb.3dsx
+          files: |
+            N3DSWeb.3dsx
+            LICENSE

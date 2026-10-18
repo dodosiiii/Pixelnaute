@@ -221,8 +221,15 @@ diagnostic, indiquez :
    de `sdmc:/N3DSWeb/` (vérifiez qu’ils ne contiennent pas d’informations
    personnelles avant de les partager).
 
-## Licence
+## Licence et attribution
 
-Pixelnaute est distribué sous licence [MIT](./LICENSE).
+Le code et les éléments originaux de Pixelnaute sont distribués sous la
+[licence avec attribution Pixelnaute](./LICENSE). Toute redistribution, y
+compris d'une version modifiée ou binaire, doit conserver le crédit à
+**@dodosiiii** et ne doit pas présenter le projet original comme ayant été
+créé seul par la personne qui le redistribue.
+
+La licence du projet ne remplace pas celles des composants tiers. Leurs avis
+de copyright et licences respectifs restent applicables.
 
 [releases GitHub]: https://github.com/dodosiiii/Pixelnaute/releases
