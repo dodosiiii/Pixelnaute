@@ -639,7 +639,9 @@ void BottomUi::drawAbout()
 
 	text(bmp_, "Aucun PC, aucun proxy : la console se connecte seule.", 12, 172, 0.72f, C_TEXT_D);
 	text(bmp_, "Moteur de recherche reglable dans Reglages.", 12, 194, 0.72f, C_TEXT_D);
-	text(bmp_, "Touchez l'ecran pour revenir.", 12, 198, 0.7f, C_TEXT_DD);
+	text(bmp_, "Projet original : @dodosiiii", 12, 213, 0.65f, C_TEXT_DD);
+	text(bmp_, "github.com/dodosiiii/Pixelnaute", 12, 226, 0.55f, C_TEXT_DD);
+	text(bmp_, "Touchez l'ecran pour revenir.", 12, 200, 0.55f, C_TEXT_DD);
 }
 
 //--------------------------------------------------------------------------

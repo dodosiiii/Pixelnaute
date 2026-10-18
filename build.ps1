@@ -83,7 +83,7 @@ if ($LASTEXITCODE -ne 0) { throw "Echec de l'edition de liens." }
 $icon = Join-Path $root "assets\icon.png"
 if (-not (Test-Path "$target.smdh") -and (Test-Path $icon)) {
     & (Join-Path $toolbin "smdhtool.exe") --create "N3DS Web" `
-        "Navigateur web autonome pour New 3DS" "N3DSWeb" $icon "$target.smdh"
+        "Navigateur web autonome pour New 3DS" "dodosiiii" $icon "$target.smdh"
 }
 
 $romfsArg = @()
