@@ -121,7 +121,8 @@ void PageLayout::restoreRegion(int x, int y, int w, int h)
 		for (int col = 0; col < rowWidth; col++)
 		{
 			if (index >= regionSave_.size()) { regionSave_.clear(); return; }
-			dst[col] = regionSave_[index++];
+			const uint16_t saved = regionSave_[index++];
+			if (saved != pageBg565_) dst[col] = saved;
 		}
 	}
 	regionSave_.clear();
@@ -144,7 +145,7 @@ void PageLayout::drawTextWrapped(const std::string& text, const Style& st, bool 
 
 	float scale = baseScale_ * st.scale();
 	if (mono) scale *= 0.92f;
-	uint32_t col = st.colorSet ? st.color : C_TEXT;
+	uint32_t col = st.colorSet ? st.color : defaultTextColor_;
 	bool bold = st.bold;
 	int pitch = te.linePitch(scale);
 
@@ -283,13 +284,13 @@ void PageLayout::renderNode(int idx, const Style& st)
 			if (h > 160) h = 160;
 			if (ix_ + w > x1_) newline(0);
 			// case d'image (decode en V0.2)
-			(*target_).addRect(ix_, iy_, w, h, 0x666677FF, 1);
-			(*target_).fillRect(ix_ + 1, iy_ + 1, w - 2, h - 2, 0x3A3A46FF);
+			(*target_).addRect(ix_, iy_, w, h, 0xFF776666, 1);
+			(*target_).fillRect(ix_ + 1, iy_ + 1, w - 2, h - 2, 0xFF463A3A);
 			std::string alt = node.getAttr("alt") ? node.getAttr("alt") : "";
 			if (!alt.empty())
 			{
 				TextEngine& te = TextEngine::instance();
-				te.drawLine((*target_), alt, ix_ + 3, iy_ + 2, 0.6f, 0x9A9AA8FF, false, false);
+				te.drawLine((*target_), alt, ix_ + 3, iy_ + 2, 0.6f, 0xFFA89A9A, false, false);
 			}
 			const char* src = node.getAttr("src");
 			// L'adresse est resolue ici : le magasin d'images doit recevoir
@@ -306,7 +307,7 @@ void PageLayout::renderNode(int idx, const Style& st)
 		{
 			newline(0);
 			int y = iy_ + 2;
-			(*target_).fillRect(x0_, y, x1_ - x0_, 1, 0x8A8A96FF);
+			(*target_).fillRect(x0_, y, x1_ - x0_, 1, 0xFF968A8A);
 			by_ = iy_ = y + 5;
 			ix_ = x0_;
 			return;
@@ -365,8 +366,8 @@ void PageLayout::renderNode(int idx, const Style& st)
 				if (label.empty()) label = "OK";
 				int bw = (int)TextEngine::instance().measure(label, baseScale_ * 0.9f) + 16;
 				if (bw < 48) bw = 48;
-				(*target_).fillRect(ix_, iy_, bw, 22, 0x2E5A9EFF);
-				(*target_).addRect(ix_, iy_, bw, 22, 0x9AB8E4FF, 1);
+				(*target_).fillRect(ix_, iy_, bw, 22, 0xFF9E5A2E);
+				(*target_).addRect(ix_, iy_, bw, 22, 0xFFE4B89A, 1);
 				TextEngine::instance().drawLine((*target_), label, ix_ + 8, iy_ + 3, baseScale_ * 0.9f, C_WHITE, true, false);
 				FormSubmit fs;
 				fs.x = ix_; fs.y = iy_; fs.w = bw; fs.h = 22;
@@ -383,7 +384,7 @@ void PageLayout::renderNode(int idx, const Style& st)
 
 			newline(0);
 			(*target_).fillRect(ix_, iy_, w, h, 0xFFF4F4F4);
-			(*target_).addRect(ix_, iy_, w, h, 0x8A8A96FF, 1);
+			(*target_).addRect(ix_, iy_, w, h, 0xFF968A8A, 1);
 			std::string val = node.getAttr("value") ? node.getAttr("value") : "";
 			if (tag == "select")
 			{
@@ -416,10 +417,10 @@ void PageLayout::renderNode(int idx, const Style& st)
 				int sz = 14;
 				w = sz; h = sz;
 				(*target_).fillRect(ix_, iy_ + 2, sz, sz, 0xFFFFFFFF);
-				(*target_).addRect(ix_, iy_ + 2, sz, sz, 0x8A8A96FF, 1);
+				(*target_).addRect(ix_, iy_ + 2, sz, sz, 0xFF968A8A, 1);
 				if (checked)
 				{
-					(*target_).fillRect(ix_ + 3, iy_ + 5, sz - 6, sz - 6, 0x2E5A9EFF);
+					(*target_).fillRect(ix_ + 3, iy_ + 5, sz - 6, sz - 6, 0xFF9E5A2E);
 				}
 			}
 			else if (!val.empty())
@@ -455,7 +456,9 @@ void PageLayout::renderNode(int idx, const Style& st)
 			(tag == "div") || (tag == "section") || (tag == "article") ||
 			(tag == "header") || (tag == "footer") || (tag == "nav") ||
 			(tag == "aside") || (tag == "a" && st.block);
-		if (isContainer && (st.bgSet || st.paddingLeft > 0 || st.paddingRight > 0))
+		if (isContainer && (st.bgSet || st.paddingLeft > 0 || st.paddingRight > 0 ||
+			st.width > 0 || st.minWidth > 0 || st.maxWidth > 0 || st.flex ||
+			st.marginLeftAuto || st.marginRightAuto))
 		{
 			newline(0);
 			if (st.marginTop > 0) by_ += st.marginTop;
@@ -472,6 +475,18 @@ void PageLayout::renderNode(int idx, const Style& st)
 			}
 
 			const int savedX0c = x0_, savedX1c = x1_;
+			const int availableWidth = std::max(1, savedX1c - savedX0c);
+			int containerWidth = st.width > 0 ? st.width : availableWidth;
+			if (st.maxWidth > 0) containerWidth = std::min(containerWidth, st.maxWidth);
+			if (st.minWidth > 0) containerWidth = std::max(containerWidth, st.minWidth);
+			if (st.borderBox && st.width > 0)
+				containerWidth = std::max(1, containerWidth - st.paddingLeft - st.paddingRight);
+			containerWidth = std::min(containerWidth, availableWidth);
+			if (st.marginLeftAuto && st.marginRightAuto && containerWidth < availableWidth)
+				x0_ = savedX0c + (availableWidth - containerWidth) / 2;
+			else if (st.marginLeftAuto && containerWidth < availableWidth)
+				x0_ = savedX1c - containerWidth;
+			x1_ = std::min(savedX1c, x0_ + containerWidth);
 			// Bornes du fond : toute la largeur disponible, padding compris.
 			const int bgX0 = x0_ + st.paddingLeft;
 			const int bgX1 = x1_ - st.paddingRight;
@@ -479,18 +494,7 @@ void PageLayout::renderNode(int idx, const Style& st)
 			// La hauteur du bloc n'est pas connue avant d'avoir rendu ses
 			// enfants : elle est mesuree plus bas, puis le fond est peint sous
 			// le contenu (voir saveRegion/restoreRegion).
-			const bool bgTracked = st.bgSet && blockBackgrounds_.size() < 512;
-			if (bgTracked)
-			{
-				BlockBackground bg;
-				bg.x0 = bgX0;
-				bg.x1 = bgX1;
-				bg.y0 = bgY0;
-				bg.height = 0;
-				bg.color = st.bg;
-				bg.hasColor = true;
-				blockBackgrounds_.push_back(bg);
-			}
+			const bool hasBlockBackground = st.bgSet;
 
 			if (st.paddingLeft > 0) x0_ += st.paddingLeft;
 			if (st.paddingRight > 0) x1_ -= st.paddingRight;
@@ -516,7 +520,47 @@ void PageLayout::renderNode(int idx, const Style& st)
 						linkHref_ = joinUrl(pageUrl_, href);
 					}
 				}
-				for (int c : node.children) resolveAndRender(c, contentStyle);
+				if (st.flex && st.flexRow && !st.flexWrap && node.children.size() > 1)
+				{
+					const int flexX0 = x0_, flexX1 = x1_;
+					const int flexY = by_;
+					const int flexWidth = flexX1 - flexX0;
+					std::vector<int> itemWidths;
+					itemWidths.reserve(node.children.size());
+					int totalItemsWidth = 0;
+					for (int child : node.children)
+					{
+						const Style itemStyle = css_->resolve(*doc_, child, contentStyle);
+						int itemWidth = itemStyle.width;
+						if (itemWidth <= 0)
+						{
+						const std::string label = strTrim(doc_->textOf(child));
+						itemWidth = label.empty() ? 48 : (int)TextEngine::instance().measure(label, baseScale_ * itemStyle.scale());
+						itemWidth += itemStyle.paddingLeft + itemStyle.paddingRight + 8;
+					}
+					itemWidth = std::max(24, std::min(itemWidth, flexWidth));
+					itemWidths.push_back(itemWidth);
+					totalItemsWidth += itemWidth;
+				}
+				int gap = 0;
+				int cursor = flexX0;
+				if (st.justifyContent == 1)
+					cursor += std::max(0, (flexWidth - totalItemsWidth) / 2);
+				else if (st.justifyContent == 2 && node.children.size() > 1)
+					gap = std::max(0, (flexWidth - totalItemsWidth) / ((int)node.children.size() - 1));
+					int maxBottom = flexY;
+					for (size_t i = 0; i < node.children.size(); ++i)
+					{
+						x0_ = cursor;
+						x1_ = std::min(flexX1, cursor + itemWidths[i]);
+						ix_ = x0_; iy_ = by_ = flexY; lineMaxH_ = 0;
+						resolveAndRender(node.children[i], contentStyle);
+						if (by_ > maxBottom) maxBottom = by_;
+						cursor = x1_ + gap;
+					}
+					x0_ = flexX0; x1_ = flexX1; by_ = maxBottom; iy_ = by_; ix_ = x0_;
+				}
+				else for (int c : node.children) resolveAndRender(c, contentStyle);
 				linkActive_ = prevActive;
 				linkHref_ = prevHref;
 			}
@@ -525,7 +569,7 @@ void PageLayout::renderNode(int idx, const Style& st)
 			if (by_ < bgY0 + 8) by_ = bgY0 + 8;   // bloc vide : garder le fond
 			// Interrupteur de diagnostic : NW_NO_BLOCK_BG=1 desactive la
 			// peinture des fonds de blocs, pour isoler son effet.
-			if (bgTracked)
+			if (hasBlockBackground)
 #ifdef NW_NO_BLOCK_BG
 			{
 				// desactive volontairement
@@ -577,7 +621,7 @@ void PageLayout::renderNode(int idx, const Style& st)
 					std::string marker = (tag == "ol") ? itos(listItem) + "." : "-";
 					TextEngine& te = TextEngine::instance();
 					float mw = te.measure(marker + " ", baseScale_);
-					te.drawLine((*target_), marker + " ", x0_ - 14, iy_, baseScale_, 0xC9C9D4FF, false, false);
+					te.drawLine((*target_), marker + " ", x0_ - 14, iy_, baseScale_, 0xFFD4C9C9, false, false);
 					ix_ = x0_ - 14 + (int)mw;
 					resolveAndRender(c, st);
 					(void)mw;
@@ -660,7 +704,7 @@ void PageLayout::renderNode(int idx, const Style& st)
 			int savedX0 = x0_, savedX1 = x1_, savedIx = ix_;
 			newline(0);
 			x0_ += 12; x1_ -= 4; ix_ = x0_;
-			(*target_).vline(x0_ - 8, iy_, iy_ + 2, 0x8A8A96FF);
+			(*target_).vline(x0_ - 8, iy_, iy_ + 2, 0xFF968A8A);
 			for (int c : node.children) resolveAndRender(c, st);
 			x0_ = savedX0; x1_ = savedX1; ix_ = savedIx;
 			newline(0);
@@ -686,7 +730,7 @@ void PageLayout::renderNode(int idx, const Style& st)
 						size_t nl = raw.find('\n', start);
 						std::string lineStr = (nl == std::string::npos) ? raw.substr(start) : raw.substr(start, nl - start);
 						if (!lineStr.empty() && lineStr.back() == '\r') lineStr.pop_back();
-						te.drawLine((*target_), lineStr, ix_, iy_, scale, 0xCFCFDAFF, false, false);
+						te.drawLine((*target_), lineStr, ix_, iy_, scale, 0xFFDACFCF, false, false);
 						by_ = iy_ += pitch;
 						ix_ = x0_;
 						if (nl == std::string::npos) break;
@@ -859,16 +903,52 @@ bool PageLayout::render(PageModel& out, const std::string& pageUrl)
 	}
 	// Surface de dessin par defaut : la page elle-meme.
 	target_ = &out.bmp;
+	TextEngine& te = TextEngine::instance();
+	if (!te.ready()) te.init();
+
+	// corps de la page : <body> ou <html> ou racine
+	int body = doc_->firstByTag(doc_->root, "body");
+	if (body < 0) body = doc_->firstByTag(doc_->root, "html");
+	if (body < 0) body = doc_->root;
+
 	const bool isInternal = strStartsWith(toLower(pageUrl), "nw://") || strStartsWith(toLower(pageUrl), "nw:/");
-	uint32_t defaultBg = 0xFFFFFFFF; // Fond blanc pour le web standard
-	uint32_t defaultText = 0xFF202020; // Texte sombre standard
-	if (isInternal)
+	uint32_t defaultBg = isInternal ? 0xFF1A1317 : 0xFFFFFFFF; // Fond sombre prune interne ou blanc web standard
+	uint32_t defaultText = isInternal ? C_TEXT : 0xFF202020; // Texte clair interne ou sombre standard
+
+	Style rootSt = defaultStyle();
+	rootSt.color = defaultText;
+	rootSt.colorSet = true;
+
+	// Peindre le fond du body/html sur toute la page et heriter la couleur
+	int htmlNode = doc_->firstByTag(doc_->root, "html");
+	if (htmlNode >= 0)
 	{
-		defaultBg = 0xFF1A1317; // Fond sombre prune interne
-		defaultText = C_TEXT;
+		Style htmlSt = css_->resolve(*doc_, htmlNode, rootSt);
+		if (htmlSt.bgSet) defaultBg = htmlSt.bg;
+		if (htmlSt.colorSet) { defaultText = htmlSt.color; rootSt.color = defaultText; }
 	}
+	if (body >= 0 && body != htmlNode)
+	{
+		Style bodySt = css_->resolve(*doc_, body, rootSt);
+		if (bodySt.bgSet) defaultBg = bodySt.bg;
+		if (bodySt.colorSet) { defaultText = bodySt.color; rootSt.color = defaultText; }
+	}
+
+	// Si le fond est sombre et que la couleur de texte n'a pas ete explicitement definie
+	if (!rootSt.colorSet || (defaultBg != 0xFFFFFFFF && defaultText == 0xFF202020))
+	{
+		uint32_t r = defaultBg & 0xFF;
+		uint32_t g = (defaultBg >> 8) & 0xFF;
+		uint32_t b = (defaultBg >> 16) & 0xFF;
+		int lum = (int)(r * 299 + g * 587 + b * 114) / 1000;
+		defaultText = lum < 128 ? C_TEXT : 0xFF202020;
+		rootSt.color = defaultText;
+		rootSt.colorSet = true;
+	}
+
+	defaultTextColor_ = defaultText;
 	(*target_).clear(defaultBg);
-	blockBackgrounds_.clear();
+	pageBg565_ = target_->px ? target_->px[0] : 0xFFFF;
 
 	x0_ = 4; x1_ = NW_PAGE_WIDTH - 4;
 	ix_ = x0_; iy_ = 0; by_ = 0; lineMaxH_ = 0;
@@ -876,28 +956,10 @@ bool PageLayout::render(PageModel& out, const std::string& pageUrl)
 	formCounter_ = 0; curFormId_ = -1; curFormAction_.clear(); curFormMethod_.clear();
 	linkActive_ = false; linkHref_.clear();
 
-	// corps de la page : <body> ou <html> ou racine
-	int body = doc_->firstByTag(doc_->root, "body");
-	if (body < 0) body = doc_->firstByTag(doc_->root, "html");
-	if (body < 0) body = doc_->root;
-
-	Style rootSt = defaultStyle();
-	rootSt.color = defaultText;
-	rootSt.colorSet = true;
 	resolveAndRender(body, rootSt);
 
 	// fin : ferme la derniere ligne
 	if (by_ < iy_ + lineMaxH_) by_ = iy_ + lineMaxH_;
-
-	// Fonds des blocs : peints maintenant, une fois leur hauteur connue. Ils
-	// passent donc SOUS le texte deja dessine, ce qui est l'effet recherche
-	// (le fond d'une carte ne doit pas masquer son contenu).
-	for (const auto& bg : blockBackgrounds_)
-	{
-		if (!bg.hasColor || bg.height <= 0) continue;
-		(*target_).fillRect(bg.x0, bg.y0, bg.x1 - bg.x0, bg.height, bg.color);
-	}
-	blockBackgrounds_.clear();
 
 	out.height = by_ + 2;
 	if (out.height > cap) out.height = cap;

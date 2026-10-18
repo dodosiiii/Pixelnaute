@@ -252,6 +252,8 @@ void BottomUi::openInternal(const std::string& url)
 	else if (u == "nw://home" || u == "nw:/home") mode_ = UiMode::Browsing;
 	else return;
 	listOffset_ = 0;
+	listSel_ = 0;
+	pendingBookmarkDelete_.clear();
 	dirty_ = true;
 }
 
@@ -310,7 +312,7 @@ void BottomUi::drawAddressBar(Browser& b, NetworkManager& net)
 	if (editing)
 		roundRectOutline(bmp_, 6, 31, 308, 25, 12, C_ACCENT, 1);
 
-	// Petite icone : cadenas si HTTPS, loupe en saisie.
+	// Petite icone : loupe en saisie, pastille verte (HTTPS), orange (HTTP).
 	const int iconX = 16;
 	if (editing)
 	{
@@ -324,36 +326,79 @@ void BottomUi::drawAddressBar(Browser& b, NetworkManager& net)
 	else
 	{
 		const std::string u = b.currentTab().url;
-		const bool secure = strStartsWith(u, "https://");
-		const uint32_t c = secure ? C_GREEN : C_TEXT_DD;
-		// corps du cadenas
-		roundRect(bmp_, iconX - 1, 41, 9, 7, 2, c);
-		// anse
-		bmp_.fillRect(iconX, 38, 1, 3, c);
-		bmp_.fillRect(iconX + 6, 38, 1, 3, c);
-		bmp_.fillRect(iconX + 1, 37, 5, 1, c);
+		const bool isHttps = strStartsWith(toLower(u), "https://");
+		const bool isHttp = strStartsWith(toLower(u), "http://");
+		const uint32_t dotCol = isHttps ? C_GREEN : (isHttp ? C_ORANGE : C_TEXT_DD);
+		roundRect(bmp_, iconX, 40, 7, 7, 3, dotCol);
 	}
 
-	std::string shown;
-	uint32_t color = C_TEXT;
 	if (editing)
 	{
-		shown = buf_;
+		std::string schema;
+		std::string rest = buf_;
+		if (strStartsWith(toLower(rest), "https://"))
+		{
+			schema = rest.substr(0, 8);
+			rest = rest.substr(8);
+		}
+		else if (strStartsWith(toLower(rest), "http://"))
+		{
+			schema = rest.substr(0, 7);
+			rest = rest.substr(7);
+		}
+
+		int curX = 30;
+		if (!schema.empty())
+		{
+			text(bmp_, schema, curX, 36, 0.82f, C_TEXT_DD);
+			curX += textW(schema, 0.82f);
+		}
+		const int restAvailW = 274 - (curX - 30);
+		const std::string fittedRest = fitStr(rest, restAvailW > 20 ? restAvailW : 20, 0.82f);
+		text(bmp_, fittedRest, curX, 36, 0.82f, C_TEXT);
+
 		if ((timeMs() / 450) & 1)
 		{
-			const int cx = 30 + textW(shown, 0.82f);
-			bmp_.fillRect(cx, 36, 2, 15, C_ACCENT);
+			const int cx = 30 + textW(buf_, 0.82f);
+			if (cx < 304) bmp_.fillRect(cx, 36, 2, 15, C_ACCENT);
 		}
 	}
 	else
 	{
 		Browser::Tab& t = b.currentTab();
-		shown = t.url.empty() ? "Rechercher ou saisir une adresse" : t.url;
-		if (t.url.empty()) color = C_TEXT_DD;
-		else if (net.busy()) color = C_ACCENT;
+		const std::string u = t.url;
+		const bool isHome = u.empty() || toLower(u) == "nw://home" || toLower(u) == "nw:/home";
+		if (isHome)
+		{
+			text(bmp_, fitStr("Rechercher ou saisir une adresse", 274, 0.82f), 30, 36, 0.82f, C_TEXT_DD);
+		}
+		else
+		{
+			std::string schema;
+			std::string rest = u;
+			if (strStartsWith(toLower(rest), "https://"))
+			{
+				schema = rest.substr(0, 8);
+				rest = rest.substr(8);
+			}
+			else if (strStartsWith(toLower(rest), "http://"))
+			{
+				schema = rest.substr(0, 7);
+				rest = rest.substr(7);
+			}
+
+			const uint32_t restColor = net.busy() ? C_ACCENT : C_TEXT;
+			int curX = 30;
+			if (!schema.empty())
+			{
+				text(bmp_, schema, curX, 36, 0.82f, C_TEXT_DD);
+				curX += textW(schema, 0.82f);
+			}
+			const int restAvailW = 274 - (curX - 30);
+			const std::string fittedRest = fitStr(rest, restAvailW > 20 ? restAvailW : 20, 0.82f);
+			text(bmp_, fittedRest, curX, 36, 0.82f, restColor);
+		}
 	}
-	const std::string fitted = fitStr(shown, 274, 0.82f);
-	text(bmp_, fitted, 30, 36, 0.82f, color);
 }
 
 void BottomUi::drawNavRow(Browser& b, NetworkManager& net)
@@ -361,30 +406,47 @@ void BottomUi::drawNavRow(Browser& b, NetworkManager& net)
 	const int w = 50;
 	const int gap = 2;
 
+	const bool canBack    = b.canGoBack();
+	const bool canForward = b.canGoForward();
+	const bool loading    = net.busy();
+
 	for (int i = 0; i < 6; i++)
 	{
-		const int x = 4 + i * (w + gap);
+		const int x  = 4 + i * (w + gap);
 		const int cx = x + w / 2;
 		const int cy = 73;
 
-		roundRect(bmp_, x, 61, w, 24, 8, C_SURFACE);
+		// Bouton appuye (feedback visuel)
+		const bool pressed = (touchNav_ == i);
+		const uint32_t bg = pressed ? C_SURFACE2 : C_SURFACE;
+		roundRect(bmp_, x, 61, w, 24, 8, bg);
+
+		// Couleur du glyph : grise si action impossible
+		uint32_t col;
+		switch (i)
+		{
+			case 0: col = canBack    ? C_TEXT : C_TEXT_DD; break; // retour
+			case 1: col = canForward ? C_TEXT : C_TEXT_DD; break; // avant
+			case 2: col = C_TEXT; break;                          // accueil
+			case 3: col = loading    ? C_ACCENT : C_TEXT; break;  // reload/stop
+			case 4: col = b.count() > 1 ? C_ACCENT : C_TEXT; break; // onglets
+			case 5: col = C_TEXT; break;                          // menu
+		}
 
 		switch (i)
 		{
-			case 0: navGlyph(bmp_, 0, cx, cy, C_TEXT); break;   // retour
-			case 1: navGlyph(bmp_, 1, cx, cy, C_TEXT); break;   // avant
-			case 2: navGlyph(bmp_, 2, cx, cy, C_TEXT); break;   // accueil
-			case 3:                                             // recharger / arreter
-				navGlyph(bmp_, net.busy() ? 4 : 3, cx, cy,
-					net.busy() ? C_ACCENT : C_TEXT);
+			case 0: navGlyph(bmp_, 0, cx, cy, col); break;   // retour
+			case 1: navGlyph(bmp_, 1, cx, cy, col); break;   // avant
+			case 2: navGlyph(bmp_, 2, cx, cy, col); break;   // accueil
+			case 3:                                           // recharger / arreter
+				navGlyph(bmp_, loading ? 4 : 3, cx, cy, col);
 				break;
-			case 4:                                             // onglets
-				textCentered(bmp_, itos(b.count()), x, w, 66, 0.9f,
-					b.count() > 1 ? C_ACCENT : C_TEXT, true);
+			case 4:                                           // onglets
+				textCentered(bmp_, itos(b.count()), x, w, 66, 0.9f, col, true);
 				break;
-			case 5:                                             // menu
+			case 5:                                           // menu
 				for (int k = -1; k <= 1; k++)
-					bmp_.fillRect(cx - 7, cy + k * 4 - 1, 15, 2, C_TEXT);
+					bmp_.fillRect(cx - 7, cy + k * 4 - 1, 15, 2, col);
 				break;
 		}
 	}
@@ -394,44 +456,66 @@ void BottomUi::drawStatusRow(Browser& b, NetworkManager& net)
 {
 	roundRect(bmp_, 0, 220, 320, 20, 0, C_BG_2);
 
+	// Version en bas a droite (discret)
+	const std::string versionStr = "v" NW_VERSION_STRING;
+	const int vw = textW(versionStr, 0.48f);
+	text(bmp_, versionStr, 318 - vw, 224, 0.48f, C_TEXT_DD);
+
+	const int maxStatusW = 318 - vw - 8;
+
 	if (timeMs() < toastUntil_)
 	{
-		text(bmp_, fitStr(toastMsg_, 308, 0.52f), 6, 223, 0.52f, C_ACCENT);
+		text(bmp_, fitStr(toastMsg_, maxStatusW, 0.52f), 6, 223, 0.52f, C_ACCENT);
 	}
 	else if (b.layoutPending())
 	{
-		text(bmp_, "Mise en page...", 6, 223, 0.52f, C_ACCENT);
+		text(bmp_, fitStr("Mise en page...", maxStatusW, 0.52f), 6, 223, 0.52f, C_ACCENT);
 	}
 	else
 	{
 		Browser::Tab& t = b.currentTab();
-		if (net.busy())
+		if (b.stylesPending())
+		{
+			text(bmp_, fitStr("Styles...", maxStatusW, 0.52f), 6, 223, 0.52f, C_ACCENT);
+		}
+		else if (net.busy())
 		{
 			const int pct = (int)(net.progress() * 100.0f);
 			const std::string msg = pct > 0
 				? "Chargement " + itos(pct) + " %"
 				: "Chargement... " + itos((long)(net.bytesReceived() / 1024)) + " Ko";
-			text(bmp_, fitStr(msg, 308, 0.52f), 6, 223, 0.52f, C_ACCENT);
+			text(bmp_, fitStr(msg, maxStatusW, 0.52f), 6, 223, 0.52f, C_ACCENT);
 		}
 		else if (mode_ == UiMode::Settings)
 		{
-			text(bmp_, "B : retour | touchez une ligne", 6, 223, 0.52f, C_TEXT_DD);
+			text(bmp_, fitStr("B : retour | touchez une ligne", maxStatusW, 0.52f), 6, 223, 0.52f, C_TEXT_DD);
 		}
 		else if (!t.title.empty())
 		{
-			text(bmp_, fitStr(t.title, 308, 0.52f), 6, 223, 0.52f, C_TEXT_DD);
+			text(bmp_, fitStr(t.title, maxStatusW, 0.52f), 6, 223, 0.52f, C_TEXT_DD);
 		}
 		else
 		{
-			text(bmp_, "New 3DS uniquement", 6, 223, 0.52f, C_TEXT_DD);
+			text(bmp_, fitStr("New 3DS uniquement", maxStatusW, 0.52f), 6, 223, 0.52f, C_TEXT_DD);
 		}
 	}
 
-	// Progression : fine ligne collee en haut de l'ecran.
+	// Progression : fine ligne collee en haut de l'ecran, plus epaisse et visible.
 	if (net.busy())
 	{
-		const int w = (int)(net.progress() * 320.0f);
-		if (w > 0) bmp_.fillRect(0, 0, w, 2, C_ACCENT);
+		const float prog = net.progress();
+		// Fond semi-transparent de la barre
+		bmp_.fillRect(0, 0, 320, 3, C_BG_2);
+		const int w = prog > 0.0f ? (int)(prog * 320.0f) : 0;
+		// Barre de progression animee (pulse si 0%)
+		if (w > 0)
+			bmp_.fillRect(0, 0, w, 3, C_ACCENT);
+		else
+		{
+			// Pas encore de progression : barre pulsante courte
+			const int pos = (int)((timeMs() / 10) % 320);
+			bmp_.fillRect(pos, 0, 40 < 320 - pos ? 40 : 320 - pos, 3, C_ACCENT);
+		}
 	}
 }
 
@@ -458,7 +542,7 @@ void BottomUi::buildKeys()
 	const int rowH = 24;
 
 	// Construit une rangee de touches de largeur egale.
-	auto addRow = [&](const std::string& chars, int row, int y)
+	auto addRow = [&](const std::string& chars, int y)
 	{
 		const int margin = 3;
 		const int n = (int)chars.size();
@@ -474,36 +558,123 @@ void BottomUi::buildKeys()
 
 	if (kbdPage_ == 0)
 	{
-		addRow("azertyuiop", 0, rowY[0]);
-		addRow("qsdfghjklm", 1, rowY[1]);
+		addRow(shift_ ? "AZERTYUIOP" : "azertyuiop", rowY[0]);
+		addRow(shift_ ? "QSDFGHJKLM" : "qsdfghjklm", rowY[1]);
 
-		// 3e rangee : 8 lettres + effacer
-		const std::string r3 = "wxcvbn,;";
+		// 3e rangee : Maj + 8 lettres + effacer
+		const int margin = 3;
+		const int kShiftW = 34;
+		const int kBsW = 34;
+		const int gap = 2;
+		int x = margin;
+		keys_.push_back({ x, rowY[2], kShiftW, rowH, shift_ ? "MAJ" : "maj", "", 5 });
+		x += kShiftW + gap;
+		const int kw = (320 - margin * 2 - kShiftW - kBsW - 9 * gap) / 8;
+		const std::string r3 = shift_ ? "WXCVBN?." : "wxcvbn,;";
+		for (int i = 0; i < 8; i++)
+		{
+			std::string c(1, r3[(size_t)i]);
+			keys_.push_back({ x, rowY[2], kw, rowH, c, c, 0 });
+			x += kw + gap;
+		}
+		keys_.push_back({ x, rowY[2], 320 - margin - x, rowH, "<--", "", 1 });
+
+		// 4e rangee : bascule, .com, espace, .fr, OK
+		const int kSym = 40;
+		const int kCom = 48;
+		const int kFr  = 38;
+		const int kOk  = 50;
+		const int gap4 = 2;
+		int x4 = margin;
+		keys_.push_back({ x4, rowY[3], kSym, rowH, "123", "", 4 }); x4 += kSym + gap4;
+		keys_.push_back({ x4, rowY[3], kCom, rowH, ".com", ".com", 0 }); x4 += kCom + gap4;
+		const int kSpace = 320 - margin - x4 - gap4 - kFr - gap4 - kOk - margin;
+		keys_.push_back({ x4, rowY[3], kSpace, rowH, "espace", "", 2 }); x4 += kSpace + gap4;
+		keys_.push_back({ x4, rowY[3], kFr,  rowH, ".fr", ".fr", 0 });  x4 += kFr + gap4;
+		keys_.push_back({ x4, rowY[3], kOk,  rowH, "OK", "", 3 });
+	}
+	else if (kbdPage_ == 1)
+	{
+		addRow("1234567890", rowY[0]);
+		addRow("-_/:.,?!@=", rowY[1]);
+
+		// 3e rangee : symboles + effacer
 		const int margin = 3;
 		const int kw = (320 - margin * 2 - 8 * 2) / 9;
-		for (int i = 0; i < (int)r3.size(); i++)
+		const std::string r3 = "()[]{}#%*";
+		for (int i = 0; i < 8; i++)
 		{
 			std::string c(1, r3[(size_t)i]);
 			const int x = margin + i * (kw + 2);
 			keys_.push_back({ x, rowY[2], kw, rowH, c, c, 0 });
 		}
-		keys_.push_back({ margin + 8 * (kw + 2), rowY[2], kw, rowH, "<--", "", 1 });
+		keys_.push_back({ margin + 8 * (kw + 2), rowY[2], 320 - margin - (margin + 8 * (kw + 2)), rowH, "<--", "", 1 });
 
-		// 4e rangee : symboles, espace, valider
-		keys_.push_back({ margin, rowY[3], 46, rowH, "123", "", 4 });
-		keys_.push_back({ margin + 48, rowY[3], 174, rowH, "espace", "", 2 });
-		keys_.push_back({ margin + 224, rowY[3], 90, rowH, "OK", "", 3 });
+		// 4e rangee
+		const int kSym = 40;
+		const int kCom = 48;
+		const int kFr  = 38;
+		const int kOk  = 50;
+		const int gap4 = 2;
+		int x4 = margin;
+		keys_.push_back({ x4, rowY[3], kSym, rowH, "\xC3\xA9\xC3\xA0\xC3\xA7", "", 4 }); x4 += kSym + gap4; // "éàç"
+		keys_.push_back({ x4, rowY[3], kCom, rowH, ".com", ".com", 0 }); x4 += kCom + gap4;
+		const int kSpace = 320 - margin - x4 - gap4 - kFr - gap4 - kOk - margin;
+		keys_.push_back({ x4, rowY[3], kSpace, rowH, "espace", "", 2 }); x4 += kSpace + gap4;
+		keys_.push_back({ x4, rowY[3], kFr,  rowH, ".fr", ".fr", 0 });  x4 += kFr + gap4;
+		keys_.push_back({ x4, rowY[3], kOk,  rowH, "OK", "", 3 });
 	}
-	else
+	else // kbdPage_ == 2 (accents)
 	{
-		addRow("1234567890", 0, rowY[0]);
-		addRow("-_/:.,?!@", 1, rowY[1]);
-		addRow("()[]{}#%*", 2, rowY[2]);
+		static const char* r0[10] = { "é", "è", "ê", "ë", "à", "â", "ä", "ù", "û", "ü" };
+		static const char* r0Maj[10] = { "É", "È", "Ê", "Ë", "À", "Â", "Ä", "Ù", "Û", "Ü" };
+		static const char* r1[10] = { "ç", "î", "ï", "ô", "ö", "œ", "æ", "'", "\"", "-" };
+		static const char* r1Maj[10] = { "Ç", "Î", "Ï", "Ô", "Ö", "Œ", "Æ", "'", "\"", "-" };
+		static const char* r2[8] = { "ñ", "ÿ", "ŷ", "«", "»", "…", "€", "°" };
+		static const char* r2Maj[8] = { "Ñ", "Ÿ", "Ŷ", "«", "»", "…", "€", "°" };
 
 		const int margin = 3;
-		keys_.push_back({ margin, rowY[3], 46, rowH, "abc", "", 4 });
-		keys_.push_back({ margin + 48, rowY[3], 174, rowH, "espace", "", 2 });
-		keys_.push_back({ margin + 224, rowY[3], 90, rowH, "OK", "", 3 });
+		const int kw10 = (320 - margin * 2 - 9 * 2) / 10;
+		for (int i = 0; i < 10; i++)
+		{
+			const char* s = shift_ ? r0Maj[i] : r0[i];
+			keys_.push_back({ margin + i * (kw10 + 2), rowY[0], kw10, rowH, s, s, 0 });
+		}
+		for (int i = 0; i < 10; i++)
+		{
+			const char* s = shift_ ? r1Maj[i] : r1[i];
+			keys_.push_back({ margin + i * (kw10 + 2), rowY[1], kw10, rowH, s, s, 0 });
+		}
+
+		// 3e rangee : Maj + 8 accents + effacer
+		const int kShiftW = 34;
+		const int kBsW = 34;
+		const int gap = 2;
+		int x = margin;
+		keys_.push_back({ x, rowY[2], kShiftW, rowH, shift_ ? "MAJ" : "maj", "", 5 });
+		x += kShiftW + gap;
+		const int kw = (320 - margin * 2 - kShiftW - kBsW - 9 * gap) / 8;
+		for (int i = 0; i < 8; i++)
+		{
+			const char* s = shift_ ? r2Maj[i] : r2[i];
+			keys_.push_back({ x, rowY[2], kw, rowH, s, s, 0 });
+			x += kw + gap;
+		}
+		keys_.push_back({ x, rowY[2], 320 - margin - x, rowH, "<--", "", 1 });
+
+		// 4e rangee
+		const int kSym = 40;
+		const int kCom = 48;
+		const int kFr  = 38;
+		const int kOk  = 50;
+		const int gap4 = 2;
+		int x4 = margin;
+		keys_.push_back({ x4, rowY[3], kSym, rowH, "abc", "", 4 }); x4 += kSym + gap4;
+		keys_.push_back({ x4, rowY[3], kCom, rowH, ".com", ".com", 0 }); x4 += kCom + gap4;
+		const int kSpace = 320 - margin - x4 - gap4 - kFr - gap4 - kOk - margin;
+		keys_.push_back({ x4, rowY[3], kSpace, rowH, "espace", "", 2 }); x4 += kSpace + gap4;
+		keys_.push_back({ x4, rowY[3], kFr,  rowH, ".fr", ".fr", 0 });  x4 += kFr + gap4;
+		keys_.push_back({ x4, rowY[3], kOk,  rowH, "OK", "", 3 });
 	}
 }
 
@@ -512,12 +683,13 @@ void BottomUi::drawKeyboard(Bitmap& b)
 	for (const auto& k : keys_)
 	{
 		const bool isOk = (k.action == 3);
-		const bool isSpecial = (k.action == 1 || k.action == 2 || k.action == 4);
+		const bool isSpecial = (k.action == 1 || k.action == 2 || k.action == 4 || k.action == 5);
+		const bool isShiftActive = (k.action == 5 && shift_);
 
 		roundRect(b, k.x, k.y, k.w, k.h, 6,
-			isOk ? C_KEY_OK : (isSpecial ? C_SURFACE2 : C_KEY));
+			isOk ? C_KEY_OK : (isShiftActive ? C_ACCENT : (isSpecial ? C_SURFACE2 : C_KEY)));
 
-		const uint32_t fg = isOk ? C_BG : C_TEXT;
+		const uint32_t fg = (isOk || isShiftActive) ? C_BG : C_TEXT;
 		if (k.label.size() > 2)
 			textCentered(b, k.label, k.x, k.w, k.y + 5, 0.7f, fg, isOk);
 		else
@@ -530,16 +702,26 @@ void BottomUi::drawKeyboard(Bitmap& b)
 //--------------------------------------------------------------------------
 void BottomUi::drawMenu(Browser& b)
 {
-	static const char* rows[] =
+	(void)b;
+	static const char* items[8] =
 	{
-		"Nouvel onglet", "Fermer l'onglet", "Ajouter aux favoris",
-		"Favoris", "Historique", "Reglages", "A propos", nullptr
+		"Nouvel onglet", "Fermer l'onglet",
+		"Ajouter aux favoris", "Favoris",
+		"Historique", "Reglages",
+		"A propos", "Recharger"
 	};
-	for (int i = 0; rows[i]; i++)
+	const int colW = 152;
+	const int rowH = 29;
+	const int xLeft = 6;
+	const int xRight = 162;
+	for (int i = 0; i < 8; i++)
 	{
-		const int y = 92 + i * 25;
-		roundRect(bmp_, 5, y, 310, 23, 6, (i & 1) ? C_SURFACE : C_BG_2);
-		text(bmp_, rows[i], 14, y + 4, 0.82f, C_TEXT);
+		const int col = i % 2;
+		const int row = i / 2;
+		const int x = (col == 0) ? xLeft : xRight;
+		const int y = 92 + row * 31;
+		roundRect(bmp_, x, y, colW, rowH, 6, (row & 1) ? C_SURFACE : C_BG_2);
+		textCentered(bmp_, items[i], x, colW, y + 6, 0.72f, C_TEXT);
 	}
 }
 
@@ -580,68 +762,102 @@ void BottomUi::drawBookmarksList(Browser& b)
 	int maxOff = (int)entries.size() - visible;
 	if (maxOff < 0) maxOff = 0;
 	if (listOffset_ > maxOff) listOffset_ = maxOff;
+	if (listSel_ >= (int)entries.size()) listSel_ = (int)entries.size() - 1;
 	for (int i = 0; i < visible; i++)
 	{
 		int idx = listOffset_ + i;
 		if (idx >= (int)entries.size()) break;
 		int y = 116 + i * 28;
-		bmp_.fillRect(0, y, 320, 26, (i & 1) ? C_NAVY : C_NAVY_2);
+		bmp_.fillRect(0, y, 320, 26, idx == listSel_ ? C_SURFACE2 : ((i & 1) ? C_NAVY : C_NAVY_2));
+		if (idx == listSel_) bmp_.fillRect(0, y, 2, 26, C_ACCENT);
 		text(bmp_, fitStr(entries[idx].title, 180, 0.8f), 6, y + 3, 0.8f, C_TEXT, true);
 		text(bmp_, fitStr(entries[idx].url, 90, 0.6f), 196, y + 4, 0.6f, C_TEXT_D);
-		text(bmp_, "X", 308, y + 4, 0.8f, C_RED, true);
+		text(bmp_, "X", 304, y + 4, 0.8f, C_RED, true);
 	}
 }
 
 void BottomUi::drawSettingsList(Browser& b, WebSettings& set,
 	const ReleaseUpdater& updater)
 {
-	text(bmp_, "Reglages", 10, 92, 0.75f, C_TEXT_D);
+	(void)b;
+	text(bmp_, "Reglages (haut/bas pour defiler)", 10, 92, 0.72f, C_TEXT_D);
 
 	const std::string engine = searchEngineDisplayName(set.searchEngine);
 	const std::string tls = set.verifyTLS ? "Oui" : "Non";
 	const std::string img = set.loadImages ? "Oui" : "Non";
-	const std::string js = "Non disponible";
+	const std::string js = set.enableJS ? "Oui" : "Non";
 	std::string update = updater.message();
 	if (updater.state() == UpdateState::Downloading)
 		update = "Telechargement " + itos((long)(updater.progress() * 100.0f)) + "%";
 	else if (updater.state() == UpdateState::Checking)
 		update = "Recherche...";
 
-	struct Row { const char* label; std::string value; bool accent; };
-	Row rows[7] =
+	struct Row { const char* label; std::string value; bool accent; const char* badge; uint32_t badgeColor; };
+	const Row rows[7] =
 	{
-		{ "Moteur de recherche", engine, true },
-		{ "Page d'accueil", fitStr(set.homePage.empty() ? "(par defaut)" : set.homePage, 120, 0.7f), false },
-		{ "Verifier les certificats", tls, false },
-		{ "Charger les images", img, false },
-		{ "JavaScript (en preparation)", js, false },
-		{ "Effacer l'historique", "", false },
-		{ "Mises a jour", update, true },
+		{ "Moteur de recherche", engine, true, nullptr, 0 },
+		{ "Page d'accueil", fitStr(set.homePage.empty() ? "(par defaut)" : set.homePage, 110, 0.7f), false, nullptr, 0 },
+		{ "Verifier les certificats", tls, false, nullptr, 0 },
+		{ "Charger les images", img, false, "Dev", C_ORANGE },
+		{ "JavaScript", js, false, "Beta", C_ORANGE },
+		{ "Effacer l'historique", "", false, nullptr, 0 },
+		{ "Mises a jour", update, true, nullptr, 0 },
 	};
-	for (int i = 0; i < 7; i++)
+
+	const int totalRows = 7;
+	const int visible = 5;
+	const int maxOff = totalRows - visible; // 2
+	if (listOffset_ < 0) listOffset_ = 0;
+	if (listOffset_ > maxOff) listOffset_ = maxOff;
+
+	for (int i = 0; i < visible; i++)
 	{
-		const int y = 110 + i * 15;
-		roundRect(bmp_, 4, y, 312, 14, 4, (i & 1) ? C_SURFACE : C_BG_2);
-		text(bmp_, rows[i].label, 10, y + 1, 0.62f, C_TEXT);
-		if (!rows[i].value.empty())
-			text(bmp_, fitStr(rows[i].value, 190, 0.52f),
-				310 - textW(fitStr(rows[i].value, 190, 0.52f), 0.52f),
-				y + 1, 0.52f,
-				rows[i].accent ? C_ACCENT : C_TEXT_D);
+		const int idx = listOffset_ + i;
+		if (idx >= totalRows) break;
+		const int y = 110 + i * 21;
+		roundRect(bmp_, 4, y, 302, 18, 4, (idx & 1) ? C_SURFACE : C_BG_2);
+
+		int lx = 10;
+		text(bmp_, rows[idx].label, lx, y + 2, 0.62f, C_TEXT);
+		if (rows[idx].badge)
+		{
+			lx += textW(rows[idx].label, 0.62f) + 6;
+			const int bw = textW(rows[idx].badge, 0.48f) + 6;
+			roundRect(bmp_, lx, y + 3, bw, 12, 3, rows[idx].badgeColor);
+			text(bmp_, rows[idx].badge, lx + 3, y + 3, 0.48f, C_BLACK);
+		}
+
+		if (!rows[idx].value.empty())
+		{
+			const std::string valStr = fitStr(rows[idx].value, 130, 0.52f);
+			const uint32_t valCol = rows[idx].accent ? C_ACCENT : (idx == 4 ? C_TEXT_DD : C_TEXT_D);
+			text(bmp_, valStr,
+				300 - textW(valStr, 0.52f),
+				y + 2, 0.52f,
+				valCol);
+		}
 	}
+
+	// Indicateur de defilement a droite
+	const int trackY = 110;
+	const int trackH = 105;
+	const int thumbH = (visible * trackH) / totalRows;
+	const int thumbY = trackY + (listOffset_ * (trackH - thumbH)) / maxOff;
+	roundRect(bmp_, 310, trackY, 4, trackH, 2, C_BG_2);
+	roundRect(bmp_, 310, thumbY, 4, thumbH, 2, C_SURFACE2);
 }
 
 void BottomUi::drawAbout()
 {
 	text(bmp_, "Pixelnaute", 12, 92, 1.15f, C_TEXT, true);
-	text(bmp_, "Version " NW_VERSION_STRING, 12, 126, 0.75f, C_TEXT_DD);
-	text(bmp_, "Navigateur autonome pour New Nintendo 3DS", 12, 150, 0.78f, C_TEXT);
+	text(bmp_, "Version " NW_VERSION_STRING " (" __DATE__ ")", 12, 122, 0.75f, C_TEXT_DD);
+	text(bmp_, "Navigateur autonome pour New Nintendo 3DS", 12, 144, 0.75f, C_TEXT);
 
-	text(bmp_, "Aucun PC, aucun proxy : la console se connecte seule.", 12, 172, 0.72f, C_TEXT_D);
-	text(bmp_, "Moteur de recherche reglable dans Reglages.", 12, 194, 0.72f, C_TEXT_D);
-	text(bmp_, "Projet original : @dodosiiii", 12, 213, 0.65f, C_TEXT_DD);
-	text(bmp_, "github.com/dodosiiii/Pixelnaute", 12, 226, 0.55f, C_TEXT_DD);
-	text(bmp_, "Touchez l'ecran pour revenir.", 12, 200, 0.55f, C_TEXT_DD);
+	text(bmp_, "Aucun PC, aucun proxy : connexion directe.", 12, 166, 0.72f, C_TEXT_D);
+	text(bmp_, "Moteur de recherche reglable dans Reglages.", 12, 188, 0.72f, C_TEXT_D);
+	text(bmp_, "Projet original : @dodosiiii", 12, 205, 0.65f, C_TEXT_DD);
+	text(bmp_, "github.com/dodosiiii/Pixelnaute", 12, 218, 0.6f, C_TEXT_DD);
+	text(bmp_, "Touchez l'ecran pour revenir.", 12, 231, 0.55f, C_TEXT_DD);
 }
 
 //--------------------------------------------------------------------------
@@ -741,10 +957,11 @@ int BottomUi::navHit(int x, int y) const
 	return idx;
 }
 
-int BottomUi::tabHit(int x, int y) const
+int BottomUi::tabHit(int x, int y, int count) const
 {
 	if (y < 4 || y >= 26) return -1;
-	return x / (320 / 4);
+	if (count <= 0) return -1;
+	return x / (320 / count);
 }
 
 void BottomUi::navAction(Browser& b, NetworkManager& net, WebSettings& set, int idx)
@@ -771,9 +988,21 @@ void BottomUi::navAction(Browser& b, NetworkManager& net, WebSettings& set, int 
 			else b.reload();
 			break;
 
-		case 4: // nouvel onglet
-			b.newTab();
-			mode_ = UiMode::Browsing;
+		case 4: // onglet suivant ou nouvel onglet
+			if (b.count() > 1)
+			{
+				b.nextTab();
+				mode_ = UiMode::Browsing;
+			}
+			else if (b.count() >= NW_MAX_TABS)
+			{
+				toast("Maximum d'onglets atteint");
+			}
+			else
+			{
+				b.newTab();
+				mode_ = UiMode::Browsing;
+			}
 			break;
 		case 5: // menu
 			mode_ = (mode_ == UiMode::Menu) ? UiMode::Browsing : UiMode::Menu;
@@ -810,13 +1039,27 @@ void BottomUi::applyKey(Browser& b, WebSettings& set, const UiKey& k)
 	switch (k.action)
 	{
 		case 1: popLastUtf8(buf_); break;
-		case 2: buf_ += ' '; break;
+		case 2:
+			buf_ += ' ';
+			if (shift_) { shift_ = false; buildKeys(); }
+			break;
 		case 3: commitBuf(b, set); break;
 		case 4:
-			kbdPage_ ^= 1;
+			kbdPage_ = (kbdPage_ + 1) % 3;
 			buildKeys();
 			break;
-		default: buf_ += k.value; break;
+		case 5:
+			shift_ = !shift_;
+			buildKeys();
+			break;
+		default:
+			buf_ += k.value;
+			if (shift_)
+			{
+				shift_ = false;
+				buildKeys();
+			}
+			break;
 	}
 }
 
@@ -869,7 +1112,30 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 		repeatKey_ = -1;
 	}
 
-	if (!in.touchDown) return;
+	if (mode_ == UiMode::Settings && in.touch && !in.touchDown)
+	{
+		if (in.dragY < -6 && listOffset_ < 2)
+		{
+			listOffset_++;
+			dirty_ = true;
+		}
+		else if (in.dragY > 6 && listOffset_ > 0)
+		{
+			listOffset_--;
+			dirty_ = true;
+		}
+	}
+
+	if (!in.touchDown)
+	{
+		// Relachement : effacer l'etat "appuye"
+		if (touchNav_ >= 0)
+		{
+			touchNav_ = -1;
+			dirty_ = true;
+		}
+		return;
+	}
 	int x = in.tp.px;
 	int y = in.tp.py;
 	if (x >= 320) return; // ecran haut gere ailleurs
@@ -878,11 +1144,18 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 	int ni = navHit(x, y);
 	if (ni >= 0)
 	{
+		if (touchNav_ != ni)
+		{
+			touchNav_ = ni;
+			dirty_ = true;
+		}
 		navAction(b, net, set, ni);
 		return;
 	}
+	// hors nav : on efface l'etat presse
+	if (touchNav_ >= 0) { touchNav_ = -1; dirty_ = true; }
 	// onglets
-	int ti = tabHit(x, y);
+	int ti = tabHit(x, y, b.count());
 	if (ti >= 0 && ti < b.count())
 	{
 		b.selectTab(ti);
@@ -905,11 +1178,19 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 			break;
 		case UiMode::Menu:
 		{
-			if (y < 92) break;
-			int idx = (y - 92) / 25;
+			if (y < 92 || y >= 216) break;
+			int row = (y - 92) / 31;
+			if (row < 0 || row >= 4) break;
+			int col = (x < 160) ? 0 : 1;
+			int idx = row * 2 + col;
 			switch (idx)
 			{
-				case 0: b.newTab(); mode_ = UiMode::Browsing; dirty_ = true; break;
+				case 0:
+					if (b.count() >= NW_MAX_TABS) toast("Maximum d'onglets atteint");
+					else b.newTab();
+					mode_ = UiMode::Browsing;
+					dirty_ = true;
+					break;
 				case 1:
 					if (b.count() > 1) b.closeTab(b.index());
 					else toast("Dernier onglet");
@@ -930,10 +1211,17 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 					dirty_ = true;
 					break;
 				}
-				case 3: mode_ = UiMode::Bookmarks; listOffset_ = 0; dirty_ = true; break;
+				case 3:
+					mode_ = UiMode::Bookmarks;
+					listOffset_ = 0;
+					listSel_ = 0;
+					pendingBookmarkDelete_.clear();
+					dirty_ = true;
+					break;
 				case 4: mode_ = UiMode::History; listOffset_ = 0; dirty_ = true; break;
 				case 5: mode_ = UiMode::Settings; dirty_ = true; break;
 				case 6: mode_ = UiMode::About; dirty_ = true; break;
+				case 7: b.reload(); mode_ = UiMode::Browsing; dirty_ = true; break;
 			}
 			break;
 		}
@@ -955,10 +1243,28 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 			int idx = listOffset_ + (y - 116) / 28;
 			if (idx >= 0 && idx < (int)b.bookmarks().entries.size())
 			{
-				if (x >= 300)
-					b.bookmarks().remove(b.bookmarks().entries[idx].url);
+				listSel_ = idx;
+				if (x >= 296)
+				{
+					const std::string url = b.bookmarks().entries[idx].url;
+					if (pendingBookmarkDelete_ == url && timeMs() <= bookmarkDeleteUntil_)
+					{
+						b.bookmarks().remove(url);
+						pendingBookmarkDelete_.clear();
+						const int count = (int)b.bookmarks().entries.size();
+						if (listSel_ >= count) listSel_ = count > 0 ? count - 1 : 0;
+						toast("Favori supprime");
+					}
+					else
+					{
+						pendingBookmarkDelete_ = url;
+						bookmarkDeleteUntil_ = timeMs() + 2000;
+						toast("Touchez encore pour supprimer");
+					}
+				}
 				else
 				{
+					pendingBookmarkDelete_.clear();
 					b.openUrl(b.bookmarks().entries[idx].url);
 					mode_ = UiMode::Browsing;
 				}
@@ -974,9 +1280,17 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 				mode_ = UiMode::Browsing;
 				dirty_ = true;
 			}
+			else if (x >= 306 && y >= 110 && y < 215)
+			{
+				if (y < 162 && listOffset_ > 0) { listOffset_--; dirty_ = true; }
+				else if (y >= 162 && listOffset_ < 2) { listOffset_++; dirty_ = true; }
+			}
 			else if (y >= 110 && y < 215)
 			{
-				int idx = (y - 110) / 15;
+				int slot = (y - 110) / 21;
+				if (slot < 0) slot = 0;
+				if (slot >= 5) slot = 4;
+				int idx = listOffset_ + slot;
 				switch (idx)
 				{
 					case 0:
@@ -996,8 +1310,27 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 						dirty_ = true;
 						break;
 					case 2: set.verifyTLS = !set.verifyTLS; settingsSave(set); dirty_ = true; break;
-					case 3: set.loadImages = !set.loadImages; settingsSave(set); dirty_ = true; break;
-					case 4: toast("Interpreteur JavaScript non disponible"); dirty_ = true; break;
+					case 3:
+						set.loadImages = !set.loadImages;
+						settingsSave(set);
+						toast(set.loadImages ? "Images activees (en developpement)" : "Images desactivees");
+						dirty_ = true;
+						break;
+					case 4:
+						set.enableJS = !set.enableJS;
+						if (!b.syncJavaScriptContexts())
+						{
+							set.enableJS = false;
+							b.syncJavaScriptContexts();
+							toast("Memoire insuffisante pour JavaScript");
+						}
+						else
+						{
+							settingsSave(set);
+							toast(set.enableJS ? "JavaScript active (scripts a venir)" : "JavaScript desactive");
+						}
+						dirty_ = true;
+						break;
 					case 5: b.history().clear(); toast("Historique efface"); dirty_ = true; break;
 					case 6:
 						if (updater.active())
@@ -1070,24 +1403,78 @@ void BottomUi::handleKeys(Browser& b, NetworkManager& net, WebSettings& set,
 		case UiMode::History:
 		case UiMode::Bookmarks:
 			if (kDown & KEY_B) { mode_ = UiMode::Browsing; dirty_ = true; return; }
-			if (kDown & KEY_DUP) { listOffset_--; dirty_ = true; return; }
-			if (kDown & KEY_DDOWN) { listOffset_++; dirty_ = true; return; }
-			if (kDown & KEY_X && mode_ == UiMode::Bookmarks)
+			if (mode_ == UiMode::Bookmarks)
 			{
-				if (!b.bookmarks().entries.empty())
-					b.bookmarks().remove(b.bookmarks().entries[0].url);
+				const int count = (int)b.bookmarks().entries.size();
+				const int visible = (222 - 116) / 28;
+				if (kDown & KEY_DUP)
+				{
+					if (listSel_ > 0) listSel_--;
+					if (listSel_ < listOffset_) listOffset_ = listSel_;
+					dirty_ = true;
+					return;
+				}
+				if (kDown & KEY_DDOWN)
+				{
+					if (listSel_ + 1 < count) listSel_++;
+					if (listSel_ >= listOffset_ + visible) listOffset_ = listSel_ - visible + 1;
+					dirty_ = true;
+					return;
+				}
+				if (kDown & KEY_X)
+				{
+					if (listSel_ >= 0 && listSel_ < count)
+					{
+						b.bookmarks().remove(b.bookmarks().entries[listSel_].url);
+						const int remaining = (int)b.bookmarks().entries.size();
+						if (listSel_ >= remaining) listSel_ = remaining > 0 ? remaining - 1 : 0;
+						pendingBookmarkDelete_.clear();
+						toast("Favori supprime");
+					}
+					dirty_ = true;
+					return;
+				}
+			}
+			else
+			{
+				if (kDown & KEY_DUP) { if (listOffset_ > 0) listOffset_--; dirty_ = true; return; }
+				if (kDown & KEY_DDOWN) { listOffset_++; dirty_ = true; return; }
+			}
+			break;
+
+		case UiMode::Settings:
+			if (kDown & KEY_B)
+			{
+				if (updater.active())
+					return;
+				mode_ = UiMode::Browsing;
 				dirty_ = true;
+				return;
+			}
+			if (kDown & (KEY_DUP | KEY_CPAD_UP))
+			{
+				if (listOffset_ > 0)
+				{
+					listOffset_--;
+					dirty_ = true;
+				}
+				return;
+			}
+			if (kDown & (KEY_DDOWN | KEY_CPAD_DOWN))
+			{
+				if (listOffset_ < 2)
+				{
+					listOffset_++;
+					dirty_ = true;
+				}
 				return;
 			}
 			break;
 
 		case UiMode::Menu:
-		case UiMode::Settings:
 		case UiMode::About:
 			if (kDown & KEY_B)
 			{
-				if (mode_ == UiMode::Settings && updater.active())
-					return;
 				mode_ = UiMode::Browsing;
 				dirty_ = true;
 				return;

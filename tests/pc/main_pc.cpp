@@ -17,12 +17,60 @@
 #include "../../source/render/font_decode.hpp"
 #include "../../source/search/search.hpp"
 #include "../../source/search/search_page.hpp"
+#include "../../source/html/parser.hpp"
+#include "../../source/image/image_store.hpp"
+#include "../../source/network/encoding.hpp"
+#include "../../source/diag/diag.hpp"
 
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 #include <algorithm>
+
+void diagStage(const char*) {}
+
+static bool testImageStore()
+{
+	std::string bmp(58, '\0');
+	bmp[0] = 'B'; bmp[1] = 'M';
+	bmp[2] = 58; bmp[10] = 54;
+	bmp[14] = 40; bmp[18] = 1; bmp[22] = 1;
+	bmp[26] = 1; bmp[28] = 24; bmp[34] = 4;
+	bmp[54] = (char)0x20; bmp[55] = (char)0x40; bmp[56] = (char)0x60;
+	ImageStore store;
+	if (!store.storeDownloaded("http://test/0.bmp", bmp) || store.count() != 1)
+	{
+		printf("  image 0: %s\n", store.lastError().c_str());
+		return false;
+	}
+	if (!store.find("http://test/0.bmp") || store.bytesUsed() != sizeof(u16))
+	{
+		printf("  cache apres 1 image: count=%d bytes=%zu\n", store.count(), store.bytesUsed());
+		return false;
+	}
+	for (int i = 1; i < IMG_MAX_COUNT; ++i)
+		if (!store.storeDownloaded("http://test/" + std::to_string(i) + ".bmp", bmp))
+		{
+			printf("  image %d: %s\n", i, store.lastError().c_str());
+			return false;
+		}
+	store.find("http://test/0.bmp"); // rendre la premiere image la plus recente
+	if (!store.storeDownloaded("http://test/12.bmp", bmp)) return false;
+	const bool ok = store.count() == IMG_MAX_COUNT &&
+		store.bytesUsed() <= IMG_CACHE_MAX_BYTES &&
+		store.find("http://test/0.bmp") != nullptr &&
+		store.find("http://test/1.bmp") == nullptr;
+	return ok;
+}
+
+static bool testResponseEncoding()
+{
+	const std::string binary("\xFF\xD8\x00\x80\xFE", 5);
+	if (convertEncodingToUtf8(binary, "image/jpeg", false) != binary) return false;
+	const std::string latin("caf\xE9", 4);
+	return convertEncodingToUtf8(latin, "text/html; charset=windows-1252") == "caf\xC3\xA9";
+}
 
 //---------------------------------------------------------------------------
 // Petite police 5x7 pour un jeu de caracteres reduit (lisibilite du test).
@@ -486,6 +534,14 @@ int main()
 		printf("Detection anti-bot : %d echec(s)\n", challengeFailures);
 		g_failures += challengeFailures;
 	}
+	const int parserFailures = htmlSelfTest();
+	if (parserFailures == 0)
+		printf("Parseur HTML : OK\n");
+	else
+	{
+		printf("Parseur HTML : %d echec(s)\n", parserFailures);
+		g_failures += parserFailures;
+	}
 	int cssFailures = cssSelfTest();
 	if (cssFailures == 0)
 		printf("CSS : OK\n");
@@ -494,6 +550,12 @@ int main()
 		printf("CSS : %d echec(s)\n", cssFailures);
 		g_failures += cssFailures;
 	}
+	const bool imageOk = testImageStore();
+	printf("Cache images / LRU : %s\n", imageOk ? "OK" : "ECHEC");
+	if (!imageOk) g_failures++;
+	const bool encodingOk = testResponseEncoding();
+	printf("Reponses binaires / encodage texte : %s\n", encodingOk ? "OK" : "ECHEC");
+	if (!encodingOk) g_failures++;
 	testSwizzleBijection();
 	testAlphaRoundTrip();
 

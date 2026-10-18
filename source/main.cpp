@@ -556,18 +556,6 @@ int main(int argc, char** argv)
 		// l'ecran. Comparer les deux images produites montre si le defilement
 		// a un effet.
 		//------------------------------------------------------------------
-		{
-			Browser::Tab& t = browser.currentTab();
-			if (framesRendered == 20 && t.pageReady)
-			{
-				diagBootNote("autotest_page_height", t.page.height);
-				diagBootNote("autotest_scroll_max", t.page.height - 240);
-				diagBootNote("autotest_scroll_avant", t.scrollY);
-				browser.scroll(200);
-				diagBootNote("autotest_scroll_apres", browser.scrollY());
-			}
-		}
-
 		//------------------------------------------------------------------
 		// Ecran haut : la page
 		//------------------------------------------------------------------
@@ -661,6 +649,8 @@ int main(int argc, char** argv)
 		C2D_TargetClear(bottomTarget, C_BLACK);
 		C2D_SceneBegin(bottomTarget);
 		ui.frame(browser, net, settings, updater);
+		if (browser.tickStyles())
+			renderer.forceRedraw();
 
 		C3D_FrameEnd(0);
 		if (!updater.active() && browser.tickImages())
@@ -669,41 +659,10 @@ int main(int argc, char** argv)
 		// Instantane : une fois apres la premiere image (le framebuffer n'est
 		// rempli qu'a ce moment-la), puis a la demande sur SELECT.
 		framesRendered++;
-		if (framesRendered == 2 || framesRendered == 24 || diagRequested)
+		if (diagRequested)
 		{
 			diagRequested = false;
-			// L'image de l'ecran est ecrite dans diag_top.bin. Deux prises
-			// successives (avant et apres le defilement automatique) sont
-			// conservees sous des noms distincts pour comparaison.
 			writeDiag(te, browser);
-			if (framesRendered == 2)
-			{
-				FILE* a = fopen("sdmc:/N3DSWeb/diag_top.bin", "rb");
-				FILE* b = fopen("sdmc:/N3DSWeb/shot_avant.bin", "wb");
-				if (a && b)
-				{
-					char buf[4096];
-					size_t n;
-					while ((n = fread(buf, 1, sizeof(buf), a)) > 0)
-						fwrite(buf, 1, n, b);
-				}
-				if (a) fclose(a);
-				if (b) fclose(b);
-			}
-			else if (framesRendered == 24)
-			{
-				FILE* a = fopen("sdmc:/N3DSWeb/diag_top.bin", "rb");
-				FILE* b = fopen("sdmc:/N3DSWeb/shot_apres.bin", "wb");
-				if (a && b)
-				{
-					char buf[4096];
-					size_t n;
-					while ((n = fread(buf, 1, sizeof(buf), a)) > 0)
-						fwrite(buf, 1, n, b);
-				}
-				if (a) fclose(a);
-				if (b) fclose(b);
-			}
 		}
 		if (framesRendered == 200)
 			diagBootNote("frames_rendues", framesRendered);

@@ -5,6 +5,7 @@
 #include "../html/parser.hpp"
 #include "../storage/downloads.hpp"
 #include "../diag/diag.hpp"
+#include "../js/js_runtime.hpp"
 #include <3ds/allocator/linear.h>
 #include <algorithm>
 
@@ -45,8 +46,45 @@ Browser::Browser(NetworkManager& net, WebSettings& settings)
 {
 }
 
+Browser::~Browser()
+{
+	for (Tab& tab : tabs_)
+		releaseJavaScript(tab);
+}
+
+bool Browser::initializeJavaScript(Tab& tab)
+{
+	if (!set_.enableJS || tab.jsContext) return true;
+	return jsPageContextCreate(tab.jsRuntime, tab.jsContext);
+}
+
+void Browser::releaseJavaScript(Tab& tab)
+{
+	jsPageContextDestroy(tab.jsRuntime, tab.jsContext);
+}
+
+bool Browser::syncJavaScriptContexts()
+{
+	if (!set_.enableJS)
+	{
+		for (Tab& tab : tabs_) releaseJavaScript(tab);
+		return true;
+	}
+
+	for (Tab& tab : tabs_)
+	{
+		if (tab.pageReady && !initializeJavaScript(tab))
+		{
+			for (Tab& cleanup : tabs_) releaseJavaScript(cleanup);
+			return false;
+		}
+	}
+	return true;
+}
+
 void Browser::resetTab(Tab& t)
 {
+	releaseJavaScript(t);
 	t.doc.clear();
 	t.css.clear();
 	t.page.clear();
@@ -63,11 +101,6 @@ void Browser::openInput(const std::string& input)
 	if (s.empty()) return;
 	std::string resolved = resolveInput(s, searchEngineName());
 	if (resolved.empty()) return;
-	if (strStartsWith(toLower(resolved), "nw://"))
-	{
-		openUrl(resolved);
-		return;
-	}
 	openUrl(resolved);
 }
 
@@ -80,6 +113,8 @@ void Browser::openSearch(const std::string& query)
 
 void Browser::openUrl(const std::string& url, bool record)
 {
+	clearStyleQueue();
+	clearImageQueue();
 	const std::string targetUrl = url;
 	if (targetUrl.empty()) return;
 	cancelTabRequest(current_);
@@ -96,6 +131,8 @@ void Browser::openUrl(const std::string& url, bool record)
 
 void Browser::loadUrlInto(int tabIdx, const std::string& url, bool record, const std::string& method, const std::string& postData)
 {
+	clearStyleQueue();
+	clearImageQueue();
 	cancelTabRequest(tabIdx);
 	responsePending_ = false;
 	layoutPending_ = false;
@@ -135,7 +172,8 @@ void Browser::loadUrlInto(int tabIdx, const std::string& url, bool record, const
 
 void Browser::reload()
 {
-	pendingImages_.clear();
+	clearStyleQueue();
+	clearImageQueue();
 	responsePending_ = false;
 	layoutPending_ = false;
 	pendingResponse_ = NetResponse();
@@ -156,6 +194,8 @@ void Browser::reload()
 
 void Browser::stop()
 {
+	clearStyleQueue();
+	clearImageQueue();
 	net_.cancel();
 	requestTab_ = -1;
 	responsePending_ = false;
@@ -212,6 +252,8 @@ void Browser::goHome()
 
 void Browser::showInternalHome()
 {
+	clearStyleQueue();
+	clearImageQueue();
 	cancelTabRequest(current_);
 	pendingImages_.clear();
 	responsePending_ = false;
@@ -393,6 +435,13 @@ void Browser::closeTab(int index)
 {
 	if (index < 0 || index >= (int)tabs_.size()) return;
 	if ((int)tabs_.size() <= 1) return;
+	clearStyleQueue();
+	if (imageRequestTab_ == index || pendingImagesTab_ == index) clearImageQueue();
+	else
+	{
+		if (imageRequestTab_ > index) --imageRequestTab_;
+		if (pendingImagesTab_ > index) --pendingImagesTab_;
+	}
 	if (requestTab_ == index)
 	{
 		net_.cancel();
@@ -403,24 +452,34 @@ void Browser::closeTab(int index)
 	}
 	else if (requestTab_ > index)
 		--requestTab_;
+	releaseJavaScript(tabs_[index]);
 	tabs_.erase(tabs_.begin() + index);
 	if (current_ >= (int)tabs_.size()) current_ = (int)tabs_.size() - 1;
 }
 
 void Browser::selectTab(int index)
 {
-	if (index >= 0 && index < (int)tabs_.size()) current_ = index;
+	if (index >= 0 && index < (int)tabs_.size() && current_ != index)
+	{
+		clearStyleQueue();
+		clearImageQueue();
+		current_ = index;
+	}
 }
 
 void Browser::nextTab()
 {
 	if (tabs_.empty()) return;
+	clearStyleQueue();
+	clearImageQueue();
 	current_ = (current_ + 1) % (int)tabs_.size();
 }
 
 void Browser::prevTab()
 {
 	if (tabs_.empty()) return;
+	clearStyleQueue();
+	clearImageQueue();
 	current_ = (current_ == 0) ? (int)tabs_.size() - 1 : current_ - 1;
 }
 
@@ -446,6 +505,27 @@ void Browser::pollNetwork()
 	{
 		if (net_.takeResult(pendingResponse_))
 		{
+			if (pendingResponse_.requestType == NetRequestType::Stylesheet)
+			{
+				onStylesheetResponse(pendingResponse_);
+				pendingResponse_ = NetResponse();
+				return;
+			}
+			if (pendingResponse_.requestType == NetRequestType::Image)
+			{
+				const int tabIdx = imageRequestTab_;
+				if (tabIdx >= 0 && tabIdx == current_ && tabIdx < (int)tabs_.size() &&
+					tabs_[tabIdx].url == imageRequestReferer_ && pendingResponse_.ok)
+				{
+					if (images_.storeDownloaded(imageRequestUrl_, pendingResponse_.body))
+						imageRedrawPending_ = true;
+				}
+				imageRequestTab_ = -1;
+				imageRequestUrl_.clear();
+				imageRequestReferer_.clear();
+				pendingResponse_ = NetResponse();
+				return;
+			}
 			responsePending_ = true;
 			layoutPending_ = true;
 			diagStage("response ready");
@@ -453,20 +533,149 @@ void Browser::pollNetwork()
 	}
 }
 
+bool Browser::stylesPending() const
+{
+	return cssRequestTab_ == current_ ||
+		(cssQueueTab_ == current_ && !cssQueue_.empty());
+}
+
+bool Browser::tickStyles()
+{
+	const bool redraw = styleRedrawPending_;
+	styleRedrawPending_ = false;
+	if (cssLayoutPending_)
+	{
+		const int tabIdx = cssLayoutTab_;
+		const std::string url = cssLayoutUrl_;
+		cssLayoutPending_ = false;
+		cssLayoutTab_ = -1;
+		cssLayoutUrl_.clear();
+		layoutPending_ = false;
+		if (tabIdx >= 0 && tabIdx == current_ && tabIdx < (int)tabs_.size() && tabs_[tabIdx].url == url)
+		{
+			const int savedScrollY = tabs_[tabIdx].scrollY;
+			rerenderTab(tabIdx);
+			tabs_[tabIdx].scrollY = savedScrollY;
+			styleRedrawPending_ = true;
+		}
+	}
+	if (cssQueueTab_ != current_ || cssQueue_.empty() || cssRequestTab_ >= 0 ||
+		net_.busy() || net_.state() != NetState::Idle)
+		return redraw || styleRedrawPending_;
+
+	CssRequest request = std::move(cssQueue_.front());
+	cssQueue_.erase(cssQueue_.begin());
+	if (!net_.start(request.url, 64 * 1024, set_.verifyTLS, "GET", "",
+		NetRequestType::Stylesheet, 5000, request.referer))
+	{
+		if (cssQueue_.empty()) cssQueueTab_ = -1;
+		return redraw;
+	}
+	cssRequestTab_ = current_;
+	return redraw;
+}
+
+void Browser::clearStyleQueue()
+{
+	if (cssRequestTab_ >= 0) net_.cancel();
+	cssQueue_.clear();
+	cssQueueTab_ = -1;
+	cssRequestTab_ = -1;
+	cssPageUrl_.clear();
+	cssRelayoutCount_ = 0;
+	styleRedrawPending_ = false;
+	if (cssLayoutPending_) layoutPending_ = false;
+	cssLayoutPending_ = false;
+	cssLayoutTab_ = -1;
+	cssLayoutUrl_.clear();
+}
+
+void Browser::queueStyles(int tabIdx, const Document& doc, const std::string& pageUrl)
+{
+	cssQueue_.clear();
+	cssQueueTab_ = tabIdx;
+	cssPageUrl_ = pageUrl;
+	cssRelayoutCount_ = 0;
+	cssStartMs_ = timeMs();
+	for (const Node& node : doc.nodes)
+	{
+		if (!node.isElement() || node.tag != "link") continue;
+		const char* rel = node.getAttr("rel");
+		const char* href = node.getAttr("href");
+		const char* media = node.getAttr("media");
+		if (!rel || !href || !*href || toLower(rel).find("stylesheet") == std::string::npos) continue;
+		if (media && toLower(media).find("print") != std::string::npos) continue;
+		std::string url = urlJoin(pageUrl, href);
+		const std::string lowerUrl = toLower(url);
+		if (lowerUrl.find("font") != std::string::npos ||
+			lowerUrl.find("icon") != std::string::npos ||
+			lowerUrl.find("print") != std::string::npos) continue;
+		if (!strStartsWith(url, "http://") && !strStartsWith(url, "https://")) continue;
+		CssRequest request;
+		request.url = std::move(url);
+		request.referer = pageUrl;
+		cssQueue_.push_back(std::move(request));
+	}
+	if (cssQueue_.empty()) cssQueueTab_ = -1;
+}
+
+void Browser::onStylesheetResponse(NetResponse& resp)
+{
+	const int tabIdx = cssRequestTab_;
+	cssRequestTab_ = -1;
+	if (tabIdx < 0 || tabIdx >= (int)tabs_.size()) return;
+	Tab& tab = tabs_[tabIdx];
+	if (tabIdx != current_ || tab.url != cssPageUrl_) { clearStyleQueue(); return; }
+	const size_t oldRuleCount = tab.css.rules().size();
+	if (resp.ok && !resp.body.empty()) tab.css.parseStylesheet(resp.body);
+	if (tab.css.rules().size() != oldRuleCount && cssRelayoutCount_ < 2)
+	{
+		++cssRelayoutCount_;
+		cssLayoutPending_ = true;
+		cssLayoutTab_ = tabIdx;
+		cssLayoutUrl_ = tab.url;
+		layoutPending_ = true;
+	}
+	if (cssQueue_.empty())
+	{
+		cssQueueTab_ = -1;
+		diagBootNote("css_external_ms", (long)(timeMs() - cssStartMs_));
+	}
+}
+
 bool Browser::tickImages()
 {
+	bool redraw = imageRedrawPending_;
+	imageRedrawPending_ = false;
 	if (!set_.loadImages)
 	{
-		pendingImages_.clear();
-		return false;
+		clearImageQueue();
+		return redraw;
 	}
-	if (pendingImages_.empty()) return false;
+	if (pendingImagesTab_ != current_ || imageRequestTab_ >= 0 || pendingImages_.empty() || net_.busy() ||
+		net_.state() != NetState::Idle) return redraw;
 	const std::string url = pendingImages_.back();
 	pendingImages_.pop_back();
-	diagStage("image fetch");
-	const bool fetched = images_.fetch(url, pendingImagesReferer_) != nullptr;
-	if (fetched) diagStage("image decoded");
-	return fetched;
+	if (net_.start(url, 512 * 1024, set_.verifyTLS, "GET", "",
+		NetRequestType::Image, 6000, pendingImagesReferer_))
+	{
+		imageRequestTab_ = current_;
+		imageRequestUrl_ = url;
+		imageRequestReferer_ = pendingImagesReferer_;
+		diagStage("image fetch");
+	}
+	return redraw;
+}
+
+void Browser::clearImageQueue()
+{
+	if (imageRequestTab_ >= 0) net_.cancel();
+	imageRequestTab_ = -1;
+	imageRequestUrl_.clear();
+	imageRequestReferer_.clear();
+	pendingImages_.clear();
+	pendingImagesReferer_.clear();
+	pendingImagesTab_ = -1;
 }
 
 // -------------------------------------------------------------------------
@@ -695,35 +904,8 @@ void Browser::onResponse(NetResponse& resp)
 	t.css.clear();
 	collectStyleBlocks(d, t.css);
 
-	// Feuilles de style externes (<link rel="stylesheet">)
-	size_t loadedSheets = 0;
-	for (size_t i = 0; i < d.nodes.size() && loadedSheets < 3; i++)
-	{
-		const Node& nd = d.nodes[i];
-		if (nd.isElement() && nd.tag == "link")
-		{
-			const char* rel = nd.getAttr("rel");
-			const char* href = nd.getAttr("href");
-			if (rel && href && *href && toLower(rel).find("stylesheet") != std::string::npos)
-			{
-				std::string cssUrl = urlJoin(resp.url, href);
-				if (strStartsWith(cssUrl, "http://") || strStartsWith(cssUrl, "https://"))
-				{
-					HttpOptions cssOpt;
-					cssOpt.accept = "text/css,*/*;q=0.1";
-					cssOpt.referer = resp.url;
-					cssOpt.maxBytes = 150 * 1024;
-					cssOpt.timeoutMs = 4000;
-					NetResponse cssResp;
-					if (httpGet(cssUrl, cssOpt, cssResp, nullptr, nullptr) && cssResp.ok && !cssResp.body.empty())
-					{
-						t.css.parseStylesheet(cssResp.body);
-						loadedSheets++;
-					}
-				}
-			}
-		}
-	}
+	// Les feuilles externes sont chargees en arriere-plan apres le premier rendu.
+	if (tabIdx == current_) queueStyles(tabIdx, d, resp.url);
 
 	diagBootNote("page_css_bytes", (long)t.css.stylesheetBytes());
 	diagBootNote("page_css_rules", (long)t.css.rules().size());
@@ -771,10 +953,19 @@ static std::string extractReaderHtml(const Document& doc, const std::string& tit
 // -------------------------------------------------------------------------
 void Browser::renderInto(int tabIdx, Document&& doc)
 {
+	Tab& tab = tabs_[tabIdx];
+	releaseJavaScript(tab);
+	tab.doc = std::move(doc);
+	if (set_.enableJS && !initializeJavaScript(tab))
+		diagBootNote("js_context_init_failed", 1);
+	rerenderTab(tabIdx);
+}
+
+void Browser::rerenderTab(int tabIdx)
+{
 	diagStage("layout");
 	pendingImages_.clear();
 	Tab& tab = tabs_[tabIdx];
-	tab.doc = std::move(doc);
 	tab.title = tab.doc.title();
 	tab.pageReady = false;
 
@@ -840,6 +1031,7 @@ void Browser::renderInto(int tabIdx, Document&& doc)
 void Browser::queueImages(int tabIdx, int maximum)
 {
 	pendingImages_.clear();
+	pendingImagesTab_ = tabIdx;
 	if (maximum <= 0) return;
 
 	const Tab& tab = tabs_[tabIdx];

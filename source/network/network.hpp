@@ -25,7 +25,9 @@ public:
 	// Lance une requete GET ou POST (http ou https) en arriere-plan.
 	// maxBytes : 0 = illimite (downloads), sinon limite de la memoire page.
 	bool start(const std::string& url, size_t maxBytes, bool verifyTls,
-	           const std::string& method = "GET", const std::string& postData = "");
+	           const std::string& method = "GET", const std::string& postData = "",
+	           NetRequestType requestType = NetRequestType::Page, int timeoutMs = 30000,
+	           const std::string& referer = "");
 
 	// Annule le transfert en cours.
 	void cancel();
@@ -56,6 +58,9 @@ private:
 		bool verifyTls = true;
 		std::string method = "GET";
 		std::string postData;
+		NetRequestType requestType = NetRequestType::Page;
+		int timeoutMs = 30000;
+		std::string referer;
 	};
 	Request queuedRequest_;
 	bool queuedRequestReady_ = false;

@@ -20,6 +20,7 @@ $gxx      = Join-Path $bin "arm-none-eabi-g++.exe"
 $toolbin  = Join-Path $env:DEVKITPRO "tools\bin"
 $ctrulib  = Join-Path $env:DEVKITPRO "libctru"
 $portlibs = Join-Path $env:DEVKITPRO "portlibs\3ds"
+$quickjsDir = Join-Path $root "third_party\js_eval\quickjs"
 $target   = Join-Path $root "N3DSWeb"
 $buildDir = Join-Path $root "build"
 
@@ -42,6 +43,7 @@ $sourceDirs = @(Get-ChildItem -Path (Join-Path $root "source") -Directory -Recur
                 Select-Object -ExpandProperty FullName)
 $includes = @($sourceDirs | ForEach-Object { "-I$_" }) +
             @("-I$(Join-Path $root 'source')") +
+            @("-I$quickjsDir") +
             @("-I$(Join-Path $portlibs 'include')") +
             @("-I$(Join-Path $ctrulib 'include')")
 
@@ -70,6 +72,19 @@ foreach ($src in $sources) {
     if ($LASTEXITCODE -ne 0) { $errors += ($out | Where-Object { $_ -match "error" }) }
     $warnings += @($out | Where-Object { $_ -match "warning" }).Count
 }
+
+# QuickJS est une dependance C tierce : compiler uniquement les unites utiles.
+$quickJsFiles = @("quickjs.c", "dtoa.c", "libregexp.c", "libunicode.c", "cutils.c")
+foreach ($file in $quickJsFiles) {
+    $src = Join-Path $quickjsDir $file
+    $obj = Join-Path $buildDir ("js_" + [IO.Path]::GetFileNameWithoutExtension($file) + ".o")
+    $objects += $obj
+    Write-Host "CC  QuickJS $file" -ForegroundColor DarkCyan
+    $out = & $gcc @cflags @includes '-Wno-incompatible-pointer-types' '-Wno-format' '-Wno-maybe-uninitialized' '-DCONFIG_VERSION=\"v0.4.0\"' -c $src -o $obj 2>&1
+    if ($LASTEXITCODE -ne 0) { $errors += ($out | Where-Object { $_ -match "error" }) }
+    $warnings += @($out | Where-Object { $_ -match "warning" }).Count
+}
+
 if ($errors.Count -gt 0) {
     Write-Host "ECHEC DE COMPILATION" -ForegroundColor Red
     $errors | Select-Object -First 40 | ForEach-Object { Write-Host $_ }

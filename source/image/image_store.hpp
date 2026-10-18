@@ -25,6 +25,7 @@
 #define IMG_MAX_HEIGHT 72
 // Nombre maximal d'images gardees.
 #define IMG_MAX_COUNT  12
+#define IMG_CACHE_MAX_BYTES (2u * 1024u * 1024u)
 
 struct StoredImage
 {
@@ -33,6 +34,7 @@ struct StoredImage
 	int height = 0;
 	std::vector<u16> pixels;   // RGB565, width * height
 	bool valid = false;
+	mutable uint64_t lastUse = 0;
 };
 
 class ImageStore
@@ -44,10 +46,8 @@ public:
 	// Image deja en cache, ou nullptr.
 	const StoredImage* find(const std::string& url) const;
 
-	// Recupere l'image (reseau + decodage) et la met en cache.
-	// Renvoie nullptr en cas d'echec. `referer` sert a resoudre les adresses
-	// relatives.
-	const StoredImage* fetch(const std::string& url, const std::string& referer);
+	// Decode une image deja telechargee par le worker reseau puis la met en cache.
+	const StoredImage* storeDownloaded(const std::string& url, const std::string& data);
 
 	int count() const { return (int)images_.size(); }
 	size_t bytesUsed() const;
@@ -58,7 +58,9 @@ public:
 private:
 	std::vector<StoredImage> images_;
 	std::string lastError_;
+	mutable uint64_t useCounter_ = 0;
 
 	// Decode une reponse image et la convertit en RGB565 reduit.
 	bool decode(const std::string& data, StoredImage& out);
+	void evictLeastRecentlyUsed();
 };

@@ -1,12 +1,12 @@
 #include "image_store.hpp"
-#include "../network/http.hpp"
 #include "stb_image.h"
 
 #include <string.h>
 #include <limits.h>
 #include "../diag/diag.hpp"
 
-static const long long kMaxDecodedImagePixels = 500000LL;
+// Charge STB en RGBA : borner le tampon decode a 320x240 (300 Ko max).
+static const long long kMaxDecodedImagePixels = 320LL * 240LL;
 
 ImageStore::ImageStore()
 {
@@ -31,16 +31,22 @@ size_t ImageStore::bytesUsed() const
 const StoredImage* ImageStore::find(const std::string& url) const
 {
 	for (const auto& img : images_)
-		if (img.url == url && img.valid) return &img;
+		if (img.url == url && img.valid)
+		{
+			img.lastUse = ++useCounter_;
+			return &img;
+		}
 	return nullptr;
 }
 
-static std::string resolveUrl(const std::string& base, const std::string& ref)
+void ImageStore::evictLeastRecentlyUsed()
 {
-	if (strStartsWith(ref, "data:")) return ""; // data URIs non gerees
-	return urlJoin(base, ref);
+	if (images_.empty()) return;
+	auto oldest = images_.begin();
+	for (auto it = images_.begin() + 1; it != images_.end(); ++it)
+		if (it->lastUse < oldest->lastUse) oldest = it;
+	images_.erase(oldest);
 }
-
 
 //--------------------------------------------------------------------------
 // Reduit l'image (plus proche voisin, suffisant pour une vignette) et la
@@ -110,7 +116,9 @@ bool ImageStore::decode(const std::string& data, StoredImage& out)
 		return false;
 	}
 
+#ifdef __3DS__
 	diagStage("image decode");
+#endif
 	stbi_uc* pixels = stbi_load_from_memory(bytes, (int)data.size(),
 		&w, &h, &channels, 4);
 	if (!pixels || w <= 0 || h <= 0)
@@ -121,15 +129,17 @@ bool ImageStore::decode(const std::string& data, StoredImage& out)
 		return false;
 	}
 
+#ifdef __3DS__
 	diagStage("image downscale");
+#endif
 	downscaleTo565(pixels, w, h, 4, out);
 	stbi_image_free(pixels);
 	return true;
 }
 
 //--------------------------------------------------------------------------
-const StoredImage* ImageStore::fetch(const std::string& url,
-	const std::string& referer)
+const StoredImage* ImageStore::storeDownloaded(const std::string& url,
+	const std::string& data)
 {
 	lastError_.clear();
 	if (url.empty()) { lastError_ = "adresse vide"; return nullptr; }
@@ -138,42 +148,22 @@ const StoredImage* ImageStore::fetch(const std::string& url,
 	const StoredImage* existing = find(url);
 	if (existing) return existing;
 
-	if ((int)images_.size() >= IMG_MAX_COUNT)
-	{
-		lastError_ = "cache plein";
-		return nullptr;
-	}
-
-	const std::string full = resolveUrl(referer.empty() ? url : referer, url);
-	if (full.empty()) { lastError_ = "adresse non resolue"; return nullptr; }
-	if (!strStartsWith(full, "http://") && !strStartsWith(full, "https://"))
-	{
-		lastError_ = "schema non gere";
-		return nullptr;
-	}
-
-	HttpOptions opt;
-	opt.userAgent = NW_DEFAULT_USER_AGENT;
-	opt.accept = "image/png,image/jpeg,image/gif,image/bmp;q=0.9,*/*;q=0.1";
-	opt.referer = referer;
-	opt.verifyTls = false;
-	opt.timeoutMs = 6000;
-	// Les images sont volontairement bornees : au-dela, ce n'est pas une
-	// vignette mais un fond d'ecran, et cela n'apporte rien ici.
-	opt.maxBytes = 512 * 1024;
-
-	NetResponse resp;
-	if (!httpGet(full, opt, resp, nullptr, nullptr) || !resp.ok)
-	{
-		lastError_ = resp.error.empty() ? "telechargement impossible" : resp.error;
-		return nullptr;
-	}
-	if (resp.body.empty()) { lastError_ = "reponse vide"; return nullptr; }
+	if (data.empty()) { lastError_ = "reponse vide"; return nullptr; }
 
 	StoredImage img;
 	img.url = url;
-	if (!decode(resp.body, img))
+	if (!decode(data, img))
 		return nullptr;
+	const size_t imageBytes = img.pixels.size() * sizeof(u16);
+	if (imageBytes > IMG_CACHE_MAX_BYTES)
+	{
+		lastError_ = "image trop grande pour le cache";
+		return nullptr;
+	}
+	while (!images_.empty() &&
+		((int)images_.size() >= IMG_MAX_COUNT || bytesUsed() + imageBytes > IMG_CACHE_MAX_BYTES))
+		evictLeastRecentlyUsed();
+	img.lastUse = ++useCounter_;
 
 	images_.push_back(std::move(img));
 	return &images_.back();

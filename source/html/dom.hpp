@@ -24,10 +24,71 @@ struct Attribute
 	std::string value;
 };
 
+// Identifiant compact des balises HTML. Les noms sont partages dans une
+// table statique au lieu d'etre stockes dans chaque noeud DOM.
+class TagId
+{
+public:
+	TagId() = default;
+	TagId(const char* name) { set(name ? std::string(name) : std::string()); }
+	TagId(const std::string& name) { set(name); }
+	TagId& operator=(const std::string& name) { set(name); return *this; }
+	TagId& operator=(const char* name) { set(name ? std::string(name) : std::string()); return *this; }
+
+	operator const std::string&() const { return names()[value_]; }
+	const char* c_str() const { return names()[value_].c_str(); }
+	char operator[](size_t index) const
+	{
+		const std::string& name = names()[value_];
+		return index < name.size() ? name[index] : '\0';
+	}
+	bool operator==(TagId other) const { return value_ == other.value_; }
+	bool operator!=(TagId other) const { return value_ != other.value_; }
+	bool operator==(const std::string& other) const { return matches(other); }
+	bool operator!=(const std::string& other) const { return !matches(other); }
+	bool operator==(const char* other) const { return other && matches(std::string(other)); }
+	bool operator!=(const char* other) const { return !other || !matches(std::string(other)); }
+	friend bool operator==(const std::string& lhs, TagId rhs) { return rhs.matches(lhs); }
+	friend bool operator!=(const std::string& lhs, TagId rhs) { return !rhs.matches(lhs); }
+	friend bool operator==(const char* lhs, TagId rhs) { return lhs && rhs.matches(std::string(lhs)); }
+	friend bool operator!=(const char* lhs, TagId rhs) { return !lhs || !rhs.matches(std::string(lhs)); }
+
+private:
+	uint8_t value_ = 0;
+	static const std::vector<std::string>& names()
+	{
+		static const std::vector<std::string> table = {
+			"", "a", "abbr", "address", "area", "article", "aside", "audio", "b", "base", "blockquote",
+			"body", "br", "button", "canvas", "center", "cite", "code", "col", "dd", "del", "details", "dialog",
+			"div", "dl", "dt", "em", "embed", "fieldset", "figcaption", "figure", "footer", "form",
+			"h1", "h2", "h3", "h4", "h5", "h6", "head", "header", "hr", "html", "i",
+			"iframe", "img", "input", "ins", "kbd", "label", "li", "link", "main", "meta", "nav", "ol",
+			"object", "option", "p", "picture", "pre", "q", "s", "samp", "script", "section",
+			"select", "small", "source", "span", "strong", "style", "sub", "summary", "sup", "svg",
+			"table", "tbody", "td", "template", "textarea", "tfoot", "th", "thead", "time", "title",
+			"tr", "u", "ul", "var", "video", "wbr", "xmp"
+		};
+		return table;
+	}
+	void set(const std::string& name)
+	{
+		value_ = 0;
+		if (name.empty()) return;
+		const auto& table = names();
+		for (size_t i = 1; i < table.size(); ++i)
+			if (table[i] == name) { value_ = (uint8_t)i; return; }
+	}
+	bool matches(const std::string& name) const
+	{
+		return value_ != 0 && names()[value_] == name;
+	}
+};
+static_assert(sizeof(TagId) == 1, "TagId doit rester un octet");
+
 struct Node
 {
 	NodeType type = NodeType::Element;
-	std::string tag;             // minuscules pour un Element
+	TagId tag;                    // identifiant compact (un octet)
 	std::string text;            // contenu pour Text/RawText/Comment
 	std::vector<Attribute> attrs;
 	int parent = -1;
@@ -91,9 +152,14 @@ public:
 
 	int createText(int parent, const std::string& text)
 	{
+		return createText(parent, std::string(text));
+	}
+
+	int createText(int parent, std::string&& text)
+	{
 		Node n;
 		n.type = NodeType::Text;
-		n.text = text;
+		n.text = std::move(text);
 		int idx = addNode(std::move(n));
 		if (parent >= 0)
 		{

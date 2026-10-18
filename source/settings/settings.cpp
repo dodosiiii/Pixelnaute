@@ -20,7 +20,7 @@ bool settingsLoad(WebSettings& s)
 		return false;
 	}
 
-	s.loadImages   = readBool(kv.get("loadImages", "1"));
+	s.loadImages   = readBool(kv.get("loadImages", "0"));
 	s.enableJS     = readBool(kv.get("enableJS", "0"));
 	s.verifyTLS    = readBool(kv.get("verifyTLS", "1"));
 	s.searchEngine = kv.get("searchEngine", defaultSearchEngine());

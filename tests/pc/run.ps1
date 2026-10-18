@@ -26,6 +26,9 @@ Write-Host "Compilation du test PC..." -ForegroundColor Cyan
 $sources = "main_pc.cpp ..\..\source\render\text.cpp ..\..\source\render\bitmap.cpp " +
            "..\..\source\render\stb_truetype_impl.c " +
            "..\..\source\css\css.cpp ..\..\source\html\dom.cpp " +
+           "..\..\source\html\parser.cpp " +
+           "..\..\source\image\image_store.cpp ..\..\source\image\stb_impl.c " +
+           "..\..\source\network\encoding.cpp " +
            "..\..\source\search\search.cpp ..\..\source\search\search_page.cpp"
 $cmd = "`"$vcvars`" >nul 2>&1 && cd /d `"$pcDir`" && " +
        "cl /nologo /std:c++17 /EHsc /O2 /W3 /D_CRT_SECURE_NO_WARNINGS /I. " +

@@ -9,99 +9,14 @@ static bool isRedirectWindow(int code)
 	return code == 301 || code == 302 || code == 303 || code == 307 || code == 308;
 }
 
-static bool isCompleteUrl(const std::string& u)
-{
-	return strStartsWith(u, "http://") || strStartsWith(u, "https://");
-}
-
 static std::string resolveRedirect(const std::string& base, const std::string& ref)
 {
 	return urlJoin(base, ref);
 }
 
-//--------------------------------------------------------------------------
-// Conversion de codepage Windows-1252 / ISO-8859-1 vers UTF-8
-//--------------------------------------------------------------------------
-static uint32_t cp1252ToUnicode(uint8_t b)
-{
-	if (b < 0x80) return b;
-	if (b >= 0xA0) return b;
-	static const uint16_t kCp1252[32] = {
-		0x20AC, 0x003F, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
-		0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x003F, 0x017D, 0x003F,
-		0x003F, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
-		0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x003F, 0x017E, 0x0178
-	};
-	return kCp1252[b - 0x80];
-}
-
-static bool isValidUtf8(const std::string& s)
-{
-	size_t i = 0, n = s.size();
-	while (i < n)
-	{
-		uint8_t c = (uint8_t)s[i++];
-		if (c < 0x80) continue;
-		int extra = 0;
-		if ((c & 0xE0) == 0xC0) extra = 1;
-		else if ((c & 0xF0) == 0xE0) extra = 2;
-		else if ((c & 0xF8) == 0xF0) extra = 3;
-		else return false;
-		if (i + extra > n) return false;
-		for (int k = 0; k < extra; k++)
-		{
-			uint8_t follow = (uint8_t)s[i++];
-			if ((follow & 0xC0) != 0x80) return false;
-		}
-	}
-	return true;
-}
-
-std::string convertEncodingToUtf8(const std::string& input, const std::string& contentType)
-{
-	if (input.empty()) return input;
-
-	std::string ct = toLower(contentType);
-	bool explicitLatin = (ct.find("iso-8859") != std::string::npos ||
-	                      ct.find("windows-1252") != std::string::npos ||
-	                      ct.find("latin1") != std::string::npos ||
-	                      ct.find("cp1252") != std::string::npos);
-
-	if (!explicitLatin && input.size() > 0)
-	{
-		size_t headLen = input.size() < 2048 ? input.size() : 2048;
-		std::string head = toLower(input.substr(0, headLen));
-		if (head.find("iso-8859") != std::string::npos ||
-		    head.find("windows-1252") != std::string::npos ||
-		    head.find("latin1") != std::string::npos)
-		{
-			explicitLatin = true;
-		}
-	}
-
-	if (!explicitLatin && isValidUtf8(input))
-		return input;
-
-	std::string out;
-	out.reserve(input.size() + input.size() / 4);
-	for (size_t i = 0; i < input.size(); i++)
-	{
-		uint8_t b = (uint8_t)input[i];
-		if (b < 0x80)
-			out += (char)b;
-		else
-		{
-			uint32_t cp = cp1252ToUnicode(b);
-			utf8Append(out, cp);
-		}
-	}
-	return out;
-}
-
-//--------------------------------------------------------------------------
 // Boucle complete d'une requete (avec redirections) selon la politique TLS.
 //--------------------------------------------------------------------------
-static bool httpGetInternal(const std::string& url0, const HttpOptions& opt,
+[[maybe_unused]] static bool httpGetInternal(const std::string& url0, const HttpOptions& opt,
 	const volatile int* cancelFlag, float* progressOut, NetResponse& out,
 	bool bypassTls)
 {
@@ -471,8 +386,8 @@ bool httpGetCurl(const std::string& url, const HttpOptions& opt, NetResponse& ou
 	curl_slist_free_all(hdr);
 	curl_easy_cleanup(h);
 
-	if (!out.body.empty())
-		out.body = convertEncodingToUtf8(out.body, out.contentType);
+	if (opt.convertTextEncoding && !out.body.empty())
+		out.body = convertEncodingToUtf8(out.body, out.contentType, opt.convertTextEncoding);
 
 	if (ctx.tooBig)
 	{
@@ -575,3 +490,4 @@ bool httpGet(const std::string& url0, const HttpOptions& opt, NetResponse& out,
 	}
 	return true;
 }
+

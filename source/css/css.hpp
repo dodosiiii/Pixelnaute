@@ -27,7 +27,16 @@ enum CssProperty : uint32_t
 	CssPropWidth       = 1u << 15,
 	CssPropHeight      = 1u << 16,
 	CssPropDisplay     = 1u << 17,
-	CssPropMono        = 1u << 18
+	CssPropMono        = 1u << 18,
+	CssPropMinWidth    = 1u << 19,
+	CssPropMaxWidth    = 1u << 20,
+	CssPropBoxSizing   = 1u << 21,
+	CssPropFlex        = 1u << 22,
+	CssPropFlexRow     = 1u << 23,
+	CssPropFlexWrap    = 1u << 24,
+	CssPropJustify     = 1u << 25,
+	CssPropMarginLeftAuto  = 1u << 26,
+	CssPropMarginRightAuto = 1u << 27
 };
 
 // Style calcule pour un noeud.
@@ -46,10 +55,16 @@ struct Style
 	int   marginTop  = 0, marginBottom = 0, marginLeft = 0, marginRight = 0;
 	int   paddingTop = 0, paddingBottom = 0, paddingLeft = 0, paddingRight = 0;
 	int   width      = 0;     // px fixes (0 = auto)
+	int   minWidth   = 0;
+	int   maxWidth   = 0;
 	int   height     = 0;
 	bool  displayNone = false;
 	bool  block       = false;  // display:block explicite
 	bool  mono        = false;  // <pre>/<code>
+	bool  marginLeftAuto = false, marginRightAuto = false;
+	bool  borderBox = false;
+	bool  flex = false, flexRow = false, flexWrap = false;
+	int   justifyContent = 0; // 0=start, 1=center, 2=space-between
 
 	float scale() const {                                  // echelle de fonte
 		int f = fontSize > 0 ? fontSize : 16;

@@ -11,8 +11,8 @@
 #include <cstdlib>
 
 #define NW_VERSION_MAJOR 0
-#define NW_VERSION_MINOR 3
-#define NW_VERSION_STRING "0.3.0"
+#define NW_VERSION_MINOR 4
+#define NW_VERSION_STRING "0.4.0"
 
 //-----------------------------------------------------------------------------
 // Limites memoire (stabilite avant tout sur New 3DS)

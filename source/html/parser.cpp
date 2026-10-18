@@ -1,4 +1,5 @@
 #include "parser.hpp"
+#include <stdio.h>
 
 //-----------------------------------------------------------------------------
 // Entites nommées supportees (les plus courantes)
@@ -25,7 +26,7 @@ static const NamedEntity kEntities[] =
 	{ "szlig", 0x00DF }, { "rarr", 0x2192 }, { "larr", 0x2190 }, { "uarr", 0x2191 },
 	{ "darr", 0x2193 }, { "hearts", 0x2665 }, { "thinsp", 0x2009 }, { "ensp", 0x2002 },
 	{ "emsp", 0x2003 }, { "check", 0x2713 }, { "le", 0x2264 }, { "ge", 0x2265 },
-	{ "ne", 0x2260 }, { "asymp", 0x2248 }, { "infin", 0x221E }, { "eacute*", 0 }, // garde-fou (ne matche jamais)
+	{ "ne", 0x2260 }, { "asymp", 0x2248 }, { "infin", 0x221E },
 	{ nullptr, 0 }
 };
 
@@ -79,7 +80,6 @@ size_t htmlDecodeEntity(const std::string& s, size_t pos, std::string& out, bool
 	{
 		const char* name = kEntities[k].name;
 		size_t len = strlen(name);
-		if (name[0] == '*') break;
 		if (pos + 1 + len < n && s.compare(pos + 1, len, name) == 0)
 		{
 			if (s[pos + 1 + len] == ';')
@@ -114,7 +114,7 @@ static bool isRawTag(const std::string& tag)
 static bool isVoidTag(const std::string& tag)
 {
 	return tag == "br" || tag == "hr" || tag == "img" || tag == "input" ||
-		tag == "meta" || tag == "link" || tag == "source" || tag == "wbr" ||
+		tag == "meta" || tag == "link" || tag == "source" || tag == "embed" || tag == "wbr" ||
 		tag == "col" || tag == "area" || tag == "base";
 }
 
@@ -172,12 +172,41 @@ static size_t findRawClose(const std::string& html, size_t start, const std::str
 	return std::string::npos;
 }
 
+static bool isIgnoredSubtree(const std::string& tag)
+{
+	return tag == "script" || tag == "svg" || tag == "template" ||
+		tag == "iframe" || tag == "canvas" || tag == "video" || tag == "audio" ||
+		tag == "object" || tag == "embed" || tag == "picture" || tag == "source";
+}
+
+static bool isHiddenElement(const std::vector<Attribute>& attrs)
+{
+	for (const auto& attr : attrs)
+	{
+		if (attr.name == "hidden") return true;
+		if (attr.name == "aria-hidden" && toLower(strTrim(attr.value)) == "true") return true;
+		if (attr.name == "style")
+		{
+			std::string compact;
+			compact.reserve(attr.value.size());
+			for (char c : toLower(attr.value))
+				if (c != ' ' && c != '\t' && c != '\r' && c != '\n') compact += c;
+			if (compact.find("display:none") != std::string::npos) return true;
+		}
+	}
+	return false;
+}
+
 //-----------------------------------------------------------------------------
 // Parser principal
 //-----------------------------------------------------------------------------
 bool htmlParse(const std::string& html, Document& doc)
 {
 	doc.clear();
+	size_t estimate = html.size() / 40;
+	if (estimate < 16) estimate = 16;
+	if (estimate > NW_MAX_DOM_NODES) estimate = NW_MAX_DOM_NODES;
+	doc.nodes.reserve(estimate);
 	int root = doc.addNode(Node{ NodeType::Document, "", "", {}, -1, {} });
 	doc.root = root;
 
@@ -226,7 +255,7 @@ bool htmlParse(const std::string& html, Document& doc)
 					return;
 				}
 			}
-			doc.createText(cur, textBuf);
+			doc.createText(cur, std::move(textBuf));
 			textBuf.clear();
 		}
 	};
@@ -325,31 +354,20 @@ bool htmlParse(const std::string& html, Document& doc)
 				}
 				i = j < n ? j + 1 : n;
 
-				// Sauter les sous-arbres graphiques et invisibles (svg, template)
-				if (tag == "svg")
+				// Sauter les sous-arbres sans rendu ainsi que les elements masques.
+				if (isIgnoredSubtree(tag) || isHiddenElement(attrs))
 				{
-					if (selfClosing) continue;
-					size_t p = findRawClose(html, i, "svg");
-					if (p != std::string::npos)
+					if (!selfClosing && !isVoidTag(tag))
 					{
-						i = p + 6;
-						while (i < n && html[i] != '>') i++;
-						if (i < n) i++;
+						size_t p = findRawClose(html, i, tag);
+						if (p != std::string::npos)
+						{
+							i = p + tag.size() + 2;
+							while (i < n && html[i] != '>') i++;
+							if (i < n) i++;
+						}
+						else i = n;
 					}
-					else i = n;
-					continue;
-				}
-				if (tag == "template")
-				{
-					if (selfClosing) continue;
-					size_t p = findRawClose(html, i, "template");
-					if (p != std::string::npos)
-					{
-						i = p + 11;
-						while (i < n && html[i] != '>') i++;
-						if (i < n) i++;
-					}
-					else i = n;
 					continue;
 				}
 
@@ -453,26 +471,28 @@ bool htmlParse(const std::string& html, Document& doc)
 int htmlSelfTest()
 {
 	int fails = 0;
+#define HTML_SELF_FAIL() do { fails++; printf("HTML self-test failure at line %d\n", __LINE__); } while (0)
 	{
 		Document doc;
 		bool ok = htmlParse(
 			"<html><head><title>Test</title></head>"
 			"<body><p>Salut &amp; &eacute; &#65;<a href=\"https://x.org\">lien</a></p>"
 			"<img src=\"a.png\"><br>fin</body></html>", doc);
-		if (!ok) fails++;
-		if (doc.title() != "Test") fails++;
-		if (doc.nodes.size() < 10) fails++;
+		if (!ok) HTML_SELF_FAIL();
+		if (doc.title() != "Test") HTML_SELF_FAIL();
+		if (doc.nodes.size() < 10) HTML_SELF_FAIL();
 	}
 	{
 		Document doc;
 		htmlParse("<div> x </div>", doc);
-		if (doc.empty()) fails++;
+		if (doc.empty()) HTML_SELF_FAIL();
 	}
 	{
-		std::string out;
+		std::string out = "a";
 		std::string s = "a&#x41;b";
-		(void)htmlDecodeEntity(s, 1, out);
-		if (out != "aAb") fails++;
+		const size_t end = htmlDecodeEntity(s, 1, out);
+		out.append(s.substr(end));
+		if (out != "aAb") HTML_SELF_FAIL();
 	}
 	{
 		Document doc;
@@ -480,7 +500,7 @@ int htmlSelfTest()
 		int pCount = 0;
 		for (const auto& nd : doc.nodes)
 			if (nd.isElement() && nd.tag == "p") pCount++;
-		if (pCount != 2) fails++;
+		if (pCount != 2) HTML_SELF_FAIL();
 	}
 	{
 		Document doc;
@@ -490,18 +510,18 @@ int htmlSelfTest()
 		int div = doc.firstByTag(doc.root, "div");
 		if (p < 0 || span < 0 || div < 0 || doc.nodes[span].parent != p ||
 			doc.nodes[div].parent != doc.nodes[p].parent)
-			fails++;
+			HTML_SELF_FAIL();
 	}
 	{
 		Document doc;
 		htmlParse("<html><body><script>large script text</script><p>visible</p></body></html>", doc);
 		int body = doc.firstByTag(doc.root, "body");
-		if (body < 0 || doc.textOf(body) != "visible") fails++;
+		if (body < 0 || doc.textOf(body) != "visible") HTML_SELF_FAIL();
 	}
 	{
 		Document doc;
 		htmlParse("<script>hidden</SCRIPT ><p>shown</p>", doc);
-		if (doc.textOf(doc.root) != "shown") fails++;
+		if (doc.textOf(doc.root) != "shown") HTML_SELF_FAIL();
 	}
 	{
 		std::string html;
@@ -511,7 +531,7 @@ int htmlSelfTest()
 		Document doc;
 		if (!htmlParse(html, doc) || doc.nodes.size() > NW_MAX_DOM_NODES ||
 			doc.textOf(doc.root).find("early text survives") == std::string::npos)
-			fails++;
+			HTML_SELF_FAIL();
 	}
 	{
 		std::string html = "<div>";
@@ -520,17 +540,17 @@ int htmlSelfTest()
 		for (int i = 0; i < 1001; i++) html += "</section>";
 		html += "</div>";
 		Document doc;
-		if (!htmlParse(html, doc) || doc.title() != "Deep title") fails++;
+		if (!htmlParse(html, doc) || doc.title() != "Deep title") HTML_SELF_FAIL();
 	}
 	{
 		// Test entites dans attributs : &section=2 ne doit PAS devenir §ion=2
 		Document doc;
 		htmlParse("<a href=\"/test?a=1&section=2&copy=3&amp;real=1\">link</a>", doc);
 		int a = doc.firstByTag(doc.root, "a");
-		if (a < 0) fails++;
+		if (a < 0) HTML_SELF_FAIL();
 		else {
 			const char* h = doc.nodes[a].getAttr("href");
-			if (!h || std::string(h) != "/test?a=1&section=2&copy=3&real=1") fails++;
+			if (!h || std::string(h) != "/test?a=1&section=2&copy=3&real=1") HTML_SELF_FAIL();
 		}
 	}
 	{
@@ -538,15 +558,43 @@ int htmlSelfTest()
 		Document doc;
 		htmlParse("<div><svg><path d=\"M0 0\"/><circle r=\"5\"/></svg><p>apres</p></div>", doc);
 		int p = doc.firstByTag(doc.root, "p");
-		if (p < 0 || doc.textOf(p) != "apres") fails++;
-		if (doc.firstByTag(doc.root, "path") >= 0) fails++;
+		if (p < 0 || doc.textOf(p) != "apres") HTML_SELF_FAIL();
+		if (doc.firstByTag(doc.root, "path") >= 0) HTML_SELF_FAIL();
+	}
+	{
+		Document doc;
+		htmlParse("<body><iframe><p>iframe</p></iframe><canvas><b>canvas</b></canvas>"
+			"<video><p>video</p></video><audio><p>audio</p></audio>"
+			"<object><p>object</p></object><embed src='hidden'>"
+			"<picture><img src='hidden.png'><source src='hidden.jpg'></picture>"
+			"<div hidden><b>hidden</b></div>"
+			"<div aria-hidden='true'><b>aria hidden</b></div>"
+			"<div style='display: none'><b>style hidden</b></div><p>visible</p></body>", doc);
+		static const char* ignored[] = {
+			"iframe", "canvas", "video", "audio", "object", "embed", "picture",
+			"source", "img"
+		};
+		for (const char* tag : ignored)
+			if (doc.firstByTag(doc.root, tag) >= 0)
+			{
+				printf("Parseur: balise masquee conservee: %s\n", tag);
+				HTML_SELF_FAIL();
+			}
+		int body = doc.firstByTag(doc.root, "body");
+		if (body < 0 || doc.textOf(body) != "visible")
+		{
+			printf("Parseur: texte apres elements ignores: [%s]\n",
+				body < 0 ? "body manquant" : doc.textOf(body).c_str());
+			HTML_SELF_FAIL();
+		}
 	}
 	{
 		// Test <pre> avec balises internes et entites
 		Document doc;
 		htmlParse("<pre><code>&lt;hello&gt;</code></pre>", doc);
 		int code = doc.firstByTag(doc.root, "code");
-		if (code < 0 || doc.textOf(code) != "<hello>") fails++;
+		if (code < 0 || doc.textOf(code) != "<hello>") HTML_SELF_FAIL();
 	}
+#undef HTML_SELF_FAIL
 	return fails;
 }

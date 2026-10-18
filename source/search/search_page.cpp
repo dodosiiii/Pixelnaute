@@ -86,7 +86,22 @@ int searchPageSelfTest()
 	if (!searchPageRewrite(html, rewritten) ||
 		searchPageLastResultCount() != 1 ||
 		rewritten.find("Google Search") != std::string::npos ||
-		rewritten.find("https://example.org/bonjour") == std::string::npos)
+		rewritten.find("https://example.org/bonjour") == std::string::npos ||
+		rewritten.find("<body style=\"background: #000000") == std::string::npos ||
+		rewritten.find("<div style=\"background: #000000; color: #ECE8E8\">") == std::string::npos)
+		fails++;
+
+	const std::string sponsoredHtml =
+		"<table>"
+		"<tr><td class='result-sponsored'>Sponsored</td>"
+		"<td><a class='result-link' href='https://ads.example/ad'>Ad result</a></td></tr>"
+		"<tr><td><a class='result-link' href='https://real.example/page'>Real result</a></td>"
+		"<td class='result-snippet'>Useful result</td></tr>"
+		"</table>";
+	if (!searchPageRewrite(sponsoredHtml, rewritten) ||
+		searchPageLastResultCount() != 1 ||
+		rewritten.find("Ad result") != std::string::npos ||
+		rewritten.find("https://real.example/page") == std::string::npos)
 		fails++;
 	return fails;
 }
@@ -389,9 +404,11 @@ static void extractResults(const std::string& html, std::vector<SearchResult>& o
 		// resultats de recherche. Dans DuckDuckGo Lite elles portent la classe
 		// "result-sponsored" et sont suivies d'un lien "more info".
 		{
+			const size_t rowStart = html.rfind("<tr", tagStart);
 			const size_t annonce = html.rfind("result-sponsored", tagStart);
 			const bool inSponsoredBlock =
-				(annonce != std::string::npos && tagStart - annonce < 3000);
+				(annonce != std::string::npos &&
+				 (rowStart == std::string::npos || annonce >= rowStart));
 			const bool isMoreInfo =
 				(title.size() <= 12 &&
 				 (title.find("more info") != std::string::npos ||
@@ -483,7 +500,10 @@ bool searchPageRewrite(const std::string& html, std::string& out)
 
 	std::string h;
 	h += "<html><head><title>" + htmlEscape(pageTitle) + "</title></head>";
-	h += "<body style=\"background: #17131A; color: #ECE8E8\">";
+	h += "<body style=\"background: #000000; color: #ECE8E8\">";
+	// Le fond de page pur est aussi peint par un conteneur explicite : certains
+	// chemins de rendu ne propagent pas le fond du body dans les espaces vides.
+	h += "<div style=\"background: #000000; color: #ECE8E8\">";
 
 	h += "<div style=\"background: #241D28; padding: 6px; margin-bottom: 8px\">";
 	h += "<div style=\"font-size: 15px; font-weight: bold; color: #F2A25C\">"
@@ -510,6 +530,7 @@ bool searchPageRewrite(const std::string& html, std::string& out)
 
 	h += "<div style=\"text-align: center; font-size: 12px; color: #7A6E70\">"
 	     "Resultats simplifies pour New 3DS</div>";
+	h += "</div>";
 	h += "</body></html>";
 
 	out = h;

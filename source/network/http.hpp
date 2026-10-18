@@ -3,12 +3,21 @@
 // http.hpp - Client HTTP (via le service systeme httpc de la console)
 //=============================================================================
 #include "../common.hpp"
+#include "encoding.hpp"
 #include <atomic>
 #include <string>
+
+enum class NetRequestType : uint8_t
+{
+	Page,
+	Stylesheet,
+	Image,
+};
 
 struct NetResponse
 {
 	bool ok = false;
+	NetRequestType requestType = NetRequestType::Page;
 	int status = 0;
 	std::string url;         // URL finale apres redirections
 	std::string body;
@@ -33,10 +42,9 @@ struct HttpOptions
 	int timeoutMs = 30000;
 	bool verifyTls = true;  // verifier avant le repli TLS automatique
 	bool allowTlsBypass = true; // repli sans verification si la validation echoue
+	bool convertTextEncoding = true; // desactiver pour les corps binaires (images)
 };
 
-// Convertit une page ISO-8859-1 ou Windows-1252 en UTF-8
-std::string convertEncodingToUtf8(const std::string& input, const std::string& contentType);
 
 // Effectue une requete GET synchrone avec redirections.
 // Retourne false si le reseau n'est pas disponible (pas de connexion).
@@ -54,3 +62,4 @@ bool httpGetCurl(const std::string& url, const HttpOptions& opt, NetResponse& ou
 // Initialise / finalise le service HTTP (a appeler au demarrage / a la sortie).
 bool httpServiceInit();
 void httpServiceExit();
+

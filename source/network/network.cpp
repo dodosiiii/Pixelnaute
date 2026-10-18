@@ -79,7 +79,8 @@ size_t NetworkManager::bytesReceived() const
 
 //--------------------------------------------------------------------------
 bool NetworkManager::start(const std::string& url, size_t maxBytes, bool verifyTls,
-	const std::string& method, const std::string& postData)
+	const std::string& method, const std::string& postData,
+	NetRequestType requestType, int timeoutMs, const std::string& referer)
 {
 	if (!socInit_ || !curlInit_)
 	{
@@ -92,6 +93,9 @@ bool NetworkManager::start(const std::string& url, size_t maxBytes, bool verifyT
 	queuedRequest_.verifyTls = verifyTls;
 	queuedRequest_.method = method;
 	queuedRequest_.postData = postData;
+	queuedRequest_.requestType = requestType;
+	queuedRequest_.timeoutMs = timeoutMs;
+	queuedRequest_.referer = referer;
 	queuedRequestReady_ = true;
 	resultReady_ = false;
 	result_ = NetResponse();
@@ -185,9 +189,15 @@ void NetworkManager::worker()
 		opt.allowTlsBypass = request.verifyTls;
 		opt.method = request.method;
 		opt.postData = request.postData;
+		opt.timeoutMs = request.timeoutMs;
+		opt.referer = request.referer;
+		opt.convertTextEncoding = request.requestType != NetRequestType::Image;
 
 		NetResponse resp;
 		const bool ok = httpGet(request.url, opt, resp, &cancelFlag_, &progress_, &bytes_);
+		// httpGet initialise NetResponse; reinstaurer le type ensuite pour que
+		// Browser distingue les pages, feuilles CSS et images.
+		resp.requestType = request.requestType;
 
 		LightLock_Lock(&lock_);
 		if (queuedRequestReady_)

@@ -1,0 +1,407 @@
+================================================================================
+ PIXELNAUTE - FEUILLE DE ROUTE & CONSIGNES V0.4  (revision 3)
+================================================================================
+
+AVIS IMPORTANT POUR LES AGENTS IA / ASSISTANTS DE CODE :
+--------------------------------------------------------------------------------
+1. TRAVAIL PROGRESSIF ("PEU A PEU") :
+ - NE TENTEZ PAS d'implementer toutes les etapes en une seule fois.
+ - Traitez UNE sous-tache a la fois : modifier, compiler, tester, puis marquer
+ [FAIT] dans ce fichier avant de passer a la suivante.
+ - Compilez apres chaque modification avec 'build.bat'. Si le build casse,
+ corrigez AVANT toute autre chose. Ne cumulez jamais deux sous-taches non
+ validees.
+ - Ne reecrivez pas un fichier entier pour une petite correction : modifiez
+ uniquement les fonctions concernees.
+ - Si une sous-tache demande un fichier que vous n'avez pas lu, LISEZ-LE
+ d'abord. Ne devinez pas. (Une hypothese fausse sur les couleurs a fait
+ perdre du temps sur 1.6.2 alors que la cause etait dans renderer.cpp.)
+
+2. CONTRAINTES DE LA NEW NINTENDO 3DS :
+ - RAM et memoire lineaire limitees : pas d'allocation massive, attention aux
+ fuites et a la fragmentation (eviter les std::string inutiles, utiliser
+ std::move, reserve() sur les vecteurs dont la taille est previsible).
+ - CPU ARM11 : aucune boucle lourde ou bloquante sur le thread principal.
+ REGLE ABSOLUE : aucun appel reseau synchrone (httpGet) depuis la boucle
+ principale apres la v0.4.
+ - Pile : deja fixee a 1 Mo dans main.cpp (__stacksize__) et la recursion du
+ layout est limitee a 256 niveaux (renderDepth_). Ne pas augmenter sans
+ mesurer la memoire.
+
+3. ETAT DU CODE APRES LA RELEASE V0.3 :
+ - Parseur de version de mise a jour GitHub corrige (tags a 2 et 3 nombres :
+ 'v0.3', 'v0.4.0').
+ - Chargement des images DESACTIVE par defaut (loadImages = false), marque
+ "en developpement / experimental" dans les reglages (risque de plantage
+ memoire / freeze).
+ - Les <script>, <svg> et <template> sont deja ignores par le parseur HTML
+ (contenu des scripts jete). A conserver tel quel jusqu'a l'etape 3.
+ - Couleurs : le moteur utilise le format 0xAABBGGRR partout (Bitmap,
+ C2D_Color32). Ne JAMAIS ecrire une couleur en 0xRRGGBBAA.
+
+4. CRITERES DE VALIDATION D'UNE SOUS-TACHE (les 4 doivent etre vrais) :
+ a) build.bat passe sans erreur ni nouvel avertissement.
+ b) Test manuel decrit dans la sous-tache : OK sur New 3DS (ou emulateur).
+ c) Pas de regression memoire visible (voir diagBootNote : app_mem_free et
+ linear_mem_free apres chargement d'une page lourde).
+ d) Tout changement touchant l'affichage est teste avec une page AVEC images
+ ET une page SANS image (ex. accueil interne, resultats de recherche,
+ example.com), et avec 2 onglets differents.
+
+================================================================================
+ETAPE 0 : PREPARATION (rapide, a faire en premier)
+================================================================================
+0.1. [FAIT] Passer NW_VERSION_STRING a "0.4.0".
+0.2. [FAIT] Preparer 3 pages de test (a garder sur un petit serveur ou en nw://) :
+ - T1 : page simple (texte, liens, un formulaire), SANS image
+ - T2 : page avec 2 ou 3 feuilles CSS externes (lente)
+ - T3 : page lourde (>300 Ko de HTML, plus de 1500 noeuds)
+ Elles servent de reference pour toutes les etapes (avant / apres).
+0.3. [A FAIRE - baseline historique absente] Relever une mesure de base (temps ressenti et diagBootNote) pour T1, T2, T3
+ AVANT de modifier quoi que ce soit. Aucune mesure avant les modifications n'est disponible ; ne pas la reconstituer ni la presenter comme une vraie baseline. Relever les mesures actuelles en regression 4.1.
+
+================================================================================
+ETAPE 1 : AMELIORATION COMPLETE DE L'UI DE L'ECRAN DU BAS (BOTTOM UI)
+================================================================================
+Objectif : ecran inferieur (tactile 320x240) moderne, reactif, sans bug
+d'affichage.
+
+FAIT (v0.3 -> v0.4) :
+1.1. [FAIT] Barre de navigation : boutons grises si impossible, retour visuel
+ presse, reload en accent, compteur d'onglets en accent si > 1.
+1.2. [FAIT] Clavier tactile : rangee du bas "123 | .com | espace | .fr | OK".
+1.3. [FAIT] Version "vX.Y.Z" en bas a droite de la barre d'etat.
+1.4. [FAIT] Barre de progression 3px + animation pulsante a 0%.
+1.5. [FAIT] tabHit precis selon le vrai nombre d'onglets.
+
+PRIORITE HAUTE (bugs bloquants) :
+
+1.6.1. [FAIT] Bug du freeze a l'ouverture des vrais sites (5 a 10 secondes)
+ CAUSE : browser.cpp, Browser::onResponse, boucle "Feuilles de style externes" :
+ httpGet synchrone, jusqu'a 3 feuilles x 4000 ms de timeout.
+ Correctif rapide (le correctif propre vient en 2.1) :
+ - Ne charger qu'UNE seule feuille externe (loadedSheets < 1).
+ - cssOpt.timeoutMs = 1200 et cssOpt.maxBytes = 64 * 1024.
+ - Budget de temps total pour les feuilles externes : 1500 ms maximum
+ (mesurer avec timeMs() avant/apres, abandonner le reste si depasse).
+ - Ignorer les feuilles dont l'URL contient "font", "icon", "print" ou
+ dont l'attribut media vaut "print".
+ - Mettre diagBootNote("css_external_ms", duree) pour mesurer.
+ Test : page T2 doit s'afficher en moins de 2 s apres reception du HTML.
+
+1.6.2. [CODE FAIT - VALIDATION NEW 3DS REQUISE] Ecran du haut noir / page qui ne change pas
+ (remplace l'ancienne hypothese "texte clair sur fond blanc", qui etait FAUSSE :
+ layout.cpp gere correctement les fonds sombres)
+ SYMPTOMES : accueil et resultats de recherche noirs alors que les liens
+ sont cliquables (la souris change de forme) ; la premiere page chargee
+ reste affichee ; changer d'URL ou d'onglet ne change rien tant qu'on ne
+ ferme pas l'appli ; les vrais sites (avec images) s'affichent.
+ CAUSE : render/renderer.cpp. PageRenderer::upload() remplit texData mais ne
+ fait JAMAIS C3D_TexUpload. Cet appel n'existe qu'a la fin de drawImages(),
+ qui sort immediatement quand page.images est vide. Une page sans image
+ n'est donc jamais envoyee au GPU : la texture reste celle d'avant
+ (noire a l'initialisation, ou la derniere page avec images).
+ CORRECTIF :
+ - Dans PageRenderer::draw(), apres upload(page, scrollY) et
+ drawImages(page, scrollY), appeler UNE fois C3D_TexUpload(&tex, texData).
+ - Supprimer le C3D_TexUpload final de drawImages() (evite une double copie).
+ TEST (tous obligatoires) :
+ a) accueil interne lisible, b) recherche DuckDuckGo Lite lisible,
+ c) example.com (sans image), d) un site avec images, e) ouvrir un site puis
+ un autre : la page change bien, f) 2 onglets avec pages differentes,
+ g) defilement d'une page sans image, h) changer l'URL de la premiere page.
+
+1.6.3. [FAIT] Menu START deborde de l'ecran
+ CAUSE : drawMenu, 7 lignes x 25 px depuis y=92 -> la ligne "A propos" est a
+ y=242 (hors ecran) et "Reglages" touche la barre d'etat (y=220).
+ Correctif : grille de 2 colonnes x 4 lignes (boutons 152x30), de y=92 a
+ y=216 ; adapter le calcul du toucher dans handleTouch (case Menu).
+ Ordre propose : Nouvel onglet | Fermer l'onglet | Ajouter aux favoris |
+ Favoris | Historique | Reglages | A propos | (libre : Plein ecran ou Recharger).
+ Test : les 7 entrees sont visibles et cliquables.
+
+1.6.4. [FAIT] Ecran "A propos" : textes superposes
+ CAUSE : drawAbout dessine deux lignes a y=194 et y=198.
+ Correctif : "Touchez l'ecran pour revenir." a y=216 (ou espacer a 22 px).
+ Ajouter la version et la date de build.
+
+1.6.5. [FAIT] Version / titre qui se chevauchent dans la barre d'etat
+ - Largeur max du titre/statut : 280 px (au lieu de 300) pour ne jamais passer
+ sous "vX.Y.Z". Calculer : 318 - textW(versionStr) - 8.
+
+1.6.6. [FAIT] Couleurs en RGBA au lieu de 0xAABBGGRR dans render/layout.cpp
+ CAUSE : plusieurs constantes sont ecrites en 0xRRGGBBAA alors que le moteur
+ attend 0xAABBGGRR : le bouton "submit" sort orange au lieu de bleu, le texte
+ des <pre> et des listes sort rosé.
+ Remplacer :
+ 0x2E5A9EFF -> 0xFF9E5A2E (bouton submit)
+ 0x9AB8E4FF -> 0xFFE4B89A (bord du bouton)
+ 0x8A8A96FF -> 0xFF968A8A (bords de champs, hr, blockquote)
+ 0x666677FF -> 0xFF776666 (cadre d'image)
+ 0x3A3A46FF -> 0xFF463A3A (fond d'image)
+ 0x9A9AA8FF -> 0xFFA89A9A (alt d'image)
+ 0xC9C9D4FF -> 0xFFD4C9C9 (puces de liste)
+ 0xCFCFDAFF -> 0xFFDACFCF (texte des <pre>)
+ Test : bouton de formulaire bleu, texte des <pre> gris clair.
+
+1.6.7. [FAIT] Fonds de blocs invisibles (tuiles de l'accueil, resultats de recherche)
+ CAUSE : layout.cpp, dans le conteneur : saveRegion + fillRect +
+ restoreRegion s'annulent (la zone entiere est restauree, pas seulement le
+ texte). blockBackgrounds_.height n'est jamais renseigne.
+ CORRECTIF : memoriser le fond de page en RGB565 (pageBg565_) ; dans
+ restoreRegion, ne reecrire que les pixels differents de pageBg565_.
+ Supprimer ou renseigner blockBackgrounds_ (il est inutile tel quel).
+ Test : tuiles de l'accueil visibles avec leur fond, texte lisible dessus ;
+ carte dans une carte (fonds imbriques).
+
+1.6.8. [FAIT] Nettoyage de debogage avant release (main.cpp)
+ - Retirer l'AUTOTEST DU DEFILEMENT : a la frame 20 la page defile toute seule
+ de 200 px.
+ - Retirer les ecritures diag_top.bin / shot_avant.bin / shot_apres.bin sur
+ la SD (frames 2 et 24), qui ecrivent ~245 Ko. Garder writeDiag sur SELECT
+ uniquement.
+
+1.6.9. [FAIT] Resultats DuckDuckGo Lite : une annonce peut masquer un vrai resultat
+ CAUSE : search_page.cpp, extractResults : si "result-sponsored" apparait dans
+ les 3000 caracteres AVANT un lien, ce lien est ecarte. Un vrai resultat
+ place juste apres une annonce disparait.
+ Correctif : limiter la recherche arriere au debut de la ligne <tr> courante
+ (rfind("<tr", tagStart)) au lieu de 3000 caracteres.
+ Test : recherche qui affiche des annonces : tous les vrais resultats sont
+ presents.
+
+PRIORITE NORMALE :
+
+1.7. [FAIT] Page des Reglages - amelioration visuelle :
+ - Lignes de 18 px (au lieu de 15) pour la lisibilite. Avec 7 reglages, il
+ faut une ZONE SCROLLABLE : visible = (215 - 110) / 18 = 5 lignes ; utiliser
+ listOffset_ et les touches haut/bas + glisser au stylet.
+ - Indicateur de defilement (petite barre a droite) quand il y a plus de
+ lignes que la zone.
+ - Badges "Dev" (orange) et "Beta" sur les options experimentales (images,
+ JavaScript).
+ - Passer la ligne JavaScript en vrai interrupteur (set.enableJS existe deja)
+ des que l'etape 3 sera prete ; d'ici la : "Non disponible" grise.
+ - Fichiers : source/ui/ui.cpp (drawSettingsList + handler Settings).
+
+1.8. [FAIT] Amelioration de la barre d'adresse :
+ - Afficher "http://" ou "https://" en gris attenue (C_TEXT_DD) et le reste en
+ couleur normale : dessiner le schema, puis le reste a x + textW(schema).
+ Attention : fitStr doit etre applique au reste avec (274 - largeur schema).
+ - Remplacer le cadenas par une pastille : verte (HTTPS), orange (HTTP).
+ (C_ORANGE existe deja dans common.hpp.)
+ - Pour nw://home : afficher le champ vide avec "Rechercher ou saisir une
+ adresse" plutot que "nw://home".
+ - Fichier : ui.cpp (drawAddressBar).
+
+1.9. [FAIT] Bouton "onglets" de la rangee de navigation :
+ - Actuellement toucher le chiffre cree un nouvel onglet (trompeur).
+ - Nouveau comportement : toucher = onglet suivant (si > 1 onglet), sinon
+ nouvel onglet. "Nouvel onglet" reste dans le menu START.
+ - Si NW_MAX_TABS est atteint : toast "Maximum d'onglets atteint".
+
+1.10. [FAIT] Clavier tactile - accents et majuscules :
+ - Ajouter une touche "Maj" (action 5) pour les majuscules (une lettre).
+ - Ajouter une page accents : e a u c i o ... avec e, e, e, a, a, u, c, i, o
+ (tout en UTF-8). Appui long sur une lettre = variantes accentuees (si trop
+ complexe : page dediee "abc / 123 / eac").
+ - Garder la rangee du bas ".com | espace | .fr | OK" sur la page lettres.
+ NOTE : les accents saisis doivent aussi s'afficher : text.cpp utilise Noto
+ Sans si la police est presente, sinon la police systeme. Tester l'affichage
+ dans la barre d'adresse ET dans un champ de formulaire.
+
+1.11. [FAIT] Favoris : securite et coherence :
+ - La touche X (clavier) doit supprimer l'element SELECTIONNE, pas entries[0].
+ Ajouter une selection (listSel_) deplacable avec haut/bas.
+ - Le X tactile : zone plus large (x >= 296) + confirmation par second appui
+ ("Touchez encore pour supprimer", delai 2 s).
+
+1.12. [FAIT] Nettoyage du code (sans changer le comportement) :
+ - browser.cpp : Browser::openInput contient deux branches identiques
+ (openUrl(resolved)) : garder une seule.
+ - parser.cpp : supprimer l'entree sentinelle {"eacute*", 0} et le test
+ name[0] == '*'.
+ - http.cpp : httpGetInternal (version httpc) n'est plus utilisee : la
+ supprimer ou la marquer [[maybe_unused]] pour eviter l'avertissement.
+
+================================================================================
+ETAPE 2 : AMELIORATION ET OPTIMISATION DU MOTEUR HTML & CSS
+================================================================================
+[VALIDATION NEW 3DS PARTIELLE - fonds DuckDuckGo Lite noirs confirmes par l'utilisateur; chargement des images reporte a sa demande. Affichage complet et navigation entre 2 onglets restent a confirmer avant 3.1.]
+Objectif : plus de freeze, rendu plus rapide, meilleure fidelite visuelle.
+
+2.1. [CODE FAIT - VALIDATION CONSOLE REQUISE] Suppression des blocages reseau synchrones (version propre de 1.6.1) :
+ - Principe : afficher TOUT DE SUITE la page sans feuilles externes, puis
+ charger les feuilles en arriere-plan, une par une, et refaire la mise en page.
+ - Ajouter dans Browser une file cssQueue_ (URL a charger) et une methode
+ tickStyles(), appelee a chaque frame comme tickImages().
+ - NetworkManager gere une seule requete a la fois : ajouter un "type de
+ requete" (page / css) dans NetResponse pour que onResponse distingue les
+ deux. Une requete css ne doit JAMAIS annuler la page courante.
+ - A chaque feuille recue : t.css.parseStylesheet(body), puis re-mise en page
+ (renderInto reutilise tab.doc) en conservant scrollY. Limiter a 2 re-mises
+ en page par page pour eviter les saccades.
+ - Annuler la file si l'utilisateur change de page ou d'onglet.
+ - Afficher "Styles..." dans la barre d'etat pendant le chargement.
+ - Test : T2 s'affiche immediatement, puis se met en forme sans bloquer.
+
+2.2. [CODE FAIT - VALIDATION CONSOLE REQUISE] Optimisation du parseur HTML et de la memoire DOM :
+ [deja fait : <script>, <svg>, <template> ignores ; limite NW_MAX_DOM_NODES]
+ - Ignorer aussi : <iframe>, <canvas>, <video>, <audio>, <object>, <embed>,
+ <picture>/<source>, et les elements caches (attribut hidden, aria-hidden
+ "true", style inline "display:none"). [layout.cpp ignore deja hidden,
+ aria-hidden et display:none au rendu : le faire AUSSI au parsing pour
+ economiser les noeuds]
+ - Eviter les copies : doc.createText(cur, std::move(textBuf)) ; reserve() sur
+ doc.nodes (estimer taille_html / 40).
+ - Remplacer Node::tag (std::string) par un identifiant numerique de balise
+ (enum ou uint8_t) + table de noms : gain memoire important sur les pages
+ de plus de 2000 noeuds. A faire en dernier, avec les tests parser.
+ - Garder htmlSelfTest() a jour et l'executer sur PC a chaque modification.
+ - Mesurer avant/apres : page_dom_nodes, app_mem_free_after_parse.
+
+2.3. [CODE FAIT - VALIDATION CONSOLE REQUISE] Rendu CSS ameliore :
+ - Meilleure gestion des unites relatives (%, em, rem, vw).
+ - margin: auto pour centrer les blocs ; flexbox minimal (flex-direction,
+ justify-content: center / space-between, flex-wrap) en repliant sur du
+ bloc/inline quand c'est trop complexe.
+ - max-width / min-width, box-sizing: border-box.
+ - Eviter tout debordement de texte ou de conteneurs sur la largeur (400 px
+ pour l'ecran du haut) : couper les mots trop longs.
+ - Le support de display:none existe deja (st.displayNone dans layout.cpp).
+ - Ajouts : %, vw/vh, largeurs min/max, margin:auto, box-sizing et flexbox
+   horizontal minimal ; les mots trop longs sont deja decoupes en UTF-8.
+ - Validation effectuee : build New 3DS et cssSelfTest PC. Verification
+   visuelle sur console/emulateur a refaire en regression (4.1 a 4.3).
+
+2.4. [CODE FAIT - VALIDATION CONSOLE REQUISE] Stabilisation du gestionnaire d'images :
+ - Decodage STB Image avec pic de RAM reduit : limiter la taille
+ (largeur/hauteur maximum, par exemple 320x240), echelle reduite au decodage
+ (stbi_load puis reduction par ligne si possible).
+ - Plafond strict de memoire pour le cache d'images (ex. 2 Mo) avec
+ eviction LRU, pour empecher tout crash OOM.
+ - Ne reactiver loadImages par defaut QUE si T3 passe avec les images
+ activees sans plantage ni baisse notable de la memoire libre.
+ - Ajouts : decode limite a 320x240 (300 Ko RGBA max), cache plafonne a 2 Mo,
+   eviction LRU, telechargement asynchrone sur le worker reseau et rendu
+   actualise apres reception ; loadImages reste desactive par defaut faute
+   de mesure T3 sur console. L'utilisateur reporte les essais d'images pour
+   l'instant; ne pas marquer la validation console 2.4 comme faite.
+
+2.5. [CODE FAIT - VALIDATION CONSOLE REQUISE] Robustesse de la mise en page :
+ - [deja fait] profondeur de recursion limitee a 256 (renderDepth_) et pile de
+ 1 Mo ; ne rien changer sauf si un plantage de pile est observe.
+ - Afficher "Mise en page..." AVANT le calcul (la barre d'etat doit etre
+ rafraichie avant le blocage) - c'est deja le cas pour layoutPending_ pendant
+ une frame ; verifier que ca marche aussi apres un re-layout CSS.
+ - Verification code : layoutPending_ est pose sur la reponse CSS et le statut
+   est dessine avant le re-layout differe dans tickStyles(). Le controle visuel
+   sur appareil reste a faire en regression (4.1 a 4.3).
+
+================================================================================
+ETAPE 3 : INTEGRATION LEGERE DE JAVASCRIPT
+================================================================================
+[ETUDE 3.0 TERMINEE - QuickJS choisi ; passage a 3.1 autorise explicitement par l'utilisateur malgre la validation console partielle de l'etape 2]
+
+3.0. [FAIT - QuickJS choisi sur les mesures New 3DS] Etude de faisabilite :
+ - Compiler QuickJS ET un moteur plus leger (MuJS ou Duktape) pour la 3DS.
+ Mesurer : taille du binaire, RAM au demarrage, temps d'un script de test
+ (boucle de 100 000 iterations + manipulation de chaines).
+ - Choisir le moteur sur ces mesures. Si QuickJS depasse le budget memoire
+ (plus de 4 Mo de tas), prendre le moteur le plus leger : ES5 suffit pour
+ la v0.4.
+ - Realiste : les gros sites (frameworks) ne tourneront pas. Cible = petits
+ scripts de formulaires, menus, compteurs, pages simples.
+ - Sondes compilees : tests/jsbench/build/quickjs.3dsx et mujs.3dsx.
+   Dernieres tailles 3DSX (sonde + moteur + libctru) : QuickJS 985 940 octets ;
+   MuJS 444 236 octets. Le dump crash_dump_00000019.dmp correspond a MuJS
+   (PC symbolise dans js_regcompx, cadre local d'environ 33 Kio). La sonde
+   reserve maintenant 1 Mio de pile native comme le navigateur; le dump
+   crash_dump_00000019.dmp a permis de corriger son plantage au demarrage.
+   Mesures New 3DS : MuJS tas 154 419 octets a l'initialisation et 174 620
+   apres le script, init 6 ms / script 1 900 ms, script_ok=1. QuickJS tas
+   145 788 octets a l'initialisation et 146 556 apres le script, init 8 ms /
+   script 333 ms, script_ok=1. QuickJS est retenu : il utilise moins de tas
+   mesure et execute le script environ 5,7 fois plus vite; sa sonde est plus
+   grande de 541 704 octets (985 940 contre 444 236). L'ancienne mesure
+   QuickJS a 360 octets etait incomplete car newlib n'a pas
+   malloc_usable_size; la sonde utilise maintenant un allocateur mesure
+   avec limite stricte de 4 Mio. Les mesures systeme osGetMemRegionFree()
+   a zero sont invalidees. L'utilisateur a explicitement autorise le passage
+   a l'etape 3 malgre les validations console restantes de l'etape 2.
+
+3.1. [CODE FAIT - VALIDATION NEW 3DS REQUISE] Integration du moteur JS choisi :
+ - Limite stricte du tas JS : 2 a 4 Mo (JS_SetMemoryLimit pour QuickJS).
+ - Limite de pile JS : 64 a 128 Ko (JS_SetMaxStackSize).
+ - Un contexte par page ; liberer le contexte au changement de page.
+ - Ajouter l'option de reglage enableJS (par defaut : DESACTIVE en v0.4).
+ - QuickJS compile dans l'application avec un allocateur newlib mesure,
+   tas limite a 4 Mio, pile JS limitee a 96 Kio; contextes ouverts par page
+   si JavaScript est active, liberes lors de navigation/fermeture d'onglet.
+   Le reglage est persistant et reste desactive par defaut. Build New 3DS
+   passe avec 119 avertissements (niveau precedent); tests PC passes sans
+   echec. Test console de cette integration a effectuer avant 3.2 : activer
+   puis desactiver JavaScript, naviguer et fermer un onglet sans plantage.
+
+3.2. Securite anti-freeze (watchdog) :
+ - JS_SetInterruptHandler (ou equivalent) : si un script depasse 50 a 100 ms,
+ l'execution est interrompue. Budget total par page : 300 ms.
+ - Executer les scripts APRES le premier affichage de la page, jamais avant.
+ - Pas de setTimeout/setInterval en v0.4, sauf un seul setTimeout borne
+ (minimum 100 ms, maximum 5 appels par page).
+
+3.3. Conservation des scripts dans le DOM (changement du parseur) :
+ - Actuellement le contenu de <script> est jete (parser.cpp, ST_RAW). Pour
+ l'etape 3, conserver le texte des scripts INLINE de moins de 32 Ko.
+ - Scripts externes (src=...) : ignores en v0.4 (le chargement doit etre
+ asynchrone, voir 2.1) ; prevoir 1 ou 2 scripts externes de moins de 64 Ko
+ pour v0.5.
+
+3.4. Bindings DOM minimaux :
+ - document.getElementById(), querySelector (id et classe simples seulement).
+ - element.innerText / textContent, element.style.display / color.
+ - input.value (lecture/ecriture), form.submit().
+ - onclick="..." et addEventListener('click', ...).
+ - location.href = "...", alert("...") -> petite boite de dialogue sur
+ l'ecran du bas (nouveau mode UiMode::Dialog avec bouton OK).
+ - Les noeuds JS portent l'INDEX du noeud DOM ; ne jamais supprimer un
+ noeud du vecteur (le marquer comme supprime) pour garder les index stables.
+ - Apres une modification du DOM : poser un drapeau "dirty" et refaire la mise
+ en page une seule fois par frame (throttle). Le PageRenderer devra alors
+ recevoir forceRedraw() ET renvoyer la texture (voir 1.6.2).
+
+3.5. Tests JS :
+ - 5 pages de test : alerte, calcul dans un champ, afficher/masquer un bloc,
+ boucle infinie (le watchdog doit couper), fuite memoire (limite du tas
+ atteinte sans crash).
+
+================================================================================
+ETAPE 4 : STABILISATION ET PUBLICATION V0.4.0
+================================================================================
+4.1. Regression : refaire les tests T1/T2/T3 et comparer avec les mesures de
+ l'etape 0.3 (temps d'affichage, memoire libre).
+4.2. Controle de l'interface : menu, reglages (scroll), favoris, historique,
+ clavier (accents), onglets (limite), A propos : rien ne depasse de l'ecran.
+4.3. Controle de l'affichage haut : page avec images, page sans image, 2
+ onglets, defilement, changement d'URL (voir 1.6.2) ; plus aucun fichier de
+ diagnostic ecrit en usage normal (voir 1.6.8).
+4.4. Verifier la mise a jour automatique depuis la version 0.3 (tag GitHub
+ "v0.4.0") : la version affichee doit etre 0.4.0.
+4.5. Mettre a jour README.md (fonctions, limites connues, JS experimental).
+4.6. Construire le .3dsx / .smdh, tag GitHub v0.4.0, notes de version.
+
+================================================================================
+IDEES POUR LA V0.5 (ne pas commencer pendant la v0.4)
+================================================================================
+ - Cookies simples et sessions.
+ - Recherche dans l'historique et les favoris.
+ - Mode lecture (extractReaderHtml) accessible depuis le menu.
+ - Images actives par defaut (si 2.4 est stable).
+ - Chargement de scripts externes asynchrones.
+
+
+
+
+
+
+

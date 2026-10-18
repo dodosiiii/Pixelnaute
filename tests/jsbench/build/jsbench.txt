@@ -1,0 +1,7 @@
+engine=QuickJS
+init_ms=8
+engine_heap_after_init_bytes=145788
+script_ms=333
+script_ok=1
+engine_heap_after_script_bytes=146556
+engine_heap_after_shutdown_bytes=0

@@ -81,7 +81,7 @@ bool cssParseColor(const std::string& str, uint32_t& out)
 //-----------------------------------------------------------------------------
 // Parse d'une longueur CSS (px, em, rem, pt ou sans unite)
 //-----------------------------------------------------------------------------
-static int parseCssLength(const std::string& token, int base = 16)
+static int parseCssLength(const std::string& token, int base = 16, int percentBase = NW_PAGE_WIDTH)
 {
 	std::string t = strTrim(token);
 	if (t.empty() || t == "auto") return 0;
@@ -91,6 +91,9 @@ static int parseCssLength(const std::string& token, int base = 16)
 	std::string unit = toLower(strTrim(std::string(end)));
 	if (unit == "em" || unit == "rem") return (int)(val * (float)base);
 	if (unit == "pt") return (int)(val * 4.0f / 3.0f);
+	if (unit == "%") return (int)(val * (float)percentBase / 100.0f);
+	if (unit == "vw") return (int)(val * (float)NW_PAGE_WIDTH / 100.0f);
+	if (unit == "vh") return (int)(val * (float)NW_TOP_HEIGHT / 100.0f);
 	return (int)val;
 }
 
@@ -137,7 +140,7 @@ static void parseDeclaration(const std::string& prop, const std::string& value, 
 		else if (v == "large") px = 18;
 		else if (v == "x-large") px = 24;
 		else if (v == "xx-large") px = 32;
-		else px = parseCssLength(v, 16);
+		else px = parseCssLength(v, 16, 16);
 		if (px > 0)
 		{
 			out.fontSize = px;
@@ -183,6 +186,39 @@ static void parseDeclaration(const std::string& prop, const std::string& value, 
 			out.displayNone = false; out.block = true;
 			out.declared |= CssPropDisplay;
 		}
+		else if (v == "flex")
+		{
+			out.displayNone = false; out.block = true; out.flex = true;
+			out.declared |= CssPropDisplay | CssPropFlex;
+		}
+		return;
+	}
+	if (p == "flex-direction")
+	{
+		out.flexRow = (v == "row" || v == "row-reverse");
+		out.flex = true;
+		out.declared |= CssPropFlex | CssPropFlexRow;
+		return;
+	}
+	if (p == "flex-wrap")
+	{
+		out.flexWrap = (v == "wrap" || v == "wrap-reverse");
+		out.flex = true;
+		out.declared |= CssPropFlex | CssPropFlexWrap;
+		return;
+	}
+	if (p == "justify-content")
+	{
+		out.justifyContent = (v == "center" ? 1 :
+			(v == "space-between" ? 2 : 0));
+		out.flex = true;
+		out.declared |= CssPropFlex | CssPropJustify;
+		return;
+	}
+	if (p == "box-sizing")
+	{
+		out.borderBox = (v == "border-box");
+		out.declared |= CssPropBoxSizing;
 		return;
 	}
 	if (p == "margin" || p == "padding")
@@ -224,8 +260,15 @@ static void parseDeclaration(const std::string& prop, const std::string& value, 
 		if (p == "margin")
 		{
 			out.marginTop = m[0]; out.marginRight = m[1]; out.marginBottom = m[2]; out.marginLeft = m[3];
+			const size_t leftToken = tokens.size() >= 4 ? 3 : (tokens.size() == 3 ? 1 : (tokens.size() == 2 ? 1 : 0));
+			const size_t rightToken = tokens.size() >= 4 ? 1 : (tokens.size() == 3 ? 1 : (tokens.size() == 2 ? 1 : 0));
+			const bool autoLeft = !tokens.empty() && tokens[leftToken] == "auto";
+			const bool autoRight = !tokens.empty() && tokens[rightToken] == "auto";
+			out.marginLeftAuto = autoLeft;
+			out.marginRightAuto = autoRight;
 			out.declared |= CssPropMarginTop | CssPropMarginRight |
-				CssPropMarginBottom | CssPropMarginLeft;
+				CssPropMarginBottom | CssPropMarginLeft |
+				CssPropMarginLeftAuto | CssPropMarginRightAuto;
 		}
 		else
 		{
@@ -240,8 +283,8 @@ static void parseDeclaration(const std::string& prop, const std::string& value, 
 		int m = parseCssLength(v);
 		if (p == "margin-top") { out.marginTop = m; out.declared |= CssPropMarginTop; }
 		else if (p == "margin-bottom") { out.marginBottom = m; out.declared |= CssPropMarginBottom; }
-		else if (p == "margin-left") { out.marginLeft = m; out.declared |= CssPropMarginLeft; }
-		else { out.marginRight = m; out.declared |= CssPropMarginRight; }
+		else if (p == "margin-left") { out.marginLeft = m; out.marginLeftAuto = (v == "auto"); out.declared |= CssPropMarginLeft | CssPropMarginLeftAuto; }
+		else { out.marginRight = m; out.marginRightAuto = (v == "auto"); out.declared |= CssPropMarginRight | CssPropMarginRightAuto; }
 		return;
 	}
 	if (p == "padding-top" || p == "padding-bottom" || p == "padding-left" || p == "padding-right")
@@ -257,6 +300,13 @@ static void parseDeclaration(const std::string& prop, const std::string& value, 
 	{
 		int w = parseCssLength(v);
 		if (w > 0) { out.width = w; out.declared |= CssPropWidth; }
+		return;
+	}
+	if (p == "min-width" || p == "max-width")
+	{
+		const int w = parseCssLength(v, 16, NW_PAGE_WIDTH);
+		if (p == "min-width") { out.minWidth = w; out.declared |= CssPropMinWidth; }
+		else { out.maxWidth = w; out.declared |= CssPropMaxWidth; }
 		return;
 	}
 	if (p == "height")
@@ -293,6 +343,15 @@ static void applyProperty(Style& out, const Style& source, uint32_t property)
 	case CssPropPaddingBottom: out.paddingBottom = source.paddingBottom; break;
 	case CssPropPaddingLeft: out.paddingLeft = source.paddingLeft; break;
 	case CssPropWidth: out.width = source.width; break;
+	case CssPropMinWidth: out.minWidth = source.minWidth; break;
+	case CssPropMaxWidth: out.maxWidth = source.maxWidth; break;
+	case CssPropBoxSizing: out.borderBox = source.borderBox; break;
+	case CssPropFlex: out.flex = source.flex; break;
+	case CssPropFlexRow: out.flexRow = source.flexRow; break;
+	case CssPropFlexWrap: out.flexWrap = source.flexWrap; break;
+	case CssPropJustify: out.justifyContent = source.justifyContent; break;
+	case CssPropMarginLeftAuto: out.marginLeftAuto = source.marginLeftAuto; break;
+	case CssPropMarginRightAuto: out.marginRightAuto = source.marginRightAuto; break;
 	case CssPropHeight: out.height = source.height; break;
 	case CssPropDisplay:
 		out.displayNone = source.displayNone;
@@ -309,7 +368,9 @@ static const uint32_t kCssProperties[] =
 	CssPropUnderline, CssPropAlign, CssPropMarginTop, CssPropMarginRight,
 	CssPropMarginBottom, CssPropMarginLeft, CssPropPaddingTop,
 	CssPropPaddingRight, CssPropPaddingBottom, CssPropPaddingLeft,
-	CssPropWidth, CssPropHeight, CssPropDisplay, CssPropMono
+	CssPropWidth, CssPropMinWidth, CssPropMaxWidth, CssPropBoxSizing,
+	CssPropHeight, CssPropDisplay, CssPropMono, CssPropFlex, CssPropFlexRow,
+	CssPropFlexWrap, CssPropJustify, CssPropMarginLeftAuto, CssPropMarginRightAuto
 };
 
 //-----------------------------------------------------------------------------
@@ -832,34 +893,36 @@ Style CssEngine::resolve(const Document& doc, int nodeIdx, const Style& parent) 
 int cssSelfTest()
 {
 	int fails = 0;
+#define CSS_SELF_FAIL() do { fails++; printf("CSS self-test failure at line %d\n", __LINE__); } while (0)
 	{
 		uint32_t c;
-		if (!cssParseColor("#ff0000", c) || (c & 0xFFFFFF) != 0x0000FF) fails++;
-		if (!cssParseColor("blue", c) || (c & 0xFFFFFF) != 0xFF0000) fails++;
-		if (!cssParseColor("rgb(1,2,3)", c) || (c & 0xFFFFFF) != 0x030201) fails++;
+		if (!cssParseColor("#ff0000", c) || (c & 0xFFFFFF) != 0x0000FF) CSS_SELF_FAIL();
+		if (!cssParseColor("blue", c) || (c & 0xFFFFFF) != 0xFF0000) CSS_SELF_FAIL();
+		if (!cssParseColor("rgb(1,2,3)", c) || (c & 0xFFFFFF) != 0x030201) CSS_SELF_FAIL();
 	}
 	{
 		Style s;
 		parseInlineStyle("color: #00ff00; font-size: 20px; font-weight: bold;", s);
-		if (s.fontSize != 20) fails++;
-		if (!s.bold) fails++;
-		if (!s.colorSet) fails++;
+		if (s.fontSize != 20) CSS_SELF_FAIL();
+		if (!s.bold) CSS_SELF_FAIL();
+		if (!s.colorSet) CSS_SELF_FAIL();
 	}
 	{
 		CssEngine css;
 		css.parseStylesheet("p { font-size: 18px; } a { font-size: 24px; }");
-		if (css.rules().size() != 2) fails++;
+		if (css.rules().size() != 2) CSS_SELF_FAIL();
 		else if (css.rules()[0].tag != "p" || css.rules()[0].style.fontSize != 18 ||
-				 css.rules()[1].tag != "a" || css.rules()[1].style.fontSize != 24) fails++;
+				 css.rules()[1].tag != "a" || css.rules()[1].style.fontSize != 24) CSS_SELF_FAIL();
 	}
 	{
 		CssEngine css;
 		css.parseStylesheet(".first, h2 { color: red; } "
 			"@media screen and (max-width: 400px) { p { color: blue; } "
 			".nested { padding: 8px; } }");
-		if (css.rules().size() != 2) fails++;
-		else if (css.rules()[0].cls != "first" || css.rules()[1].tag != "h2")
-			fails++;
+		if (css.rules().size() != 4) CSS_SELF_FAIL();
+		else if (css.rules()[0].cls != "first" || css.rules()[1].tag != "h2" ||
+			css.rules()[2].tag != "p" || css.rules()[3].cls != "nested")
+			CSS_SELF_FAIL();
 	}
 	{
 		Document doc;
@@ -880,7 +943,7 @@ int cssSelfTest()
 		if (inherited.color != parent.color || inherited.fontSize != parent.fontSize ||
 			!inherited.bold || inherited.bgSet || inherited.paddingLeft ||
 			inherited.marginTop || inherited.block)
-			fails++;
+			CSS_SELF_FAIL();
 	}
 	{
 		Document doc;
@@ -903,7 +966,7 @@ int cssSelfTest()
 			resolved.marginTop != 4 || resolved.marginLeft != 9 ||
 			resolved.paddingTop != 2 || resolved.paddingLeft != 11 ||
 			resolved.displayNone || !resolved.block)
-			fails++;
+			CSS_SELF_FAIL();
 
 		const int stylesheetNode = doc.createElement(-1, "p");
 		doc.setAttr(stylesheetNode, "class", "target");
@@ -911,7 +974,7 @@ int cssSelfTest()
 		Style stylesheetStyle = css.resolve(doc, stylesheetNode, defaultStyle());
 		if (stylesheetStyle.color != 0xFF00A5FF || !stylesheetStyle.displayNone ||
 			stylesheetStyle.block)
-			fails++;
+			CSS_SELF_FAIL();
 	}
 	{
 		CssEngine css;
@@ -919,7 +982,7 @@ int cssSelfTest()
 		for (int i = 0; i < 1024; i++)
 			sheet += "p { color: red; }";
 		css.parseStylesheet(sheet);
-		if (css.rules().size() != CssEngine::MaxRules) fails++;
+		if (css.rules().size() != CssEngine::MaxRules) CSS_SELF_FAIL();
 	}
 	{
 		CssEngine css;
@@ -929,26 +992,48 @@ int cssSelfTest()
 		css.parseStylesheet(sheet);
 		if (css.stylesheetBytes() != CssEngine::MaxStylesheetBytes ||
 			!css.rules().empty())
-			fails++;
+			CSS_SELF_FAIL();
 		css.parseStylesheet("p { color: red; }");
 		if (css.stylesheetBytes() != CssEngine::MaxStylesheetBytes ||
 			!css.rules().empty())
-			fails++;
+			CSS_SELF_FAIL();
 		css.clear();
 		const std::string smallSheet = "p { color: red; }";
 		css.parseStylesheet(smallSheet);
 		if (css.stylesheetBytes() != smallSheet.size() || css.rules().size() != 1)
-			fails++;
+			CSS_SELF_FAIL();
 	}
 	{
 		Style s;
 		parseInlineStyle("color: red !important; font-size: 2em; margin: 10px 20px; padding: 5px 10px 15px 20px; font-weight: normal; text-decoration: none;", s);
-		if (s.color != 0xFF0000FF || !s.colorSet) fails++;
-		if (s.fontSize != 32) fails++;
-		if (s.marginTop != 10 || s.marginRight != 20 || s.marginBottom != 10 || s.marginLeft != 20) fails++;
-		if (s.paddingTop != 5 || s.paddingRight != 10 || s.paddingBottom != 15 || s.paddingLeft != 20) fails++;
-		if (s.bold) fails++;
-		if (s.underline) fails++;
+		if (s.color != 0xFF0000FF || !s.colorSet) CSS_SELF_FAIL();
+		if (s.fontSize != 32) CSS_SELF_FAIL();
+		if (s.marginTop != 10 || s.marginRight != 20 || s.marginBottom != 10 || s.marginLeft != 20) CSS_SELF_FAIL();
+		if (s.paddingTop != 5 || s.paddingRight != 10 || s.paddingBottom != 15 || s.paddingLeft != 20) CSS_SELF_FAIL();
+		if (s.bold) CSS_SELF_FAIL();
+		if (s.underline) CSS_SELF_FAIL();
 	}
+	{
+		Style s;
+		parseInlineStyle("width: 50vw; min-width: 25%; max-width: 80%; margin: 0 auto; "
+			"box-sizing: border-box; display: flex; flex-direction: row; "
+			"flex-wrap: wrap; justify-content: space-between;", s);
+		if (s.width != 200 || s.minWidth != 100 || s.maxWidth != 320 ||
+			!s.marginLeftAuto || !s.marginRightAuto || !s.borderBox || !s.flex ||
+			!s.flexRow || !s.flexWrap || s.justifyContent != 2)
+			CSS_SELF_FAIL();
+		Document doc;
+		const int node = doc.createElement(-1, "div");
+		CssEngine css;
+		css.parseStylesheet("div { min-width: 30%; max-width: 70%; margin: 0 auto; display: flex; "
+			"flex-direction: row; flex-wrap: nowrap; justify-content: center; box-sizing: border-box; }");
+		const Style resolved = css.resolve(doc, node, defaultStyle());
+		if (resolved.minWidth != 120 || resolved.maxWidth != 280 ||
+			!resolved.marginLeftAuto || !resolved.marginRightAuto || !resolved.flex ||
+			!resolved.flexRow || resolved.flexWrap || resolved.justifyContent != 1 ||
+			!resolved.borderBox)
+			CSS_SELF_FAIL();
+	}
+#undef CSS_SELF_FAIL
 	return fails;
 }

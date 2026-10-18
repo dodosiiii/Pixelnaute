@@ -76,12 +76,17 @@ private:
 	std::string toastMsg_;
 	uint64_t toastUntil_ = 0;
 	int listOffset_ = 0;         // defilement des listes
-	int kbdPage_ = 0;            // 0 = lettres, 1 = chiffres/symboles
+	int listSel_ = 0;            // favori selectionne au clavier
+	std::string pendingBookmarkDelete_;
+	uint64_t bookmarkDeleteUntil_ = 0;
+	int kbdPage_ = 0;            // 0 = lettres, 1 = chiffres/symboles, 2 = accents
+	bool shift_ = false;         // majuscule temporaire
 	uint64_t lastUpload_ = 0;
 	bool dirty_ = true;
 	int repeatKey_ = -1;
 	uint64_t repeatNext_ = 0;
 	int repeatCount_ = 0;
+	int touchNav_ = -1;          // index bouton nav enfonce
 	UpdateState lastUpdateState_ = UpdateState::Idle;
 	int lastUpdateProgress_ = -1;
 
@@ -128,7 +133,7 @@ private:
 	void applyKey(Browser& b, WebSettings& set, const UiKey& k);
 	void navAction(Browser& b, NetworkManager& net, WebSettings& set, int idx);
 	int  navHit(int x, int y) const;          // -1 si hors des boutons
-	int  tabHit(int x, int y) const;          // index onglet ou -1
+	int  tabHit(int x, int y, int count) const; // index onglet ou -1
 	void keyHit(Browser& b, WebSettings& set, int x, int y);
 
 	void uploadIfNeeded();

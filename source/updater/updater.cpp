@@ -84,9 +84,19 @@ namespace
 
 	static bool parseVersion(const std::string& text, Version& version)
 	{
-		size_t pos = text.size() > 0 && (text[0] == 'v' || text[0] == 'V') ? 1 : 0;
+		version.major = 0;
+		version.minor = 0;
+		version.patch = 0;
+		size_t pos = 0;
+		while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t' ||
+			text[pos] == '\r' || text[pos] == '\n'))
+			++pos;
+		if (pos < text.size() && (text[pos] == 'v' || text[pos] == 'V'))
+			++pos;
+
 		unsigned* parts[] = { &version.major, &version.minor, &version.patch };
-		for (int part = 0; part < 3; ++part)
+		int count = 0;
+		while (count < 3 && pos < text.size())
 		{
 			const size_t start = pos;
 			unsigned value = 0;
@@ -97,15 +107,18 @@ namespace
 				value = value * 10 + digit;
 				++pos;
 			}
-			if (pos == start) return false;
-			*parts[part] = value;
-			if (part < 2)
+			if (pos == start) break;
+			*parts[count++] = value;
+			if (pos < text.size() && text[pos] == '.')
 			{
-				if (pos >= text.size() || text[pos] != '.') return false;
 				++pos;
 			}
+			else
+			{
+				break;
+			}
 		}
-		return pos == text.size();
+		return count >= 2;
 	}
 
 	static bool versionIsNewer(const std::string& tag)

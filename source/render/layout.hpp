@@ -110,17 +110,7 @@ private:
 	PageModel* out_;
 	Bitmap* target_ = nullptr;       // surface de dessin courante (voir out_->bmp)
 
-	// Fond d'un bloc, peint apres coup car sa hauteur n'est connue qu'une fois
-	// ses enfants rendus.
-	struct BlockBackground
-	{
-		int x0, x1;      // bornes horizontales
-		int y0;          // haut du bloc (coordonnees de la page)
-		int height;      // hauteur mesuree
-		uint32_t color;
-		bool hasColor;
-	};
-	std::vector<BlockBackground> blockBackgrounds_;
+	uint16_t pageBg565_ = 0xFFFF;
 
 	// Sauvegarde/restauration d'une zone de la page, pour peindre un fond de
 	// bloc sous le contenu deja dessine.
@@ -150,6 +140,7 @@ private:
 	std::string linkHref_;
 	int linkX0_ = 0, linkY0_ = 0;
 	int renderDepth_ = 0;
+	uint32_t defaultTextColor_ = 0xFF202020;
 
 	void renderNode(int idx, const Style& st);
 	void renderInline(int idx, const Style& st);

@@ -119,6 +119,7 @@ void PageRenderer::draw(const PageModel& page, int scrollY)
 	{
 		upload(page, scrollY);
 		drawImages(page, scrollY);
+		C3D_TexUpload(&tex, texData);
 	}
 
 	C2D_DrawParams params;
@@ -177,5 +178,4 @@ void PageRenderer::drawImages(const PageModel& page, int scrollY)
 			}
 		}
 	}
-	C3D_TexUpload(&tex, texData);
 }
