@@ -4,7 +4,7 @@
 New Nintendo 2DS XL. Il est conçu pour rester léger et afficher des pages web
 avec un moteur HTML/CSS natif simplifié.
 
-> **Version en développement : 0.4.0**
+> **Version en développement : 0.5.0**
 >
 > Pixelnaute est un projet en développement. Il peut ouvrir certaines pages,
 > mais ne remplace pas un navigateur moderne : les sites complexes, les
@@ -32,11 +32,23 @@ un proxy de rendu.
 
 - **HTML, CSS et JavaScript :**
   - Analyse HTML tolérante, DOM manipulable par les scripts et styles externes.
-  - Moteur CSS partiel : sélecteurs courants, cascade, feuilles `@media` mobiles,
-    dimensions, couleurs, bordures simples et une prise en charge limitée de
-    Flexbox (rangées, retour à la ligne et espacements `gap`).
+  - Moteur CSS partiel : sélecteurs courants, cascade, conditions `@media`
+    mobiles limitées, variables personnalisées `--nom`/`var()` avec repli,
+    pseudo-classes `:first-child`, `:last-child`, `:nth-child()` (entiers,
+    `odd`/`even` et formules `an+b`),
+    dimensions et `calc()` simple, couleurs hex/RGB/HSL avec alpha, gradients
+    linéaires et radiaux centrés, bordures, coins arrondis, ombres simples et
+    prise en charge limitée de Flexbox (rangées/colonnes, retour à la ligne,
+    `gap` horizontal et vertical, `justify-content`)
+    et CSS Grid (colonnes fixes ou fractionnaires, `repeat()` avec nombre fixe
+    ou `auto-fit`/`auto-fill`, `minmax()`, placement séquentiel et `grid-column`).
+    Les blocs préformatés (`<pre>`) conservent leurs retours à la ligne et
+    respectent notamment leurs couleurs, dimensions et espacements CSS.
   - Moteur JavaScript QuickJS intégré, activé par défaut, avec des bindings DOM,
     événements, temporisateurs, stockage, `fetch` et XMLHttpRequest partiels.
+    Son contexte mémoire n’est créé que pour les pages avec des scripts ; les
+    changements du DOM sont regroupés pour éviter de refaire toute la mise en
+    page après chaque script.
   - Indicateur de chargement pendant le traitement des scripts.
 
 - **Navigation et réseau :**
@@ -47,10 +59,44 @@ un proxy de rendu.
   - Chargement des images désactivé par défaut ; il peut être activé dans les
     réglages, mais augmente la consommation mémoire et peut ralentir ou faire
     échouer le rendu sur la console.
+  - Taille du texte réglable (85 %, 100 % ou 115 %) pour mieux s’adapter à
+    l’écran de la console ; le changement s’applique aux pages ouvertes ensuite.
+  - Interface disponible en anglais (langue par défaut), français, italien et
+    espagnol ; thèmes de couleur appliqués uniquement à l’écran inférieur.
+  - Gestion du cache des pages depuis les réglages : espace occupé, taille par
+    site, suppression d’un site ou vidage complet. Les anciennes entrées sans
+    métadonnées sont regroupées sous « site inconnu ».
 
-Le rendu et les API web restent volontairement limités par la mémoire et les
-capacités de la New 3DS. Une page visible dans un navigateur PC peut donc avoir
-une mise en page différente ou ne pas fonctionner ici.
+Le moteur n'est pas un navigateur CSS complet : Grid, positionnement complexe,
+animations, transformations, images de fond, sélecteurs de frères et de
+nombreuses pseudo-classes restent absents ou incomplets. Le rendu et les API web restent volontairement
+limités par la mémoire et les capacités de la New 3DS. Une page visible dans un
+navigateur PC peut donc avoir une mise en page différente ou ne pas fonctionner
+ici.
+
+## Objectifs de développement v0.6
+
+La v0.6 sera une mise à jour plus large, préparée après la publication de la
+v0.5. Les priorités proposées sont :
+
+1. **Rendre les régressions visibles et reproductibles** : conserver des pages
+   de référence compactes, ajouter des tests de rendu pixel par pixel pour les
+   cas importants et améliorer les diagnostics de chargement et de mise en page.
+2. **Fiabiliser le rendu statique** : consolider d'abord les couleurs,
+   l'héritage et les variables CSS, puis les dimensions, les blocs, les
+   bordures, Flexbox et Grid sur des exemples réels.
+3. **Combler les manques visuels les plus gênants** : évaluer les pseudo-
+   éléments, les icônes SVG et les images courantes, en privilégiant les pages
+   qui échouent réellement plutôt qu'une implémentation complète du standard.
+4. **Améliorer le chargement des pages** : rendre plus prévisibles les mises à
+   jour après CSS/JavaScript, les pages longues et le chargement optionnel des
+   images, tout en surveillant mémoire et réactivité sur console.
+5. **Étendre la compatibilité JavaScript de façon ciblée** : ajouter seulement
+   les API demandées par des sites de référence et couvertes par des tests.
+
+Ces éléments sont des pistes, pas une promesse de compatibilité navigateur.
+Leur ordre pourra changer selon les résultats des essais sur console et les
+défauts rencontrés après la v0.5.
 
 ## Installation sur la console
 
@@ -95,6 +141,11 @@ make
 
 - Touchez la barre d’adresse sur l’écran inférieur pour saisir une adresse ou
   une recherche.
+- Pendant la saisie, le Circle Pad déplace le contour bleu entre les touches,
+  **A** insère la touche sélectionnée et **X** valide l’adresse. Le C-Stick
+  déplace le curseur dans l’adresse pour corriger une partie sans tout effacer.
+- Dans le menu ouvert avec les trois traits, le Circle Pad déplace également
+  le contour bleu et **A** ouvre l’option sélectionnée.
 - Touchez un lien pour l’ouvrir. Faites glisser le doigt sur la page pour la
   faire défiler.
 - Utilisez les boutons de navigation à l’écran pour revenir en arrière,
@@ -118,10 +169,11 @@ Une seule requête réseau est exécutée à la fois. Si vous ouvrez une autre p
 pendant un chargement, la nouvelle requête remplace l’ancienne. Les réponses
 restent associées à l’onglet qui les a demandées.
 
-Quand la vérification TLS est activée, Pixelnaute vérifie d’abord le certificat
-et peut réessayer sans cette vérification si la connexion échoue. Ce repli
-facilite la compatibilité avec certains certificats, mais réduit la sécurité :
-les connexions ainsi réessayées ne garantissent plus l’identité du site.
+Quand la vérification TLS est activée, Pixelnaute ne désactive pas
+automatiquement cette vérification en cas d’échec. Vous pouvez désactiver
+manuellement **Réglages > Vérifier les certificats**, mais ce choix s’applique
+à tous les sites et rend les connexions HTTPS vulnérables à l’interception.
+Laissez cette option activée sauf nécessité particulière.
 
 Les formulaires GET et POST encodés en URL sont pris en charge. Les
 téléversements multiparties, par exemple l'envoi de fichiers, ne le sont pas.
@@ -139,7 +191,7 @@ Cette installation intégrée est prévue pour la version **`.3dsx` lancée depu
 le Homebrew Launcher**; elle ne met pas à jour une installation `.cia`. Après
 une mise à jour, fermez puis relancez l’application manuellement.
 
-Pour publier la v0.3, poussez un tag de version tel que `v0.3.0`. Le
+Pour publier une version, poussez un tag correspondant, par exemple `v0.5.0`. Le
 workflow GitHub Actions compile l’application et joint `N3DSWeb.3dsx` à la
 release. La vérification intégrée nécessite qu’une release stable soit publiée
 et contienne cet asset.
@@ -160,6 +212,13 @@ conversion d’image est facultative et nécessite Python ainsi que Pillow.
 Les tests PC ne remplacent pas un essai sur console : ils ne valident ni les
 connexions réelles en Wi-Fi, ni les services système, ni le comportement du
 rendu sur l’écran de la 3DS.
+
+Avant la publication de la v0.5, vérifier sur New 3DS que le texte ne disparaît
+pas après le chargement CSS, y compris sur les pages longues et les blocs avec
+fond. Vérifier aussi navigation et formulaires, changement d'onglet pendant un
+`fetch`, navigation vers une autre page pendant une requête, cache SD et échec
+de certificat TLS. Dans ce dernier cas, le navigateur doit afficher une erreur
+sans réessayer silencieusement avec la vérification désactivée.
 
 ## Architecture du projet
 
@@ -187,7 +246,22 @@ n’est requis ou utilisé par la version actuelle.**
 - Le moteur CSS ne prend pas en charge tout le standard : notamment CSS Grid et les mises en page complexes, ainsi que de nombreuses propriétés, unités et sélecteurs.
 - Les images sont désactivées par défaut pour limiter les risques de manque de mémoire. Lorsqu'elles sont activées, le navigateur limite le nombre d'images chargées et la taille de son cache.
 - Les défis anti-bot interactifs (Cloudflare Turnstile, reCAPTCHA complexe) et les connexions exigeant un navigateur officiellement pris en charge peuvent échouer. Modifier le User-Agent ne fournit pas les fonctions manquantes et ne garantit pas l'acceptation d'un site.
-- Le parseur DOM conserve jusqu'à 32 768 nœuds et le budget de règles CSS autorise jusqu'à 512 règles et 128 Ko de feuilles de style.
+- Le parseur DOM conserve jusqu'à 8 192 nœuds et le budget CSS autorise jusqu'à
+  1 536 règles et 128 Ko de feuilles de style.
+- Le rendu des pages longues est progressif : un premier segment de 2 000 px
+  est préparé, puis d'autres segments de 2 000 px sont ajoutés au défilement.
+  Un recouvrement de 240 px entre segments garantit que l'écran reste rempli
+  pendant le raccord. Le contenu logique est plafonné à 100 000 px ; si un
+  segment ne peut pas être alloué, l'application le signale et conserve la page
+  déjà visible.
+- Le cache des segments sur carte SD est limité à 1 Gio ; les fichiers âgés de
+  plus d'une semaine sont supprimés. C'est un cache de rendu, pas un budget de
+  mémoire vive supplémentaire ; une erreur de cache ne doit pas bloquer la page.
+- Chaque runtime JavaScript est limité à 4 Mio de tas. Les scripts de
+  chargement ont un budget de 100 ms chacun et de 300 ms cumulées par page ;
+  les callbacks ultérieurs sont interrompus par tranches de 100 ms. Ces limites
+  protègent la mémoire et la réactivité, mais peuvent empêcher certains scripts
+  complexes de terminer.
 - Les formulaires multiparties (notamment le téléversement de fichiers) ne sont pas pris en charge.
 - Les ressources réseau sont traitées séquentiellement ; le chargement de pages complexes peut donc prendre du temps.
 

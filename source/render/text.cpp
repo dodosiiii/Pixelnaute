@@ -324,6 +324,7 @@ float TextEngine::drawLine(Bitmap& bmp, const std::string& utf8, int x, int y,
 		int sizePx = (int)roundf(pixelHeight);
 		if (sizePx < 8) sizePx = 8;
 		float scale = stbtt_ScaleForPixelHeight(&ttfRegularInfo_, pixelHeight);
+		const uint8_t colorAlpha = (uint8_t)(color >> 24);
 
 		int baselineY = y + (int)ceilf((float)ttfAscent_ * scale);
 		float pen = 0.0f;
@@ -345,10 +346,11 @@ float TextEngine::drawLine(Bitmap& bmp, const std::string& utf8, int x, int y,
 				for (int gy = 0; gy < g.h; gy++)
 				{
 					int sy = dstY + gy;
-					if (sy < 0 || sy >= bmp.h) continue;
+					if (sy < bmp.originY || sy >= bmp.originY + bmp.h) continue;
 
 					const uint8_t* src = g.alpha.data() + gy * g.w;
-					uint16_t* dst = bmp.px + (size_t)sy * bmp.w;
+					uint16_t* dst = bmp.px +
+						(size_t)(sy - bmp.originY) * bmp.w;
 
 					for (int gx = 0; gx < g.w; gx++)
 					{
@@ -358,6 +360,8 @@ float TextEngine::drawLine(Bitmap& bmp, const std::string& utf8, int x, int y,
 						uint8_t a = src[gx];
 						if (a)
 						{
+							if (colorAlpha != 0xFF)
+								a = (uint8_t)((a * colorAlpha + 127) / 255);
 							Bitmap::blendPixel(dst[sx], color, a);
 							if (bold && !ttfBoldReady_ && sx + 1 < bmp.w)
 							{
@@ -374,7 +378,8 @@ float TextEngine::drawLine(Bitmap& bmp, const std::string& utf8, int x, int y,
 		{
 			int uy = baselineY + 2;
 			if (uy >= bmp.h) uy = bmp.h - 1;
-			bmp.fillRect(x, uy, (int)ceilf(pen), 1, color);
+			if (colorAlpha == 0xFF) bmp.fillRect(x, uy, (int)ceilf(pen), 1, color);
+			else bmp.blendRect(x, uy, (int)ceilf(pen), 1, color);
 		}
 		return pen;
 	}
@@ -383,6 +388,7 @@ float TextEngine::drawLine(Bitmap& bmp, const std::string& utf8, int x, int y,
 
 	const float scale = sTextScale_ * userScale;
 	if (scale <= 0.0f) return 0.0f;
+	const u8 colorAlpha = (u8)(color >> 24);
 	float pen = 0.0f;
 	const int drawnHeight = (int)ceilf((float)cellHeight_ * scale);
 
@@ -407,7 +413,7 @@ float TextEngine::drawLine(Bitmap& bmp, const std::string& utf8, int x, int y,
 			for (int dy = 0; dy < drawnHeight; dy++)
 			{
 				const int sy = y + dy;
-				if (sy < 0 || sy >= bmp.h) continue;
+				if (sy < bmp.originY || sy >= bmp.originY + bmp.h) continue;
 				const int cellY = (int)((float)dy / scale);
 				if (cellY >= cellHeight_) continue;
 
@@ -421,11 +427,15 @@ float TextEngine::drawLine(Bitmap& bmp, const std::string& utf8, int x, int y,
 					const u8 a = alphaAt(gi, cellX, cellY);
 					if (!a) continue;
 
-					uint16_t& d = bmp.px[(size_t)sy * bmp.w + sx];
-					Bitmap::blendPixel(d, color, a);
+					uint16_t& d = bmp.px[
+						(size_t)(sy - bmp.originY) * bmp.w + sx];
+					const u8 coverage = colorAlpha == 0xFF ? a :
+						(u8)((a * colorAlpha + 127) / 255);
+					Bitmap::blendPixel(d, color, coverage);
 					if (bold && sx + 1 < bmp.w)
-						Bitmap::blendPixel(bmp.px[(size_t)sy * bmp.w + sx + 1],
-							color, (u8)(a >> 1));
+						Bitmap::blendPixel(bmp.px[
+							(size_t)(sy - bmp.originY) * bmp.w + sx + 1],
+							color, (u8)(coverage >> 1));
 				}
 			}
 		}
@@ -436,7 +446,8 @@ float TextEngine::drawLine(Bitmap& bmp, const std::string& utf8, int x, int y,
 	if (underline && totalW > 0.0f)
 	{
 		const int uy = y + drawnHeight - 1;
-		bmp.fillRect(x, uy, (int)ceilf(totalW), 1, color);
+		if (colorAlpha == 0xFF) bmp.fillRect(x, uy, (int)ceilf(totalW), 1, color);
+		else bmp.blendRect(x, uy, (int)ceilf(totalW), 1, color);
 	}
 	return totalW;
 }

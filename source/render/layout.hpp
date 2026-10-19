@@ -71,6 +71,8 @@ struct PageModel
 {
 	Bitmap bmp;                       // rendu RGB565 (largeur 400)
 	int height = 0;                   // hauteur du contenu
+	int segmentIndex = 0;             // segment actuellement present dans bmp
+	int furthestSegmentIndex = 0;     // dernier segment dont le DOM a ete parcouru
 	bool truncated = false;           // la mise en page a atteint sa limite de hauteur
 	std::vector<LinkBox> links;
 	std::vector<FormField> fields;
@@ -92,6 +94,8 @@ struct PageModel
 	{
 		bmp.destroy();
 		height = 0;
+		segmentIndex = 0;
+		furthestSegmentIndex = 0;
 		truncated = false;
 		links.clear();
 		fields.clear();
@@ -115,6 +119,8 @@ public:
 
 	// Convertit le document en PageModel. Retourne false en cas de limite memoire.
 	bool render(PageModel& out, const std::string& pageUrl);
+	bool renderSegment(PageModel& out, const std::string& pageUrl,
+		int segmentIndex, int segmentHeight);
 
 private:
 	const Document* doc_;
@@ -148,13 +154,20 @@ private:
 	int linkX0_ = 0, linkY0_ = 0;
 	int renderDepth_ = 0;
 	uint32_t defaultTextColor_ = 0xFF202020;
+	int pageBackgroundNode_ = -1;
 	bool pendingSpace_ = false;
+	int stopAtY_ = 0;
+	bool segmented_ = false;
+	bool renderStopped_ = false;
 
 	void renderNode(int idx, const Style& st);
 	void renderInline(int idx, const Style& st);
+	bool renderInternal(PageModel& out, const std::string& pageUrl,
+		int segmentIndex, int segmentHeight, bool segmented);
 	void newline(int height);
 	void flushLink();
 	void addLinkBox(int x0, int y0, int x1, int y1, const std::string& url, int node = -1);
 	void drawTextWrapped(const std::string& text, const Style& st, bool mono);
+	void drawPreformattedText(const std::string& text, const Style& st);
 	void resolveAndRender(int idx, const Style& parentSt);
 };

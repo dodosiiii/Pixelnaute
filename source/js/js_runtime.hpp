@@ -42,8 +42,7 @@ bool jsPageExecutionBegin(JSRuntime* runtime, bool chargePageBudget = true);
 // Retourne true si QuickJS a interrompu l'evaluation pour depassement.
 bool jsPageExecutionEnd(JSRuntime* runtime);
 
-// Execute un script classique dans le contexte de la page. Les API DOM ne
-// sont pas encore exposees a JavaScript.
+// Execute un script classique dans le contexte de la page.
 bool jsPageEval(JSRuntime* runtime, JSContext* context,
 	const char* source, size_t length, const char* filename);
 void jsPageBindDocument(JSContext* context, Document* document, const char* pageUrl,

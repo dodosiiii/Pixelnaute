@@ -22,6 +22,20 @@ static int uaMarginBottom(const std::string& tag)
 	return 0;
 }
 
+static uint32_t compositeColor(uint32_t foreground, uint32_t background)
+{
+	const unsigned alpha = foreground >> 24;
+	if (alpha == 255) return foreground;
+	const unsigned inverse = 255 - alpha;
+	const unsigned r = (((foreground & 0xFF) * alpha) +
+		((background & 0xFF) * inverse)) / 255;
+	const unsigned g = ((((foreground >> 8) & 0xFF) * alpha) +
+		(((background >> 8) & 0xFF) * inverse)) / 255;
+	const unsigned b = ((((foreground >> 16) & 0xFF) * alpha) +
+		(((background >> 16) & 0xFF) * inverse)) / 255;
+	return 0xFF000000u | (b << 16) | (g << 8) | r;
+}
+
 static bool isBlockTag(const std::string& t)
 {
 	static const char* blocks[] =
@@ -53,6 +67,9 @@ static inline std::string joinUrl(const std::string& base, const std::string& re
 PageLayout::PageLayout(const Document& doc, const CssEngine& css, const WebSettings& settings)
 	: doc_(&doc), css_(&css), set_(&settings)
 {
+	const int textScale = settings.textScalePercent >= 85 &&
+		settings.textScalePercent <= 115 ? settings.textScalePercent : 100;
+	baseScale_ *= textScale / 100.0f;
 }
 
 //--------------------------------------------------------------------------
@@ -91,7 +108,12 @@ void PageLayout::drawTextWrapped(const std::string& text, const Style& st, bool 
 	if (mono) scale *= 0.92f;
 	uint32_t col = st.colorSet ? st.color : defaultTextColor_;
 	bool bold = st.bold;
-	int pitch = te.linePitch(scale);
+	const int fontSize = st.fontSize > 0 ? st.fontSize : 16;
+	const float cssLineHeight = st.lineHeightUnitless
+		? fontSize * st.lineHeight / 1000.0f : (float)st.lineHeight;
+	int pitch = cssLineHeight > 0.0f
+		? std::max(1, (int)ceilf(cssLineHeight * baseScale_))
+		: te.linePitch(scale);
 
 	std::string line;
 	float lineW = 0.0f;
@@ -145,6 +167,11 @@ void PageLayout::drawTextWrapped(const std::string& text, const Style& st, bool 
 	bool trailingWhitespace = false;
 	while (pos < text.size())
 	{
+		if (segmented_ && iy_ >= stopAtY_)
+		{
+			renderStopped_ = true;
+			break;
+		}
 		const size_t whitespaceStart = pos;
 		while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t' ||
 			text[pos] == '\n' || text[pos] == '\r'))
@@ -192,6 +219,48 @@ void PageLayout::drawTextWrapped(const std::string& text, const Style& st, bool 
 	trailingWhitespace = sawWhitespace || (!text.empty() &&
 		(text.back() == ' ' || text.back() == '\t' || text.back() == '\n' || text.back() == '\r'));
 	pendingSpace_ = trailingWhitespace && ix_ > x0_;
+}
+
+void PageLayout::drawPreformattedText(const std::string& text, const Style& st)
+{
+	if (text.empty()) return;
+	TextEngine& te = TextEngine::instance();
+	if (!te.ready()) return;
+
+	const float scale = baseScale_ * st.scale() * (st.mono ? 0.92f : 1.0f);
+	const int fontSize = st.fontSize > 0 ? st.fontSize : 16;
+	const float cssLineHeight = st.lineHeightUnitless
+		? fontSize * st.lineHeight / 1000.0f : (float)st.lineHeight;
+	const int pitch = cssLineHeight > 0.0f
+		? std::max(1, (int)ceilf(cssLineHeight * baseScale_))
+		: te.linePitch(scale);
+	const uint32_t color = st.colorSet ? st.color : defaultTextColor_;
+
+	size_t start = 0;
+	while (start <= text.size())
+	{
+		size_t newlinePos = text.find('\n', start);
+		std::string line = newlinePos == std::string::npos
+			? text.substr(start) : text.substr(start, newlinePos - start);
+		if (!line.empty() && line.back() == '\r') line.pop_back();
+		std::string expanded;
+		for (char c : line)
+		{
+			if (c == '\t') expanded += "    ";
+			else expanded += c;
+		}
+		if (!expanded.empty())
+		{
+			te.drawLine(*target_, expanded, ix_, iy_, scale, color,
+				st.bold, st.underline);
+			ix_ += (int)ceilf(te.measure(expanded, scale));
+			lineMaxH_ = std::max(lineMaxH_, pitch);
+		}
+		if (newlinePos == std::string::npos) break;
+		if (lineMaxH_ < pitch) newline(pitch - lineMaxH_);
+		else newline(0);
+		start = newlinePos + 1;
+	}
 }
 
 //--------------------------------------------------------------------------
@@ -507,7 +576,7 @@ void PageLayout::renderNode(int idx, const Style& st)
 		// systemes de coordonnees, source d'erreurs.
 		//------------------------------------------------------------------------
 		const bool specialBlock = tag == "ul" || tag == "ol" || tag == "table" ||
-			tag == "tr" || tag == "blockquote" || tag == "pre" ||
+			tag == "tr" || tag == "blockquote" ||
 			tag == "select" || tag == "textarea";
 		if (isForm)
 		{
@@ -518,9 +587,12 @@ void PageLayout::renderNode(int idx, const Style& st)
 			curFormMethod_ = fm && *fm ? toLower(fm) : "get";
 		}
 		const bool isContainer = (block && !specialBlock) || (tag == "a" && st.block);
-		if (isContainer && (st.flex || st.bgSet || st.paddingLeft > 0 || st.paddingRight > 0 ||
-			st.width > 0 || st.minWidth > 0 || st.maxWidth > 0 || st.flex ||
-			st.marginLeftAuto || st.marginRightAuto || st.borderWidth > 0))
+		if (isContainer && (st.flex || st.grid || st.bgSet || st.paddingLeft > 0 ||
+			st.paddingRight > 0 || st.paddingTop > 0 || st.paddingBottom > 0 ||
+			st.width > 0 || st.minWidth > 0 || st.maxWidth > 0 ||
+			st.height > 0 || st.minHeight > 0 || st.maxHeight > 0 || st.flex ||
+			st.marginLeftAuto || st.marginRightAuto || st.borderWidth > 0 ||
+			st.borderRadius > 0 || st.boxShadowSet))
 		{
 			newline(0);
 			if (st.marginTop > 0) by_ += st.marginTop;
@@ -575,7 +647,8 @@ void PageLayout::renderNode(int idx, const Style& st)
 			const int bgY0 = by_;
 			// La hauteur est mesuree lors d'un premier passage. Si le bloc a un
 			// fond, son contenu est ensuite redessine par-dessus ce fond.
-			const bool hasBlockBackground = st.bgSet;
+			const bool hasBlockBackground = st.bgSet || st.boxShadowSet ||
+				st.borderWidth > 0;
 
 			if (st.paddingLeft > 0) x0_ += st.paddingLeft;
 			if (st.paddingRight > 0) x1_ -= st.paddingRight;
@@ -612,7 +685,137 @@ void PageLayout::renderNode(int idx, const Style& st)
 						linkNode_ = idx;
 					}
 				}
-				if (st.flex && st.flexRow && node.children.size() > 1)
+				if (st.grid && !node.children.empty())
+				{
+					const int gridX0 = x0_, gridX1 = x1_;
+					const int gridY = by_;
+					const int gridWidth = std::max(1, gridX1 - gridX0);
+					std::vector<CssGridTrack> tracks;
+					const CssGridTrack* autoRepeatTrack = nullptr;
+					for (const CssGridTrack& track : st.gridColumns)
+					{
+						if (track.autoRepeat)
+						{
+							autoRepeatTrack = &track;
+							continue;
+						}
+						tracks.push_back(track);
+					}
+					if (autoRepeatTrack)
+					{
+						int otherWidth = 0;
+						for (const CssGridTrack& track : tracks)
+							otherWidth += std::max(track.fixedWidth, track.minWidth);
+						const int otherGaps = std::max(0,
+							(int)tracks.size() - 1) * st.columnGap;
+						const int minTrackWidth = std::max(1,
+							std::max(autoRepeatTrack->fixedWidth,
+								autoRepeatTrack->minWidth));
+						const int repeatCount = std::max(1, std::min(12,
+							(gridWidth - otherWidth - otherGaps + st.columnGap) /
+								(minTrackWidth + st.columnGap)));
+						const int visibleCount = autoRepeatTrack->autoFit
+							? std::min(repeatCount, (int)node.children.size())
+							: repeatCount;
+						for (int i = 0; i < visibleCount &&
+							tracks.size() < 12; ++i)
+							tracks.push_back(*autoRepeatTrack);
+					}
+					if (tracks.empty()) tracks.push_back({ 0, 1 });
+
+					const int gapsWidth = st.columnGap *
+						(std::max(0, (int)tracks.size() - 1));
+					const int trackSpace = std::max(0, gridWidth - gapsWidth);
+					int fixedWidth = 0, totalFraction = 0;
+					for (const CssGridTrack& track : tracks)
+					{
+						fixedWidth += std::max(track.fixedWidth, track.minWidth);
+						totalFraction += std::max(0, track.fraction);
+					}
+					const int fractionSpace = std::max(0, trackSpace - fixedWidth);
+					std::vector<int> widths(tracks.size(), 0);
+					int allocated = 0;
+					for (size_t i = 0; i < tracks.size(); ++i)
+					{
+						if (tracks[i].fraction > 0 && totalFraction > 0)
+							widths[i] = std::max(tracks[i].fixedWidth,
+								tracks[i].minWidth) +
+								(int)((long long)fractionSpace *
+									tracks[i].fraction / totalFraction);
+						else
+							widths[i] = std::max(tracks[i].fixedWidth,
+								tracks[i].minWidth);
+						allocated += widths[i];
+					}
+					for (size_t i = 0; allocated < trackSpace && i < widths.size(); ++i)
+					{
+						if (tracks[i].fraction <= 0) continue;
+						++widths[i];
+						++allocated;
+					}
+
+					size_t childIndex = 0;
+					int rowY = gridY;
+					int maxBottom = gridY;
+					while (childIndex < node.children.size())
+					{
+						const size_t firstChildInRow = childIndex;
+						size_t column = 0;
+						int rowBottom = rowY;
+						while (childIndex < node.children.size())
+						{
+							const int child = node.children[childIndex];
+							const Style itemStyle = css_->resolve(*doc_, child, contentStyle);
+							const size_t span = (size_t)std::max(1,
+								std::min((int)tracks.size(), itemStyle.gridColumnSpan));
+							if (column + span > tracks.size()) break;
+
+							int cellX = gridX0;
+							for (size_t i = 0; i < column; ++i)
+								cellX += widths[i] + st.columnGap;
+							int cellWidth = 0;
+							for (size_t i = column; i < column + span; ++i)
+								cellWidth += widths[i];
+							cellWidth += st.columnGap * (int)(span - 1);
+
+							x0_ = cellX;
+							x1_ = std::min(gridX1, cellX + cellWidth);
+							ix_ = x0_; iy_ = by_ = rowY; lineMaxH_ = 0;
+							resolveAndRender(child, contentStyle);
+							rowBottom = std::max(rowBottom,
+								std::max(by_, iy_ + lineMaxH_));
+							column += span;
+							++childIndex;
+						}
+						if (childIndex < node.children.size() &&
+							childIndex == firstChildInRow)
+						{
+							const int child = node.children[childIndex];
+							const Style itemStyle = css_->resolve(*doc_, child, contentStyle);
+							const size_t span = (size_t)std::max(1,
+								std::min((int)tracks.size(), itemStyle.gridColumnSpan));
+							int cellX = gridX0;
+							int cellWidth = 0;
+							for (size_t i = 0; i < span; ++i)
+							{
+								cellWidth += widths[i];
+								if (i + 1 < span) cellWidth += st.columnGap;
+							}
+							x0_ = cellX;
+							x1_ = std::min(gridX1, cellX + cellWidth);
+							ix_ = x0_; iy_ = by_ = rowY; lineMaxH_ = 0;
+							resolveAndRender(child, contentStyle);
+							rowBottom = std::max(by_, iy_ + lineMaxH_);
+							++childIndex;
+						}
+						maxBottom = std::max(maxBottom, rowBottom);
+						if (childIndex < node.children.size())
+							rowY = rowBottom + st.rowGap;
+					}
+					x0_ = gridX0; x1_ = gridX1; by_ = maxBottom;
+					iy_ = by_; ix_ = x0_;
+				}
+				else if (st.flex && st.flexRow && node.children.size() > 1)
 				{
 					const int flexX0 = x0_, flexX1 = x1_;
 					const int flexY = by_;
@@ -657,10 +860,26 @@ void PageLayout::renderNode(int idx, const Style& st)
 						const size_t rowCount = rowEnd - rowStart;
 						int extraGap = st.columnGap;
 						int cursor = flexX0;
+						const int freeSpace = std::max(0, flexWidth - rowItemsWidth);
 						if (st.justifyContent == 1)
-							cursor += std::max(0, (flexWidth - rowItemsWidth) / 2);
+							cursor += freeSpace / 2;
 						else if (st.justifyContent == 2 && rowCount > 1)
-							extraGap += std::max(0, (flexWidth - rowItemsWidth) / (int)(rowCount - 1));
+							extraGap += freeSpace / (int)(rowCount - 1);
+						else if (st.justifyContent == 3)
+							cursor += freeSpace;
+						else if (st.justifyContent == 4 && rowCount > 0)
+						{
+							const int distributed = freeSpace / (int)rowCount;
+							cursor += distributed / 2;
+							extraGap += distributed;
+						}
+						else if (st.justifyContent == 5)
+						{
+							const int distributed = freeSpace /
+								((int)rowCount + 1);
+							cursor += distributed;
+							extraGap += distributed;
+						}
 
 						int rowBottom = rowY;
 						for (size_t i = rowStart; i < rowEnd; ++i)
@@ -679,6 +898,23 @@ void PageLayout::renderNode(int idx, const Style& st)
 					}
 					x0_ = flexX0; x1_ = flexX1; by_ = maxBottom; iy_ = by_; ix_ = x0_;
 				}
+				else if (st.flex && !st.flexRow)
+				{
+					bool firstItem = true;
+					for (int c : node.children)
+					{
+						if (!firstItem)
+						{
+							newline(0);
+							by_ += st.rowGap;
+							iy_ = by_;
+							ix_ = x0_;
+						}
+						resolveAndRender(c, contentStyle);
+						newline(0);
+						firstItem = false;
+					}
+				}
 				else for (int c : node.children) resolveAndRender(c, contentStyle);
 				linkActive_ = prevActive;
 				linkHref_ = prevHref;
@@ -688,6 +924,15 @@ void PageLayout::renderNode(int idx, const Style& st)
 			renderChildren();
 			newline(0);
 
+			int desiredContentHeight = st.height;
+			if (st.minHeight > 0)
+				desiredContentHeight = std::max(desiredContentHeight, st.minHeight);
+			if (st.maxHeight > 0 && desiredContentHeight > st.maxHeight)
+				desiredContentHeight = st.maxHeight;
+			if (desiredContentHeight > 0)
+				by_ = std::max(by_, contentIy + desiredContentHeight);
+			const int measuredContentBottom = by_;
+
 			if (by_ < bgY0 + 8) by_ = bgY0 + 8;   // bloc vide : garder le fond
 #ifdef NW_NO_BLOCK_BG
 			(void)hasBlockBackground;
@@ -695,10 +940,36 @@ void PageLayout::renderNode(int idx, const Style& st)
 			if (hasBlockBackground)
 			{
 				const int bgHeight = by_ + st.paddingBottom - bgY0;
-				(*target_).fillRect(bgX0, bgY0, bgX1 - bgX0, bgHeight, st.bg);
+				const int radius = std::min(st.borderRadius,
+					std::min(bgX1 - bgX0, bgHeight) / 2);
+				if (st.boxShadowSet)
+					(*target_).shadowRoundedRect(bgX0, bgY0, bgX1 - bgX0,
+						bgHeight, radius, st.shadowX, st.shadowY, st.shadowBlur,
+						st.shadowSpread, st.shadowColor);
+				if (st.gradientCount > 1)
+				{
+					if (st.gradientRadial)
+						(*target_).fillRadialGradientRect(bgX0, bgY0,
+							bgX1 - bgX0, bgHeight, st.gradientColors,
+							st.gradientStops, st.gradientCount, radius);
+					else
+						(*target_).fillLinearGradientRect(bgX0, bgY0,
+							bgX1 - bgX0, bgHeight, st.gradientColors,
+							st.gradientStops, st.gradientCount,
+							st.gradientAngle, radius);
+				}
+				else if (st.bgSet)
+				{
+					if (radius > 0)
+						(*target_).fillRoundedRect(bgX0, bgY0, bgX1 - bgX0,
+							bgHeight, radius, st.bg);
+					else
+						(*target_).blendRect(bgX0, bgY0, bgX1 - bgX0, bgHeight, st.bg);
+				}
 				if (st.borderWidth > 0)
-					(*target_).addRect(bgX0, bgY0, bgX1 - bgX0, bgHeight,
-						st.borderColor, std::min(4, st.borderWidth));
+					(*target_).addRoundedRect(bgX0, bgY0, bgX1 - bgX0,
+						bgHeight, radius, st.borderColor,
+						std::min(4, st.borderWidth));
 
 				x0_ = contentX0; x1_ = contentX1;
 				ix_ = contentIx; iy_ = contentIy; by_ = contentBy;
@@ -709,15 +980,13 @@ void PageLayout::renderNode(int idx, const Style& st)
 				out_->submits.resize(submitsBefore);
 				out_->images.resize(imagesBefore);
 				formCounter_ = formCounterBefore;
+				const bool stoppedDuringMeasure = renderStopped_;
+				renderStopped_ = false;
 				renderChildren();
 				newline(0);
+				renderStopped_ = renderStopped_ || stoppedDuringMeasure;
+				by_ = std::max(by_, measuredContentBottom);
 				if (by_ < bgY0 + 8) by_ = bgY0 + 8;
-			}
-			else if (st.borderWidth > 0)
-			{
-				const int borderHeight = std::max(1, by_ + st.paddingBottom - bgY0);
-				(*target_).addRect(bgX0, bgY0, bgX1 - bgX0, borderHeight,
-					st.borderColor, std::min(4, st.borderWidth));
 			}
 #endif
 
@@ -848,27 +1117,10 @@ void PageLayout::renderNode(int idx, const Style& st)
 			newline(0);
 			int savedX0 = x0_, savedX1 = x1_;
 			x0_ += 6; x1_ -= 6; ix_ = x0_;
-			TextEngine& te = TextEngine::instance();
-			float scale = baseScale_ * 0.9f;
-			int pitch = te.linePitch(scale);
 			for (int c : node.children)
 			{
 				if (doc_->nodes[c].type == NodeType::Text || doc_->nodes[c].type == NodeType::RawText)
-				{
-					const std::string& raw = doc_->nodes[c].text;
-					size_t start = 0;
-					while (start < raw.size())
-					{
-						size_t nl = raw.find('\n', start);
-						std::string lineStr = (nl == std::string::npos) ? raw.substr(start) : raw.substr(start, nl - start);
-						if (!lineStr.empty() && lineStr.back() == '\r') lineStr.pop_back();
-						te.drawLine((*target_), lineStr, ix_, iy_, scale, 0xFFDACFCF, false, false);
-						by_ = iy_ += pitch;
-						ix_ = x0_;
-						if (nl == std::string::npos) break;
-						start = nl + 1;
-					}
-				}
+					drawPreformattedText(doc_->nodes[c].text, st);
 				else
 				{
 					resolveAndRender(c, st);
@@ -901,7 +1153,22 @@ void PageLayout::renderNode(int idx, const Style& st)
 	// --- noeuds de texte ---
 	if (node.type == NodeType::Text)
 	{
-		drawTextWrapped(node.text, st, st.mono);
+		bool insidePre = false;
+		for (int parent = node.parent; parent >= 0 &&
+			(size_t)parent < doc_->nodes.size();
+			parent = doc_->nodes[parent].parent)
+		{
+			if (doc_->nodes[parent].isElement() &&
+				doc_->nodes[parent].tag == "pre")
+			{
+				insidePre = true;
+				break;
+			}
+		}
+		if (insidePre)
+			drawPreformattedText(node.text, st);
+		else
+			drawTextWrapped(node.text, st, st.mono);
 		return;
 	}
 
@@ -964,6 +1231,12 @@ void PageLayout::renderNode(int idx, const Style& st)
 //--------------------------------------------------------------------------
 void PageLayout::resolveAndRender(int idx, const Style& parentSt)
 {
+	if (renderStopped_) return;
+	if (segmented_ && by_ >= stopAtY_)
+	{
+		renderStopped_ = true;
+		return;
+	}
 	if (idx < 0) return;
 	if (renderDepth_ >= 256) return;
 	++renderDepth_;
@@ -995,6 +1268,14 @@ void PageLayout::resolveAndRender(int idx, const Style& parentSt)
 
 	Style st = css_->resolve(*doc_, idx, parentSt);
 	if (node.isElement() && node.tag == "code") st.mono = true;
+	if (node.isElement() && node.tag == "pre" &&
+		!(st.declared & CssPropMono))
+		st.mono = true;
+	if (idx == pageBackgroundNode_)
+	{
+		st.bgSet = false;
+		st.gradientCount = 0;
+	}
 	if (st.displayNone) return;
 	// Les liens en ligne prennent un chemin raccourci (couleur de lien,
 	// soulignement, zone cliquable). Un lien declare display:block doit au
@@ -1025,6 +1306,25 @@ void PageLayout::resolveAndRender(int idx, const Style& parentSt)
 //--------------------------------------------------------------------------
 bool PageLayout::render(PageModel& out, const std::string& pageUrl)
 {
+	return renderInternal(out, pageUrl, 0,
+		set_->maxPageHeight > 0 ? set_->maxPageHeight : NW_MAX_PAGE_HEIGHT, false);
+}
+
+bool PageLayout::renderSegment(PageModel& out, const std::string& pageUrl,
+	int segmentIndex, int segmentHeight)
+{
+	if (segmentIndex < 0 || segmentIndex >= NW_MAX_PAGE_SEGMENTS ||
+		segmentHeight <= 0) return false;
+	const int segmentOffset = segmentIndex * NW_PAGE_SEGMENT_HEIGHT -
+		(segmentIndex > 0 ? NW_PAGE_SEGMENT_OVERLAP : 0);
+	segmentHeight = std::min(segmentHeight,
+		NW_MAX_PAGE_CONTENT_HEIGHT - segmentOffset);
+	return renderInternal(out, pageUrl, segmentIndex, segmentHeight, true);
+}
+
+bool PageLayout::renderInternal(PageModel& out, const std::string& pageUrl,
+	int segmentIndex, int segmentHeight, bool segmented)
+{
 	pageUrl_ = pageUrl;
 	out_ = &out;
 	out.clear();
@@ -1041,8 +1341,21 @@ bool PageLayout::render(PageModel& out, const std::string& pageUrl)
 			break;
 		}
 
-	int cap = set_->maxPageHeight > 0 ? set_->maxPageHeight : NW_MAX_PAGE_HEIGHT;
-	while (!out.bmp.create(NW_PAGE_WIDTH, cap))
+	int cap = segmentHeight;
+	const int segmentOffset = segmented && segmentIndex > 0
+		? segmentIndex * NW_PAGE_SEGMENT_HEIGHT - NW_PAGE_SEGMENT_OVERLAP : 0;
+	segmented_ = segmented;
+	stopAtY_ = segmentOffset + cap;
+	renderStopped_ = false;
+	out.segmentIndex = segmentIndex;
+	out.furthestSegmentIndex = segmentIndex;
+	if (segmented && !out.bmp.create(NW_PAGE_WIDTH, cap, segmentOffset))
+	{
+		out.errorCode = 2;
+		out.errorText = "Memoire insuffisante pour le segment";
+		return false;
+	}
+	while (!segmented && !out.bmp.create(NW_PAGE_WIDTH, cap, segmentOffset))
 	{
 		if (cap <= 1200)
 		{
@@ -1050,6 +1363,11 @@ bool PageLayout::render(PageModel& out, const std::string& pageUrl)
 			out.errorText = "Memoire insuffisante pour le rendu";
 			return false;
 		}
+		segmented_ = segmented;
+		stopAtY_ = segmentOffset + cap;
+		renderStopped_ = false;
+		out.segmentIndex = segmentIndex;
+		out.furthestSegmentIndex = segmentIndex;
 		cap = (cap * 2) / 3;
 		if (cap < 1200) cap = 1200;
 	}
@@ -1066,24 +1384,41 @@ bool PageLayout::render(PageModel& out, const std::string& pageUrl)
 	const bool isInternal = strStartsWith(toLower(pageUrl), "nw://") || strStartsWith(toLower(pageUrl), "nw:/");
 	uint32_t defaultBg = isInternal ? 0xFF1A1317 : 0xFFFFFFFF; // Fond sombre prune interne ou blanc web standard
 	uint32_t defaultText = isInternal ? C_TEXT : 0xFF202020; // Texte clair interne ou sombre standard
+	Style pageBackground;
+	pageBackgroundNode_ = -1;
 
 	Style rootSt = defaultStyle();
 	rootSt.color = defaultText;
 	rootSt.colorSet = true;
+	Style htmlSt = rootSt;
 
 	// Peindre le fond du body/html sur toute la page et heriter la couleur
 	int htmlNode = doc_->firstByTag(doc_->root, "html");
 	if (htmlNode >= 0)
 	{
-		Style htmlSt = css_->resolve(*doc_, htmlNode, rootSt);
-		if (htmlSt.bgSet) defaultBg = htmlSt.bg;
+		htmlSt = css_->resolve(*doc_, htmlNode, rootSt);
+		if (htmlSt.bgSet)
+		{
+			if (htmlSt.gradientCount <= 1)
+				defaultBg = compositeColor(htmlSt.bg, defaultBg);
+			pageBackground = htmlSt;
+			pageBackgroundNode_ = htmlNode;
+		}
 		if (htmlSt.colorSet) { defaultText = htmlSt.color; rootSt.color = defaultText; }
+		rootSt.customProperties = htmlSt.customProperties;
 	}
 	if (body >= 0 && body != htmlNode)
 	{
-		Style bodySt = css_->resolve(*doc_, body, rootSt);
-		if (bodySt.bgSet) defaultBg = bodySt.bg;
+		Style bodySt = css_->resolve(*doc_, body, htmlSt);
+		if (bodySt.bgSet)
+		{
+			if (bodySt.gradientCount <= 1)
+				defaultBg = compositeColor(bodySt.bg, defaultBg);
+			pageBackground = bodySt;
+			pageBackgroundNode_ = body;
+		}
 		if (bodySt.colorSet) { defaultText = bodySt.color; rootSt.color = defaultText; }
+		rootSt.customProperties = bodySt.customProperties;
 	}
 
 	// Si le fond est sombre et que la couleur de texte n'a pas ete explicitement definie
@@ -1100,6 +1435,18 @@ bool PageLayout::render(PageModel& out, const std::string& pageUrl)
 
 	defaultTextColor_ = defaultText;
 	(*target_).clear(defaultBg);
+	if (pageBackground.gradientCount > 1)
+	{
+		if (pageBackground.gradientRadial)
+			(*target_).fillRadialGradientRect(0, segmentOffset,
+				NW_PAGE_WIDTH, cap, pageBackground.gradientColors,
+				pageBackground.gradientStops, pageBackground.gradientCount);
+		else
+			(*target_).fillLinearGradientRect(0, segmentOffset,
+				NW_PAGE_WIDTH, cap, pageBackground.gradientColors,
+				pageBackground.gradientStops, pageBackground.gradientCount,
+				pageBackground.gradientAngle);
+	}
 
 	x0_ = 4; x1_ = NW_PAGE_WIDTH - 4;
 	ix_ = x0_; iy_ = 0; by_ = 0; lineMaxH_ = 0;
@@ -1114,7 +1461,18 @@ bool PageLayout::render(PageModel& out, const std::string& pageUrl)
 	if (by_ < iy_ + lineMaxH_) by_ = iy_ + lineMaxH_;
 
 	out.height = by_ + 2;
-	if (out.height >= cap) { out.height = cap; out.truncated = true; }
+	if (segmented)
+	{
+		out.truncated = renderStopped_ || out.height > stopAtY_;
+		if (out.truncated && out.height < stopAtY_) out.height = stopAtY_;
+		if (out.height > NW_MAX_PAGE_CONTENT_HEIGHT)
+			out.height = NW_MAX_PAGE_CONTENT_HEIGHT;
+	}
+	else if (out.height >= cap)
+	{
+		out.height = cap;
+		out.truncated = true;
+	}
 
 	// associe les champs aux formulaires
 	for (auto& fs : out.submits)

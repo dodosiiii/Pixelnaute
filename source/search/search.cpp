@@ -203,8 +203,9 @@ int searchSelfTest()
 
 	// resolution
 	if (resolveInput("exemple.fr", "duckduckgo-lite") != "https://exemple.fr") fails++;
-	if (resolveInput("bonjour", "duckduckgo-lite").find("lite.duckduckgo.com")
-			== std::string::npos) fails++;
+	const std::string defaultSearch = resolveInput("bonjour", "duckduckgo-lite");
+	if (defaultSearch.find("lite.duckduckgo.com/lite") == std::string::npos &&
+		defaultSearch.find("html.duckduckgo.com/html") == std::string::npos) fails++;
 	if (resolveInput("  ", "duckduckgo-lite") != "") fails++;
 	if (resolveInput("nw://settings", "duckduckgo-lite") != "nw://settings") fails++;
 	if (resolveInput("NW://settings", "duckduckgo-lite") != "nw://settings") fails++;

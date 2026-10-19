@@ -40,7 +40,37 @@ enum CssProperty : uint64_t
 	CssPropListStyle       = 1ULL << 29,
 	CssPropBorder          = 1ULL << 30,
 	CssPropRowGap          = 1ULL << 31,
-	CssPropColumnGap       = 1ULL << 32
+	CssPropColumnGap       = 1ULL << 32,
+	CssPropLineHeight      = 1ULL << 33,
+	CssPropBorderRadius    = 1ULL << 34,
+	CssPropBoxShadow       = 1ULL << 35,
+	CssPropGridColumns     = 1ULL << 36,
+	CssPropGridColumnSpan  = 1ULL << 37,
+	CssPropGrid            = 1ULL << 38,
+	CssPropMinHeight       = 1ULL << 39,
+	CssPropMaxHeight       = 1ULL << 40
+};
+
+struct CssGridTrack
+{
+	int fixedWidth = 0;
+	int minWidth = 0;
+	int fraction = 1;
+	bool autoRepeat = false;
+	bool autoFit = false;
+};
+
+struct CssCustomProperty
+{
+	std::string name;
+	std::string value;
+	bool important = false;
+};
+
+struct CssDeclaration
+{
+	std::string property;
+	std::string value;
 };
 
 // Style calcule pour un noeud.
@@ -63,18 +93,36 @@ struct Style
 	int   minWidth   = 0;
 	int   maxWidth   = 0;
 	int   height     = 0;
+	int   minHeight  = 0;
+	int   maxHeight  = 0;
 	bool  displayNone = false;
 	bool  block       = false;  // display:block explicite
 	bool  displayInline = false;
 	bool  mono        = false;  // <pre>/<code>
+	bool  grid        = false;
+	std::vector<CssGridTrack> gridColumns;
+	int   gridColumnSpan = 1;
 	bool  listStyleNone = false;
 	int   borderWidth = 0;
 	uint32_t borderColor = 0xFF968A8A;
 	int   rowGap = 0, columnGap = 0;
+	int   lineHeight = 0;
+	bool  lineHeightRelative = false;
+	bool  lineHeightUnitless = false;
+	uint32_t gradientColors[8] = {};
+	int gradientStops[8] = {};
+	int gradientAngle = 180;
+	int gradientCount = 0;
+	bool gradientRadial = false;
+	int borderRadius = 0;
+	int shadowX = 0, shadowY = 0, shadowBlur = 0, shadowSpread = 0;
+	uint32_t shadowColor = 0;
+	bool boxShadowSet = false;
 	bool  marginLeftAuto = false, marginRightAuto = false;
 	bool  borderBox = false;
 	bool  flex = false, flexRow = false, flexWrap = false;
-	int   justifyContent = 0; // 0=start, 1=center, 2=space-between
+	int   justifyContent = 0; // start, center, space-between, end, around, evenly
+	std::vector<CssCustomProperty> customProperties;
 
 	float scale() const {                                  // echelle de fonte
 		int f = fontSize > 0 ? fontSize : 16;
@@ -96,8 +144,13 @@ struct CssCompoundSelector
 	std::string id;
 	std::vector<CssAttrSelector> attrs;
 	bool firstChild = false;
+	bool lastChild = false;
+	bool nthChildSet = false;
+	int nthChildA = 0;
+	int nthChildB = 0;
 	bool hover = false;
 	bool focus = false;
+	bool root = false;
 	bool checked = false;
 	bool disabled = false;
 	std::string notSelector;
@@ -115,6 +168,7 @@ struct CssRule
 	std::string cls;       // premiere classe (compatibilite)
 	std::string id;        // id (compatibilite)
 	Style style;
+	std::vector<CssDeclaration> declarations;
 };
 
 //=============================================================================
@@ -128,7 +182,7 @@ public:
 
 	// Analyse une feuille CSS entiere.
 	void parseStylesheet(const std::string& css, int sourceOrder = -1);
-	static const size_t MaxRules = 512;
+	static const size_t MaxRules = 1536;
 	static const size_t MaxStylesheetBytes = 128 * 1024;
 
 	// Recupère la liste des regles (pour debug).

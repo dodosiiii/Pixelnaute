@@ -11,8 +11,8 @@
 #include <cstdlib>
 
 #define NW_VERSION_MAJOR 0
-#define NW_VERSION_MINOR 4
-#define NW_VERSION_STRING "0.4.0"
+#define NW_VERSION_MINOR 5
+#define NW_VERSION_STRING "0.5.0"
 
 //-----------------------------------------------------------------------------
 // Limites memoire (stabilite avant tout sur New 3DS)
@@ -23,8 +23,12 @@ enum
 	NW_MAX_DOM_NODES     = 8192,              // evite qu'une page complexe epuise la RAM
 	NW_MAX_BODY_BYTES    = 8 * 1024 * 1024,   // taille maximale d'un telechargement
 	NW_MAX_PAGE_HEIGHT   = 2000,              // limite la memoire du rendu logiciel (px)
+	NW_PAGE_SEGMENT_HEIGHT = 2000,            // hauteur de contenu ajoutee par segment
+	NW_MAX_PAGE_SEGMENTS = 2,                 // au plus 4 000 px de contenu logique
+	NW_MAX_PAGE_CONTENT_HEIGHT = NW_PAGE_SEGMENT_HEIGHT * NW_MAX_PAGE_SEGMENTS,
 	NW_PAGE_WIDTH        = 400,               // largeur de la page / ecran top
 	NW_TOP_HEIGHT        = 240,               // hauteur ecran haut
+	NW_PAGE_SEGMENT_OVERLAP = NW_TOP_HEIGHT, // recouvrement pour garder l'ecran complet au raccord
 	NW_BOTTOM_WIDTH      = 320,               // largeur ecran bas
 	NW_BOTTOM_HEIGHT     = 240,               // hauteur ecran bas
 	NW_MAX_TABS          = 4,                 // onglets simultanes (RAM limitee)

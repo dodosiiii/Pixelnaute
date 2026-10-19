@@ -282,7 +282,6 @@ void ReleaseUpdater::worker()
 	options.accept = "application/vnd.github+json";
 	options.maxBytes = kMaxReleaseJsonBytes;
 	options.verifyTls = true;
-	options.allowTlsBypass = false;
 
 	std::atomic<float> requestProgress{ 0.0f };
 	NetResponse release;

@@ -14,6 +14,8 @@
 #include "3ds_stub.h"
 
 #include "../../source/css/css.hpp"
+#include "../../source/render/bitmap.hpp"
+#include "../../source/render/layout.hpp"
 #include "../../source/render/font_decode.hpp"
 #include "../../source/search/search.hpp"
 #include "../../source/search/search_page.hpp"
@@ -351,12 +353,500 @@ static void testAlphaRoundTrip()
 		// A4 ne conserve que les 4 bits de poids fort (x0x11).
 		if (back != (unsigned char)((alpha >> 4) * 0x11)) errors++;
 	}
+
 	printf("Aller-retour A4 : %d erreurs sur %d positions\n", errors,
 		SHEET_W * SHEET_H);
 	check(errors == 0, "aller-retour A4");
 }
 
+static void testLinearGradient()
+{
+	Bitmap bitmap;
+	if (!bitmap.create(9, 1))
+	{
+		check(false, "allocation d'un bitmap de test gradient");
+		return;
+	}
+	const uint32_t colors[] = { 0xFF0000FF, 0xFFFF0000 };
+	const int stops[] = { 0, 10000 };
+	bitmap.fillLinearGradientRect(0, 0, 9, 1, colors, stops, 2, 90);
+	const uint16_t first = bitmap.getPixel(0, 0);
+	const uint16_t middle = bitmap.getPixel(4, 0);
+	const uint16_t last = bitmap.getPixel(8, 0);
+	const int firstRed = (first >> 11) & 0x1F;
+	const int firstBlue = first & 0x1F;
+	const int lastRed = (last >> 11) & 0x1F;
+	const int lastBlue = last & 0x1F;
+	check(firstRed > firstBlue && lastBlue > lastRed,
+		"le gradient horizontal interpole les couleurs dans le bon sens");
+	check(middle != first && middle != last,
+		"le gradient contient une couleur intermediaire");
+	bitmap.destroy();
+}
+
 // 3. Les glyphes ecrits doivent se relire a l'identique.
+static void testBitmapViewport()
+{
+	Bitmap bitmap;
+	bool ok = bitmap.create(4, 4, 10);
+	if (ok)
+	{
+		bitmap.clear(C_BLACK);
+		bitmap.fillRect(0, 8, 4, 4, C_RED);
+		ok = bitmap.originY == 10 &&
+			bitmap.getPixel(1, 9) == 0 &&
+			bitmap.getPixel(1, 10) == Bitmap::rgb32To565(C_RED) &&
+			bitmap.getPixel(1, 11) == Bitmap::rgb32To565(C_RED) &&
+			bitmap.getPixel(1, 12) == 0;
+	}
+	check(ok, "bitmap segment clippe les coordonnees absolues");
+}
+
+static void testBitmapCssEffects()
+{
+	Bitmap bitmap;
+	bool ok = bitmap.create(12, 12);
+	if (ok)
+	{
+		bitmap.clear(C_BLACK);
+		bitmap.fillRoundedRect(2, 2, 8, 8, 4, C_RED);
+		const uint16_t black = Bitmap::rgb32To565(C_BLACK);
+		const uint16_t red = Bitmap::rgb32To565(C_RED);
+		ok = bitmap.getPixel(2, 2) == black &&
+			bitmap.getPixel(6, 2) == red &&
+			bitmap.getPixel(6, 6) == red;
+		bitmap.blendRect(0, 0, 1, 1, 0x800000FF);
+		ok = ok && bitmap.getPixel(0, 0) == Bitmap::rgb32To565(0xFF000080);
+	}
+	check(ok, "coins arrondis et transparence CSS sur bitmap");
+}
+
+static void testPageSegments()
+{
+	std::string html = "<html><body>";
+	for (int i = 0; i < 500; ++i)
+		html += "<p><a href='/segment'>Texte de test pour verifier le rendu progressif.</a></p>";
+	html += "</body></html>";
+
+	Document doc;
+	const bool parsed = htmlParse(html, doc);
+	WebSettings settings;
+	settings.enableJS = false;
+	CssEngine css;
+	collectStyleBlocks(doc, css);
+	PageLayout layout(doc, css, settings);
+	PageModel first;
+	const bool firstRendered = parsed && layout.renderSegment(first, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	const bool firstOk = firstRendered &&
+		first.bmp.h == NW_PAGE_SEGMENT_HEIGHT &&
+		first.bmp.originY == 0 && first.segmentIndex == 0 &&
+		first.truncated && first.height >= NW_PAGE_SEGMENT_HEIGHT &&
+		first.height <= NW_PAGE_SEGMENT_HEIGHT + 32;
+
+	PageModel next;
+	const bool nextRendered = parsed && layout.renderSegment(next, "https://test/", 1,
+		NW_PAGE_SEGMENT_HEIGHT + NW_PAGE_SEGMENT_OVERLAP);
+	const bool nextOk = nextRendered &&
+		next.bmp.h == NW_PAGE_SEGMENT_HEIGHT + NW_PAGE_SEGMENT_OVERLAP &&
+		next.bmp.originY == NW_PAGE_SEGMENT_HEIGHT - NW_PAGE_SEGMENT_OVERLAP &&
+		next.segmentIndex == 1 && next.truncated &&
+		next.height == NW_MAX_PAGE_CONTENT_HEIGHT;
+	PageModel beyondLimit;
+	const bool beyondLimitRejected = !layout.renderSegment(beyondLimit,
+		"https://test/", NW_MAX_PAGE_SEGMENTS, NW_PAGE_SEGMENT_HEIGHT);
+	bool sharedLinkAtOverlap = false;
+	for (const LinkBox& firstLink : first.links)
+	{
+		if (firstLink.y < next.bmp.originY || firstLink.y >= first.height) continue;
+		for (const LinkBox& nextLink : next.links)
+		{
+			if (firstLink.x == nextLink.x && firstLink.y == nextLink.y &&
+				firstLink.w == nextLink.w && firstLink.url == nextLink.url)
+			{
+				sharedLinkAtOverlap = true;
+				break;
+			}
+		}
+		if (sharedLinkAtOverlap) break;
+	}
+
+	Document shortDoc;
+	const bool shortParsed = htmlParse("<html><body><p>Page courte.</p></body></html>",
+		shortDoc);
+	CssEngine shortCss;
+	collectStyleBlocks(shortDoc, shortCss);
+	PageLayout shortLayout(shortDoc, shortCss, settings);
+	PageModel shortPage;
+	const bool shortRendered = shortParsed &&
+		shortLayout.renderSegment(shortPage, "https://test/", 0, NW_PAGE_SEGMENT_HEIGHT);
+	const bool shortOk = shortRendered && !shortPage.truncated &&
+		shortPage.height < NW_PAGE_SEGMENT_HEIGHT;
+	if (!firstOk || !nextOk || !sharedLinkAtOverlap || !beyondLimitRejected || !shortOk)
+		printf("  segments: parsed=%d, first=(%d,h=%d,origin=%d,index=%d,truncated=%d), "
+			"next=(%d,h=%d,origin=%d,index=%d,truncated=%d,height=%d), "
+			"sharedLink=%d, beyondLimitRejected=%d, short=(%d,h=%d,truncated=%d)\n",
+			parsed, first.bmp.h, first.height, first.bmp.originY, first.segmentIndex,
+			first.truncated, nextRendered, next.bmp.h, next.bmp.originY,
+			next.segmentIndex, next.truncated, next.height, sharedLinkAtOverlap,
+			beyondLimitRejected, shortRendered,
+			shortPage.height, shortPage.truncated);
+	check(firstOk && nextOk && sharedLinkAtOverlap && beyondLimitRejected && shortOk,
+		"segments de 2 000 px limites a 4 000 px, raccord et page courte");
+}
+
+static void testGridLayout()
+{
+	const std::string html =
+		"<html><head><style>"
+		".grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));"
+		"gap:6px 10px;min-height:min(62vh,560px)}"
+		".first{background:#ff0000}.second{background:#0000ff}"
+		".wide{grid-column:1 / 3;background:#00ff00}"
+		"</style></head><body><div class=\"grid\">"
+		"<div class=\"first\">Premiere colonne</div>"
+		"<div class=\"second\">Deuxieme colonne plus large</div>"
+		"<div class=\"wide\">Element sur deux colonnes</div>"
+		"</div></body></html>";
+	Document doc;
+	bool ok = htmlParse(html, doc);
+	WebSettings settings;
+	settings.enableJS = false;
+	CssEngine css;
+	collectStyleBlocks(doc, css);
+	PageLayout layout(doc, css, settings);
+	PageModel page;
+	ok = ok && layout.renderSegment(page, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	if (ok)
+	{
+		const uint16_t red = Bitmap::rgb32To565(0xFF0000FF);
+		const uint16_t blue = Bitmap::rgb32To565(0xFFFF0000);
+		const uint16_t green = Bitmap::rgb32To565(0xFF00FF00);
+		bool greenSpansRow = false;
+		for (int y = 0; y < std::min(page.height, 100); ++y)
+			if (page.bmp.getPixel(8, y) == green &&
+				page.bmp.getPixel(NW_PAGE_WIDTH - 8, y) == green)
+				greenSpansRow = true;
+		ok = page.height >= 148 && page.bmp.getPixel(12, 2) == red &&
+			page.bmp.getPixel(260, 2) == blue && greenSpansRow;
+	}
+	check(ok, "CSS Grid: colonnes fractionnaires et element multicolonne");
+
+	const std::string autoFitHtml =
+		"<html><head><style>"
+		".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:8px}"
+		".first{background:#ff0000}.second{background:#0000ff}"
+		"</style></head><body><div class=\"grid\">"
+		"<div class=\"first\">Carte une</div><div class=\"second\">Carte deux</div>"
+		"</div></body></html>";
+	Document autoFitDoc;
+	ok = htmlParse(autoFitHtml, autoFitDoc);
+	CssEngine autoFitCss;
+	collectStyleBlocks(autoFitDoc, autoFitCss);
+	PageLayout autoFitLayout(autoFitDoc, autoFitCss, settings);
+	PageModel autoFitPage;
+	ok = ok && autoFitLayout.renderSegment(autoFitPage, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	if (ok)
+	{
+		const uint16_t autoFitRed = Bitmap::rgb32To565(0xFF0000FF);
+		const uint16_t autoFitBlue = Bitmap::rgb32To565(0xFFFF0000);
+		ok = autoFitPage.bmp.getPixel(12, 2) == autoFitRed &&
+			autoFitPage.bmp.getPixel(260, 2) == autoFitBlue;
+	}
+	check(ok, "CSS Grid: repeat(auto-fit, minmax())");
+
+	const std::string flexHtml =
+		"<html><head><style>"
+		".row{display:flex;justify-content:flex-end;gap:0}"
+		".first{width:40px;height:24px;background:#ff0000}"
+		".second{width:40px;height:24px;background:#0000ff}"
+		"</style></head><body><div class=\"row\">"
+		"<div class=\"first\"></div><div class=\"second\"></div>"
+		"</div></body></html>";
+	Document flexDoc;
+	ok = htmlParse(flexHtml, flexDoc);
+	CssEngine flexCss;
+	collectStyleBlocks(flexDoc, flexCss);
+	PageLayout flexLayout(flexDoc, flexCss, settings);
+	PageModel flexPage;
+	ok = ok && flexLayout.renderSegment(flexPage, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	if (ok)
+	{
+		const uint16_t flexRed = Bitmap::rgb32To565(0xFF0000FF);
+		const uint16_t flexBlue = Bitmap::rgb32To565(0xFFFF0000);
+		int redX = NW_PAGE_WIDTH, blueX = NW_PAGE_WIDTH;
+		for (int x = 0; x < NW_PAGE_WIDTH; ++x)
+		{
+			if (redX == NW_PAGE_WIDTH && flexPage.bmp.getPixel(x, 2) == flexRed)
+				redX = x;
+			if (blueX == NW_PAGE_WIDTH && flexPage.bmp.getPixel(x, 2) == flexBlue)
+				blueX = x;
+		}
+		ok = redX < NW_PAGE_WIDTH && blueX < NW_PAGE_WIDTH && redX > 250 &&
+			blueX > redX;
+	}
+	check(ok, "CSS Flexbox: direction par defaut et justify-content:flex-end");
+
+	const std::string flexColumnHtml =
+		"<html><head><style>"
+		".column{display:flex;flex-direction:column;gap:7px}"
+		".first{height:20px;background:#ff0000}"
+		".second{height:20px;background:#0000ff}"
+		"</style></head><body><div class=\"column\">"
+		"<div class=\"first\"></div><div class=\"second\"></div>"
+		"</div></body></html>";
+	Document flexColumnDoc;
+	ok = htmlParse(flexColumnHtml, flexColumnDoc);
+	CssEngine flexColumnCss;
+	collectStyleBlocks(flexColumnDoc, flexColumnCss);
+	PageLayout flexColumnLayout(flexColumnDoc, flexColumnCss, settings);
+	PageModel flexColumnPage;
+	ok = ok && flexColumnLayout.renderSegment(flexColumnPage, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	if (ok)
+	{
+		const uint16_t flexColumnRed = Bitmap::rgb32To565(0xFF0000FF);
+		const uint16_t flexColumnBlue = Bitmap::rgb32To565(0xFFFF0000);
+		int redY = flexColumnPage.height, redBottom = -1;
+		int blueY = flexColumnPage.height;
+		for (int y = 0; y < flexColumnPage.height; ++y)
+		{
+			if (flexColumnPage.bmp.getPixel(12, y) == flexColumnRed)
+			{
+				redY = std::min(redY, y);
+				redBottom = y;
+			}
+			if (blueY == flexColumnPage.height &&
+				flexColumnPage.bmp.getPixel(12, y) == flexColumnBlue)
+				blueY = y;
+		}
+		ok = redY < flexColumnPage.height && blueY < flexColumnPage.height &&
+			blueY - redBottom - 1 >= 4;
+	}
+	check(ok, "CSS Flexbox: flex-direction:column avec gap vertical");
+}
+
+static void testRootThemeColors()
+{
+	const std::string html =
+		"<html><head><style>"
+		":root{--page:#000000;--ink:#f2e7d5;--accent:#00ff00}"
+		"body{background:var(--page);color:var(--ink)}"
+		".accent{color:var(--accent)}"
+		"strong{font-weight:700;color:#ff0000}"
+		"</style></head><body><p>Texte <span class=\"accent\">colore</span> "
+		"<strong>important</strong></p></body></html>";
+	Document doc;
+	bool ok = htmlParse(html, doc);
+	WebSettings settings;
+	settings.enableJS = false;
+	CssEngine css;
+	collectStyleBlocks(doc, css);
+	const int htmlNode = doc.firstByTag(doc.root, "html");
+	const int bodyNode = doc.firstByTag(doc.root, "body");
+	Style rootStyle = css.resolve(doc, htmlNode, defaultStyle());
+	Style bodyStyle = css.resolve(doc, bodyNode, rootStyle);
+	int strongNode = -1;
+	for (size_t i = 0; i < doc.nodes.size(); ++i)
+		if (doc.nodes[i].isElement() && doc.nodes[i].tag == "strong")
+			strongNode = (int)i;
+	const Style strongStyle = css.resolve(doc, strongNode, bodyStyle);
+	ok = ok && bodyStyle.color == 0xFFD5E7F2 && bodyStyle.colorSet &&
+		bodyStyle.bgSet &&
+		bodyStyle.bg == 0xFF000000 && strongStyle.bold &&
+		strongStyle.color == 0xFF0000FF;
+	int accentNode = -1;
+	for (size_t i = 0; i < doc.nodes.size(); ++i)
+		if (doc.nodes[i].isElement() && doc.nodes[i].tag == "span")
+			accentNode = (int)i;
+	const Style accentStyle = css.resolve(doc, accentNode, bodyStyle);
+	ok = ok && accentStyle.colorSet && accentStyle.color == 0xFF00FF00;
+
+	PageLayout layout(doc, css, settings);
+	PageModel page;
+	ok = ok && layout.renderSegment(page, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	bool foundInk = false;
+	bool foundRed = false;
+	bool foundAccent = false;
+	const uint16_t darkBackground = Bitmap::rgb32To565(0xFF000000);
+	if (ok)
+	{
+		ok = page.bmp.getPixel(NW_PAGE_WIDTH - 10, 2) == darkBackground;
+		for (int y = 0; y < std::min(page.height, 80); ++y)
+			for (int x = 0; x < NW_PAGE_WIDTH; ++x)
+			{
+				const uint16_t pixel = page.bmp.getPixel(x, y);
+				foundInk = foundInk || (((pixel >> 5) & 0x3F) > 8 &&
+					(pixel & 0x1F) > 8);
+				foundRed = foundRed ||
+					pixel == Bitmap::rgb32To565(0xFF0000FF);
+				foundAccent = foundAccent ||
+					pixel == Bitmap::rgb32To565(0xFF00FF00);
+			}
+		ok = ok && foundInk && foundRed && foundAccent;
+	}
+	check(ok, "CSS :root variables, couleurs de texte et gras visibles");
+}
+
+static void testSegmentedBackgroundKeepsText()
+{
+	std::string html = "<html><body><div style=\"background: #000000; "
+		"color: #f2e7d5; padding: 8px\">";
+	for (int i = 0; i < 240; ++i)
+		html += "<p>Visible pale text on a dark background</p>";
+	html += "</div></body></html>";
+	Document doc;
+	bool ok = htmlParse(html, doc);
+	CssEngine css;
+	collectStyleBlocks(doc, css);
+	WebSettings settings;
+	settings.enableJS = false;
+	PageLayout layout(doc, css, settings);
+	PageModel firstSegment;
+	ok = ok && layout.renderSegment(firstSegment, "https://test/",
+		0, NW_PAGE_SEGMENT_HEIGHT);
+	PageModel secondSegment;
+	ok = ok && layout.renderSegment(secondSegment, "https://test/", 1,
+		NW_PAGE_SEGMENT_HEIGHT + NW_PAGE_SEGMENT_OVERLAP);
+	const uint16_t darkBackground = Bitmap::rgb32To565(0xFF000000);
+	bool firstSegmentHasText = false;
+	bool secondSegmentHasText = false;
+	int overlapPixelMismatches = 0;
+	if (ok)
+	{
+		for (int y = 0; y < firstSegment.bmp.h && !firstSegmentHasText; ++y)
+			for (int x = 0; x < firstSegment.bmp.w; ++x)
+			{
+				const uint16_t pixel = firstSegment.bmp.getPixel(x, y);
+				if (pixel != darkBackground &&
+					((pixel >> 5) & 0x3F) > 8 && (pixel & 0x1F) > 8)
+				{
+					firstSegmentHasText = true;
+					break;
+				}
+			}
+		for (int y = secondSegment.bmp.originY;
+			y < NW_PAGE_SEGMENT_HEIGHT; ++y)
+			for (int x = 0; x < firstSegment.bmp.w; ++x)
+				if (firstSegment.bmp.getPixel(x, y) !=
+					secondSegment.bmp.getPixel(x, y))
+				{
+					if (overlapPixelMismatches < 8)
+						printf("  segment pixel (%d,%d): %04x != %04x\n",
+							x, y, firstSegment.bmp.getPixel(x, y),
+							secondSegment.bmp.getPixel(x, y));
+					++overlapPixelMismatches;
+				}
+		for (int y = secondSegment.bmp.originY;
+			y < NW_PAGE_SEGMENT_HEIGHT && !secondSegmentHasText; ++y)
+			for (int x = 0; x < secondSegment.bmp.w; ++x)
+			{
+				const uint16_t pixel = secondSegment.bmp.getPixel(x, y);
+				if (pixel != darkBackground &&
+					((pixel >> 5) & 0x3F) > 8 && (pixel & 0x1F) > 8)
+				{
+					secondSegmentHasText = true;
+					break;
+				}
+			}
+		ok = firstSegment.truncated && secondSegment.truncated &&
+			firstSegmentHasText && secondSegmentHasText &&
+			overlapPixelMismatches == 0;
+		if (!ok)
+			printf("  segment text: firstTruncated=%d secondTruncated=%d "
+				"firstText=%d secondText=%d height=%d origin=%d "
+				"overlapMismatches=%d\n",
+				firstSegment.truncated, secondSegment.truncated,
+				firstSegmentHasText, secondSegmentHasText, secondSegment.height,
+				secondSegment.bmp.originY, overlapPixelMismatches);
+	}
+	check(ok, "texte conservé sur les deux segments d'un bloc avec fond");
+}
+
+static void testModernCssLayout()
+{
+	const std::string html =
+		"<html><body><div style=\"background: rgb(255 0 0 / 50%); "
+		"border-radius: 18px; box-shadow: 0px 2px 6px rgba(0,0,0,0.5); "
+		"padding: 8px\">Carte CSS</div></body></html>";
+	Document doc;
+	bool ok = htmlParse(html, doc);
+	WebSettings settings;
+	settings.enableJS = false;
+	CssEngine css;
+	collectStyleBlocks(doc, css);
+	PageLayout layout(doc, css, settings);
+	PageModel page;
+	ok = ok && layout.renderSegment(page, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	if (ok)
+	{
+		const uint16_t blendedRed = Bitmap::rgb32To565(0xFF7F7FFF);
+		const uint16_t white = Bitmap::rgb32To565(0xFFFFFFFF);
+		const uint16_t topCorner = page.bmp.getPixel(4, 0);
+		const uint16_t cardCenter = page.bmp.getPixel(200, 4);
+		const uint16_t outsideShadow = page.bmp.getPixel(200, page.height - 4);
+		const int centerRed = (cardCenter >> 11) & 0x1F;
+		const int centerGreen = (cardCenter >> 5) & 0x3F;
+		const int centerBlue = cardCenter & 0x1F;
+		ok = cardCenter != white && centerRed > centerGreen &&
+			centerRed > centerBlue && topCorner != cardCenter &&
+			outsideShadow != white && blendedRed != white;
+	}
+	check(ok, "rendu CSS combine alpha, coins arrondis et ombre");
+}
+
+static void testPreformattedCssText()
+{
+	Document doc;
+	bool ok = htmlParse(
+		"<html><body><pre style=\"color: rgb(255 0 0); background: #0000ff; "
+		"padding: 6px; font-size: 20px; "
+		"line-height: 30px\">RED\nTEXT</pre></body></html>", doc);
+	WebSettings settings;
+	settings.enableJS = false;
+	CssEngine css;
+	collectStyleBlocks(doc, css);
+	PageLayout layout(doc, css, settings);
+	PageModel page;
+	ok = ok && layout.renderSegment(page, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+
+	int redPixels = 0;
+	int firstRedY = -1;
+	int lastRedY = -1;
+	bool backgroundRendered = false;
+	if (ok)
+	{
+		const uint16_t background = page.bmp.getPixel(10, 1);
+		const int backgroundRed = (background >> 11) & 0x1F;
+		const int backgroundBlue = background & 0x1F;
+		backgroundRendered = backgroundBlue > backgroundRed &&
+			page.bmp.getPixel(0, 1) != background;
+		for (int y = 0; y < page.bmp.h; ++y)
+			for (int x = 0; x < page.bmp.w; ++x)
+			{
+				const uint16_t pixel = page.bmp.getPixel(x, y);
+				const int red = (pixel >> 11) & 0x1F;
+				const int green = (pixel >> 5) & 0x3F;
+				const int blue = pixel & 0x1F;
+				if (red > blue + 4 && red > green / 2)
+				{
+					++redPixels;
+					if (firstRedY < 0) firstRedY = y;
+					lastRedY = y;
+				}
+			}
+	}
+	check(ok && backgroundRendered && redPixels > 10 && firstRedY >= 0 &&
+		lastRedY - firstRedY >= 10,
+		"bloc pre respecte fond, padding, couleur, taille et interligne CSS");
+}
+
 static void testGlyphReadBack()
 {
 	int errors = 0;
@@ -558,10 +1048,19 @@ int main()
 	if (!encodingOk) g_failures++;
 	testSwizzleBijection();
 	testAlphaRoundTrip();
+	testLinearGradient();
+	testBitmapViewport();
 
 	buildFont();
 	testGlyphReadBack();
 	renderSheet();
+	testBitmapCssEffects();
+	testPageSegments();
+	testGridLayout();
+	testRootThemeColors();
+	testSegmentedBackgroundKeepsText();
+	testModernCssLayout();
+	testPreformattedCssText();
 
 	printf("\n%s (%d echec%s)\n", g_failures == 0 ? "TOUT EST OK" : "DES ECHECS",
 		g_failures, g_failures > 1 ? "s" : "");

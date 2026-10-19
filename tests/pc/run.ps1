@@ -24,9 +24,11 @@ if (-not $vcvars) {
 
 Write-Host "Compilation du test PC..." -ForegroundColor Cyan
 $sources = "main_pc.cpp ..\..\source\render\text.cpp ..\..\source\render\bitmap.cpp " +
+           "..\..\source\render\layout.cpp " +
            "..\..\source\render\stb_truetype_impl.c " +
            "..\..\source\css\css.cpp ..\..\source\html\dom.cpp " +
            "..\..\source\html\parser.cpp " +
+           "..\..\source\network\url.cpp " +
            "..\..\source\image\image_store.cpp ..\..\source\image\stb_impl.c " +
            "..\..\source\network\encoding.cpp " +
            "..\..\source\search\search.cpp ..\..\source\search\search_page.cpp"

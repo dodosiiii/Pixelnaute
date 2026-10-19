@@ -10,6 +10,7 @@
 #include "../settings/settings.hpp"
 #include "../network/network.hpp"
 #include "../storage/storage.hpp"
+#include "../cache/page_segment_cache.hpp"
 #include "../js/js_runtime.hpp"
 #include <string>
 #include <vector>
@@ -28,10 +29,13 @@ public:
 		int scrollY = 0;
 		bool pageReady = false;
 		bool isSearchPage = false;
+		bool jsRequired = false;
 		std::vector<std::string> back;   // historique arriere (URL)
 		std::vector<std::string> fwd;    // historique avant
 		int focusNode = -1;              // index du champ de formulaire en edition
 		uint64_t renderedDomVersion = 0;
+		uint64_t pageCacheKey = 0;
+		int failedSegmentIndex = -1;
 		JSRuntime* jsRuntime = nullptr;
 		JSContext* jsContext = nullptr;
 		std::shared_ptr<JSPageBinding> jsBinding = std::make_shared<JSPageBinding>();
@@ -64,7 +68,10 @@ public:
 	bool stylesPending() const;
 	bool scriptsPending() const;
 	bool tickImages();
+	bool tickPageResponse();
+	bool tickProgressiveLayout();
 	bool layoutPending() const { return layoutPending_; }
+	const std::string& progressStatus() const { return progressStatus_; }
 
 	// --- pages internes ---
 	void showInternalHome();              // page d'accueil interne (start page)
@@ -101,6 +108,11 @@ public:
 	std::string searchEngineName() const;
 	History&  history() { return history_; }
 	Bookmarks& bookmarks() { return bookmarks_; }
+	bool pageCacheUsage(uint64_t& bytes) const;
+	bool listCachedPages(std::vector<PageSegmentCache::SiteEntry>& entries) const;
+	bool clearCachedPage(uint64_t pageKey);
+	bool clearCachedSite(const std::vector<uint64_t>& pageKeys);
+	bool clearPageCache();
 	// Vignettes des pages (logos, illustrations).
 	ImageStore& images() { return images_; }
 
@@ -113,6 +125,7 @@ private:
 	NetworkManager& net_;
 	WebSettings& set_;
 	ImageStore images_;
+	PageSegmentCache pageSegmentCache_;
 	std::vector<Tab> tabs_;
 	int current_ = 0;
 	History history_;
@@ -121,6 +134,11 @@ private:
 	NetResponse pendingResponse_;
 	bool responsePending_ = false;
 	bool layoutPending_ = false;
+	bool segmentPending_ = false;
+	int segmentTab_ = -1;
+	int segmentIndexPending_ = -1;
+	int pendingScrollY_ = -1;
+	std::string progressStatus_;
 	int requestTab_ = -1;
 	struct CssRequest { std::string url; std::string referer; int sourceOrder = -1; };
 	std::vector<CssRequest> cssQueue_;
@@ -173,6 +191,7 @@ private:
 	void onResponse(NetResponse& resp);
 	void renderInto(int tabIdx, Document&& doc);
 	void rerenderTab(int tabIdx);
+	void requestSegment(int tabIdx, int segmentIndex, int desiredScrollY);
 	void queueImages(int tabIdx, int maximum);
 	void clearImageQueue();
 	void serviceFetchQueue();

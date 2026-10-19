@@ -28,7 +28,6 @@ struct NetResponse
 	bool sslError = false;
 	bool tooBig = false;
 	bool cancelled = false;
-	bool sslBypassUsed = false;
 };
 
 #define NW_DEFAULT_USER_AGENT "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1 Pixelnaute/" NW_VERSION_STRING
@@ -43,8 +42,7 @@ struct HttpOptions
 	std::string csrfToken;
 	size_t maxBytes = NW_MAX_HTML_BYTES; // 0 = taille illimitee (downloads)
 	int timeoutMs = 30000;
-	bool verifyTls = true;  // verifier avant le repli TLS automatique
-	bool allowTlsBypass = true; // repli sans verification si la validation echoue
+	bool verifyTls = true; // false seulement si l'utilisateur le desactive dans les reglages
 	bool convertTextEncoding = true; // desactiver pour les corps binaires (images)
 };
 
@@ -69,4 +67,3 @@ bool httpSetCookieForUrl(const std::string& url, const std::string& cookie);
 // Initialise / finalise le service HTTP (a appeler au demarrage / a la sortie).
 bool httpServiceInit();
 void httpServiceExit();
-

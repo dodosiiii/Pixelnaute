@@ -2155,7 +2155,8 @@ void jsPageBindDocument(JSContext* context, Document* document, const char* page
 	JS_SetPropertyStr(context, global, "removeEventListener",
 		JS_NewCFunction(context, eventTargetRemove, "removeEventListener", 2));
 	JSValue navigator = JS_NewObject(context);
-	JS_SetPropertyStr(context, navigator, "userAgent", JS_NewString(context, "Pixelnaute/0.4 (Nintendo 3DS)"));
+	JS_SetPropertyStr(context, navigator, "userAgent",
+		JS_NewString(context, "Pixelnaute/" NW_VERSION_STRING " (Nintendo 3DS)"));
 	JS_SetPropertyStr(context, navigator, "platform", JS_NewString(context, "Nintendo 3DS"));
 	JS_SetPropertyStr(context, navigator, "language", JS_NewString(context, "fr-FR"));
 	JS_SetPropertyStr(context, navigator, "onLine", JS_NewBool(context, 1));

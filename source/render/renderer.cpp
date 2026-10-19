@@ -90,7 +90,9 @@ void PageRenderer::upload(const PageModel& page, int scrollY)
 
 	for (int r = 0; r < rows; r++)
 	{
-		const uint16_t* srow = src + (size_t)(y0 + r) * layoutW_;
+		const int sourceY = y0 + r - page.bmp.originY;
+		if (sourceY < 0 || sourceY >= page.bmp.h) continue;
+		const uint16_t* srow = src + (size_t)sourceY * layoutW_;
 		for (int c = 0; c < cols; c++)
 		{
 			// Entrelacement 8x8 (voir morton.hpp) : x aux bits bas, y ensuite.

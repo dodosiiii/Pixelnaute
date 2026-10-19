@@ -12,6 +12,123 @@
 
 static CssEngine g_emptyCss;
 
+static int maxPageScroll(const PageModel& page)
+{
+	const int contentHeight = std::min(page.height,
+		(int)NW_MAX_PAGE_CONTENT_HEIGHT);
+	return std::max(0, contentHeight - NW_TOP_HEIGHT);
+}
+
+static void fingerprintBytes(uint64_t& hash, const void* data, size_t size)
+{
+	const unsigned char* bytes = static_cast<const unsigned char*>(data);
+	for (size_t i = 0; i < size; ++i)
+	{
+		hash ^= bytes[i];
+		hash *= 1099511628211ULL;
+	}
+}
+
+static void fingerprintString(uint64_t& hash, const std::string& value)
+{
+	fingerprintBytes(hash, value.data(), value.size());
+	const unsigned char separator = 0xFF;
+	fingerprintBytes(hash, &separator, sizeof(separator));
+}
+
+static uint64_t pageFingerprint(const Browser::Tab& tab)
+{
+	uint64_t hash = 1469598103934665603ULL;
+	fingerprintString(hash, tab.url);
+	fingerprintBytes(hash, &tab.doc.hoveredNode, sizeof(tab.doc.hoveredNode));
+	fingerprintBytes(hash, &tab.doc.focusedNode, sizeof(tab.doc.focusedNode));
+	for (const Node& node : tab.doc.nodes)
+	{
+		const uint8_t type = (uint8_t)node.type;
+		fingerprintBytes(hash, &type, sizeof(type));
+		fingerprintString(hash, node.tag.c_str());
+		fingerprintString(hash, node.text);
+		for (const Attribute& attr : node.attrs)
+		{
+			fingerprintString(hash, attr.name);
+			fingerprintString(hash, attr.value);
+		}
+	}
+	for (const CssRule& rule : tab.css.rules())
+	{
+		fingerprintBytes(hash, &rule.specificity, sizeof(rule.specificity));
+		fingerprintBytes(hash, &rule.order, sizeof(rule.order));
+		for (const CssCompoundSelector& selector : rule.selectorChain)
+		{
+			fingerprintString(hash, selector.tag);
+			fingerprintString(hash, selector.id);
+			fingerprintString(hash, selector.notSelector);
+			fingerprintBytes(hash, &selector.combinator, sizeof(selector.combinator));
+			fingerprintBytes(hash, &selector.firstChild, sizeof(selector.firstChild));
+			fingerprintBytes(hash, &selector.hover, sizeof(selector.hover));
+			fingerprintBytes(hash, &selector.focus, sizeof(selector.focus));
+			fingerprintBytes(hash, &selector.checked, sizeof(selector.checked));
+			fingerprintBytes(hash, &selector.disabled, sizeof(selector.disabled));
+			for (const std::string& cls : selector.classes) fingerprintString(hash, cls);
+			for (const CssAttrSelector& attr : selector.attrs)
+			{
+				fingerprintString(hash, attr.name);
+				fingerprintString(hash, attr.value);
+			}
+		}
+		for (const CssDeclaration& declaration : rule.declarations)
+		{
+			fingerprintString(hash, declaration.property);
+			fingerprintString(hash, declaration.value);
+		}
+		const Style& style = rule.style;
+		fingerprintBytes(hash, &style.declared, sizeof(style.declared));
+		fingerprintBytes(hash, &style.important, sizeof(style.important));
+		fingerprintBytes(hash, &style.colorSet, sizeof(style.colorSet));
+		fingerprintBytes(hash, &style.color, sizeof(style.color));
+		fingerprintBytes(hash, &style.bgSet, sizeof(style.bgSet));
+		fingerprintBytes(hash, &style.bg, sizeof(style.bg));
+		fingerprintBytes(hash, &style.fontSize, sizeof(style.fontSize));
+		fingerprintBytes(hash, &style.marginTop,
+			sizeof(style.marginTop) * 4);
+		fingerprintBytes(hash, &style.paddingTop,
+			sizeof(style.paddingTop) * 4);
+		fingerprintBytes(hash, &style.width, sizeof(style.width) * 3);
+		fingerprintBytes(hash, &style.height, sizeof(style.height));
+		fingerprintBytes(hash, &style.displayNone, sizeof(style.displayNone));
+		fingerprintBytes(hash, &style.block, sizeof(style.block));
+		fingerprintBytes(hash, &style.displayInline, sizeof(style.displayInline));
+		fingerprintBytes(hash, &style.bold, sizeof(style.bold));
+		fingerprintBytes(hash, &style.italic, sizeof(style.italic));
+		fingerprintBytes(hash, &style.underline, sizeof(style.underline));
+		fingerprintBytes(hash, &style.align, sizeof(style.align));
+		fingerprintBytes(hash, &style.mono, sizeof(style.mono));
+		fingerprintBytes(hash, &style.listStyleNone, sizeof(style.listStyleNone));
+		fingerprintBytes(hash, &style.borderBox, sizeof(style.borderBox));
+		fingerprintBytes(hash, &style.flex, sizeof(style.flex));
+		fingerprintBytes(hash, &style.flexRow, sizeof(style.flexRow));
+		fingerprintBytes(hash, &style.flexWrap, sizeof(style.flexWrap));
+		fingerprintBytes(hash, &style.justifyContent, sizeof(style.justifyContent));
+		fingerprintBytes(hash, &style.rowGap, sizeof(style.rowGap) * 2);
+		fingerprintBytes(hash, &style.borderWidth, sizeof(style.borderWidth));
+		fingerprintBytes(hash, &style.borderColor, sizeof(style.borderColor));
+		fingerprintBytes(hash, &style.lineHeight, sizeof(style.lineHeight));
+		fingerprintBytes(hash, &style.lineHeightRelative,
+			sizeof(style.lineHeightRelative));
+		fingerprintBytes(hash, &style.lineHeightUnitless,
+			sizeof(style.lineHeightUnitless));
+		fingerprintBytes(hash, &style.gradientColors, sizeof(style.gradientColors));
+		fingerprintBytes(hash, &style.gradientStops, sizeof(style.gradientStops));
+		fingerprintBytes(hash, &style.gradientAngle, sizeof(style.gradientAngle));
+		fingerprintBytes(hash, &style.gradientRadial, sizeof(style.gradientRadial));
+		fingerprintBytes(hash, &style.borderRadius, sizeof(style.borderRadius));
+		fingerprintBytes(hash, &style.shadowX, sizeof(style.shadowX) * 4);
+		fingerprintBytes(hash, &style.shadowColor, sizeof(style.shadowColor));
+		fingerprintBytes(hash, &style.boxShadowSet, sizeof(style.boxShadowSet));
+	}
+	return hash;
+}
+
 static bool enqueueFetchBridge(void* owner, JSPageBinding* binding, int tabIndex,
 	uint32_t promiseId, bool xhr, const std::string& url, const std::string& method,
 	const std::string& body)
@@ -27,6 +144,39 @@ static std::string cssColorValue(uint32_t color)
 		(unsigned int)(color & 0xff), (unsigned int)((color >> 8) & 0xff),
 		(unsigned int)((color >> 16) & 0xff));
 	return value;
+}
+
+static bool hasRunnableScripts(const Document& document, const std::string& pageUrl)
+{
+	int externalCount = 0;
+	int inlineCount = 0;
+	for (const Node& node : document.nodes)
+	{
+		if (!node.isElement() || node.tag != "script") continue;
+		const char* type = node.getAttr("type");
+		const std::string scriptType = type ? toLower(strTrim(type)) : "";
+		if (!scriptType.empty() && scriptType != "text/javascript" &&
+			scriptType != "application/javascript")
+			continue;
+
+		const char* src = node.getAttr("src");
+		if (src && *src)
+		{
+			const std::string url = urlJoin(pageUrl, src);
+			if ((strStartsWith(url, "http://") ||
+				strStartsWith(url, "https://")) && ++externalCount <= 12)
+				return true;
+		}
+		else
+		{
+			const std::string source = document.textOf(
+				(int)(&node - document.nodes.data()));
+			if (!source.empty() && source.size() <= 128 * 1024 &&
+				++inlineCount <= 32)
+				return true;
+		}
+	}
+	return false;
 }
 
 static void refreshComputedStyles(Browser::Tab& tab)
@@ -74,6 +224,7 @@ static void refreshComputedStyles(Browser::Tab& tab)
 			values["textDecoration"] = style.underline ? "underline" : "none";
 			values["fontFamily"] = style.mono ? "monospace" : "sans-serif";
 		}
+
 		for (int child : node.children) visit(child, node.isElement() ? style : parent, depth + 1);
 	};
 	if (tab.doc.root >= 0 && (size_t)tab.doc.root < tab.doc.nodes.size())
@@ -127,6 +278,7 @@ static bool isHtmlBody(const std::string& contentType, const std::string& body)
 Browser::Browser(NetworkManager& net, WebSettings& settings)
 	: net_(net), set_(settings)
 {
+	pageSegmentCache_.prune();
 }
 
 Browser::~Browser()
@@ -146,7 +298,20 @@ bool Browser::initializeJavaScript(Tab& tab)
 bool Browser::enqueuePageFetch(JSPageBinding* binding, int tabIndex, uint32_t promiseId,
 	bool xhr, const std::string& url, const std::string& method, const std::string& body)
 {
-	if (!binding || tabIndex < 0 || tabIndex >= (int)tabs_.size() || fetchQueue_.size() >= 16)
+	if (!binding || fetchQueue_.size() >= 16) return false;
+	if (tabIndex < 0 || tabIndex >= (int)tabs_.size() ||
+		tabs_[(size_t)tabIndex].jsBinding.get() != binding)
+	{
+		tabIndex = -1;
+		for (size_t i = 0; i < tabs_.size(); ++i)
+			if (tabs_[i].jsBinding.get() == binding)
+			{
+				tabIndex = (int)i;
+				break;
+			}
+	}
+	if (tabIndex < 0 || !tabs_[(size_t)tabIndex].jsRuntime ||
+		!tabs_[(size_t)tabIndex].jsContext)
 		return false;
 	const size_t scheme = url.find("://"); if (scheme == std::string::npos) return false;
 	const size_t end = url.find_first_of("/?#", scheme + 3);
@@ -162,11 +327,25 @@ bool Browser::enqueuePageFetch(JSPageBinding* binding, int tabIndex, uint32_t pr
 
 void Browser::serviceFetchQueue()
 {
+	if (!fetchActive_)
+	{
+		while (!fetchQueue_.empty())
+		{
+			const FetchJob& queued = fetchQueue_.front();
+			std::shared_ptr<JSPageBinding> binding = queued.binding.lock();
+			const bool valid = binding && queued.tabIndex >= 0 &&
+				queued.tabIndex < (int)tabs_.size() &&
+				tabs_[(size_t)queued.tabIndex].jsBinding == binding &&
+				binding->contextGeneration == queued.generation &&
+				tabs_[(size_t)queued.tabIndex].jsRuntime &&
+				tabs_[(size_t)queued.tabIndex].jsContext;
+			if (valid) break;
+			fetchQueue_.erase(fetchQueue_.begin());
+		}
+	}
 	if (fetchActive_ || fetchQueue_.empty() || net_.busy() || net_.state() != NetState::Idle ||
 		requestTab_ >= 0 || cssRequestTab_ >= 0 || scriptRequestTab_ >= 0 || imageRequestTab_ >= 0) return;
 	FetchJob& job = fetchQueue_.front();
-	if (job.tabIndex < 0 || job.tabIndex >= (int)tabs_.size() || job.binding.expired())
-	{ fetchQueue_.erase(fetchQueue_.begin()); return; }
 	if (!net_.start(job.url, 256 * 1024, set_.verifyTLS, job.method, job.body,
 		NetRequestType::Fetch, 10000, job.referer))
 	{
@@ -212,6 +391,17 @@ void Browser::onFetchResponse(NetResponse& response)
 
 void Browser::releaseJavaScript(Tab& tab)
 {
+	if (tab.jsBinding)
+	{
+		if (fetchActive_ && !fetchQueue_.empty() &&
+			fetchQueue_.front().binding.lock() == tab.jsBinding)
+		{
+			net_.cancel();
+			fetchActive_ = false;
+			fetchQueue_.erase(fetchQueue_.begin());
+		}
+		++tab.jsBinding->contextGeneration;
+	}
 	jsPageContextDestroy(tab.jsRuntime, tab.jsContext);
 }
 
@@ -225,7 +415,7 @@ bool Browser::syncJavaScriptContexts()
 
 	for (Tab& tab : tabs_)
 	{
-		if (tab.pageReady && !initializeJavaScript(tab))
+		if (tab.pageReady && tab.jsRequired && !initializeJavaScript(tab))
 		{
 			for (Tab& cleanup : tabs_) releaseJavaScript(cleanup);
 			return false;
@@ -237,6 +427,7 @@ bool Browser::syncJavaScriptContexts()
 void Browser::resetTab(Tab& t)
 {
 	releaseJavaScript(t);
+	t.jsRequired = false;
 	t.doc.clear();
 	t.css.clear();
 	t.page.clear();
@@ -244,6 +435,12 @@ void Browser::resetTab(Tab& t)
 	t.title.clear();
 	t.scrollY = 0;
 	t.focusNode = -1;
+	t.failedSegmentIndex = -1;
+	segmentPending_ = false;
+	segmentTab_ = -1;
+	segmentIndexPending_ = -1;
+	pendingScrollY_ = -1;
+	layoutPending_ = false;
 }
 
 // -------------------------------------------------------------------------
@@ -290,8 +487,13 @@ void Browser::loadUrlInto(int tabIdx, const std::string& url, bool record, const
 	cancelTabRequest(tabIdx);
 	responsePending_ = false;
 	layoutPending_ = false;
+	segmentPending_ = false;
+	segmentTab_ = -1;
+	segmentIndexPending_ = -1;
+	pendingScrollY_ = -1;
 	pendingResponse_ = NetResponse();
 	pendingImages_.clear();
+	progressStatus_ = "Connexion au site...";
 	diagStage("fetch");
 	Tab& t = tabs_[tabIdx];
 	if (strStartsWith(toLower(url), "nw://"))
@@ -332,6 +534,7 @@ void Browser::reload()
 	responsePending_ = false;
 	layoutPending_ = false;
 	pendingResponse_ = NetResponse();
+	progressStatus_ = "Connexion au site...";
 	Tab& t = currentTab();
 	if (t.url.empty()) { goHome(); return; }
 	t.pageReady = false;
@@ -357,6 +560,11 @@ void Browser::stop()
 	requestTab_ = -1;
 	responsePending_ = false;
 	layoutPending_ = false;
+	segmentPending_ = false;
+	segmentTab_ = -1;
+	segmentIndexPending_ = -1;
+	pendingScrollY_ = -1;
+	progressStatus_.clear();
 	pendingResponse_ = NetResponse();
 }
 
@@ -416,6 +624,7 @@ void Browser::showInternalHome()
 	responsePending_ = false;
 	layoutPending_ = false;
 	pendingResponse_ = NetResponse();
+	progressStatus_.clear();
 	Tab& t = currentTab();
 	resetTab(t);
 	t.url = "nw://home";
@@ -657,17 +866,38 @@ Browser::Tab& Browser::currentTab()
 	return tabs_.empty() ? empty : tabs_[current_];
 }
 
+bool Browser::pageCacheUsage(uint64_t& bytes) const
+{
+	return pageSegmentCache_.usage(bytes);
+}
+
+bool Browser::listCachedPages(std::vector<PageSegmentCache::SiteEntry>& entries) const
+{
+	return pageSegmentCache_.listSites(entries);
+}
+
+bool Browser::clearCachedPage(uint64_t pageKey)
+{
+	return pageSegmentCache_.clearSite(pageKey);
+}
+
+bool Browser::clearCachedSite(const std::vector<uint64_t>& pageKeys)
+{
+	bool ok = true;
+	for (uint64_t key : pageKeys)
+		if (!pageSegmentCache_.clearSite(key)) ok = false;
+	return ok;
+}
+
+bool Browser::clearPageCache()
+{
+	return pageSegmentCache_.clear();
+}
+
 // -------------------------------------------------------------------------
 void Browser::pollNetwork()
 {
-	if (responsePending_)
-	{
-		responsePending_ = false;
-		layoutPending_ = false;
-		onResponse(pendingResponse_);
-		pendingResponse_ = NetResponse();
-		return;
-	}
+	if (responsePending_) return;
 
 	if (net_.state() == NetState::Done)
 	{
@@ -708,9 +938,21 @@ void Browser::pollNetwork()
 			}
 			responsePending_ = true;
 			layoutPending_ = true;
+			progressStatus_ = "Réponse reçue — analyse de la page...";
 			diagStage("response ready");
 		}
 	}
+}
+
+bool Browser::tickPageResponse()
+{
+	if (!responsePending_) return false;
+	responsePending_ = false;
+	layoutPending_ = false;
+	progressStatus_ = "Analyse HTML et styles...";
+	onResponse(pendingResponse_);
+	pendingResponse_ = NetResponse();
+	return true;
 }
 
 bool Browser::stylesPending() const
@@ -732,9 +974,11 @@ bool Browser::tickScripts()
 	if (current_ >= 0 && current_ < (int)tabs_.size())
 	{
 		Tab& activeTab = tabs_[(size_t)current_];
-		refreshComputedStyles(activeTab);
 		if (activeTab.jsRuntime && activeTab.jsContext)
+		{
+			bindBrowserPage(*this, activeTab, current_);
 			jsPageTick(activeTab.jsRuntime, activeTab.jsContext);
+		}
 		if (activeTab.jsBinding && activeTab.jsBinding->navigationMode != 0)
 		{
 			const int mode = activeTab.jsBinding->navigationMode;
@@ -752,7 +996,11 @@ bool Browser::tickScripts()
 			else openUrl(target, mode == 1);
 			return true;
 		}
-		if (activeTab.pageReady && activeTab.renderedDomVersion != activeTab.doc.mutationVersion)
+		// Keep the current bitmap while scripts run; paint their DOM changes once
+		// the ordered script queue and load events have completed.
+		if (activeTab.pageReady &&
+			activeTab.renderedDomVersion != activeTab.doc.mutationVersion &&
+			scriptQueueTab_ != current_)
 		{
 			const int savedScroll = activeTab.scrollY;
 			rerenderTab(current_);
@@ -787,10 +1035,8 @@ bool Browser::tickScripts()
 			bindBrowserPage(*this, tab, current_);
 			const bool ok = jsPageEval(tab.jsRuntime, tab.jsContext, request.source.c_str(), request.source.size(), "<inline-script>");
 			if (!ok) diagBootNote("js_inline_script_failed", 1);
-			const int savedScroll = tab.scrollY;
-			rerenderTab(current_);
-			tab.scrollY = savedScroll;
-			redraw = true;
+			if (tab.renderedDomVersion != tab.doc.mutationVersion)
+				redraw = true;
 		}
 	}
 	if (scriptQueue_.empty())
@@ -803,10 +1049,14 @@ bool Browser::tickScripts()
 			bindBrowserPage(*this, tab, readyTab);
 			jsPageDispatchEvent(tab.jsContext, "DOMContentLoaded", "document");
 			jsPageDispatchEvent(tab.jsContext, "load", "window");
-			const int savedScroll = tab.scrollY;
-			rerenderTab(readyTab);
-			tab.scrollY = savedScroll;
-			redraw = true;
+			if (tab.pageReady &&
+				tab.renderedDomVersion != tab.doc.mutationVersion)
+			{
+				const int savedScroll = tab.scrollY;
+				rerenderTab(readyTab);
+				tab.scrollY = savedScroll;
+				redraw = true;
+			}
 		}
 		scriptQueueTab_ = -1;
 	}
@@ -870,12 +1120,9 @@ void Browser::onScriptResponse(NetResponse& resp)
 		bindBrowserPage(*this, tab, current_);
 		if (!jsPageEval(tab.jsRuntime, tab.jsContext, resp.body.c_str(), resp.body.size(), requestedUrl.c_str()))
 			diagBootNote("js_external_script_failed", 1);
-		const int savedScroll = tab.scrollY;
-		rerenderTab(tabIdx);
-		tab.scrollY = savedScroll;
-		scriptRedrawPending_ = true;
+		scriptRedrawPending_ = scriptRedrawPending_ ||
+			tab.renderedDomVersion != tab.doc.mutationVersion;
 	}
-	if (scriptQueue_.empty()) scriptQueueTab_ = -1;
 }
 
 bool Browser::tickStyles()
@@ -1027,6 +1274,7 @@ void Browser::clearImageQueue()
 // -------------------------------------------------------------------------
 void Browser::onResponse(NetResponse& resp)
 {
+	progressStatus_ = "Analyse du document...";
 	diagStage("response processing");
 	diagBootNote("page_http_status", resp.status);
 	diagBootNote("page_response_bytes", (long)resp.body.size());
@@ -1060,14 +1308,9 @@ void Browser::onResponse(NetResponse& resp)
 		{
 			h += "<p style=\"margin-bottom: 6px\">Connexion securisee impossible.</p>"
 			     "<p style=\"color: #B0A4A6; margin-bottom: 16px\">Ce site utilise un certificat ou une version TLS "
-			     "incompatible avec le composant reseau de la New 3DS.</p>";
-
-			std::string httpUrl = t.url;
-			if (strStartsWith(httpUrl, "https://"))
-				httpUrl = "http://" + httpUrl.substr(8);
-
-			h += "<p style=\"margin-bottom: 12px\"><a href=\"" + htmlEscape(httpUrl) +
-			     "\" style=\"color: #5CC4F2; font-weight: bold\">[ Continuer en HTTP direct ]</a></p>";
+			     "incompatible avec le composant reseau de la New 3DS. La verification du certificat n'a pas "
+			     "ete contournee automatiquement. Verifiez la date de la console ou modifiez le reglage TLS "
+			     "dans les parametres, en connaissance des risques.</p>";
 		}
 		else if (resp.tooBig)
 		{
@@ -1300,9 +1543,10 @@ void Browser::renderInto(int tabIdx, Document&& doc)
 	Tab& tab = tabs_[tabIdx];
 	releaseJavaScript(tab);
 	tab.doc = std::move(doc);
-	if (set_.enableJS && !initializeJavaScript(tab))
+	tab.jsRequired = hasRunnableScripts(tab.doc, tab.url);
+	if (set_.enableJS && tab.jsRequired && !initializeJavaScript(tab))
 		diagBootNote("js_context_init_failed", 1);
-	if (set_.enableJS && tab.jsRuntime && tab.jsContext)
+	if (set_.enableJS && tab.jsRequired && tab.jsRuntime && tab.jsContext)
 	{
 			bindBrowserPage(*this, tab, tabIdx);
 		queueScripts(tabIdx, tab.doc, tab.url);
@@ -1315,6 +1559,8 @@ void Browser::rerenderTab(int tabIdx)
 	diagStage("layout");
 	pendingImages_.clear();
 	Tab& tab = tabs_[tabIdx];
+	tab.pageCacheKey = pageFingerprint(tab);
+	tab.failedSegmentIndex = -1;
 	int focusedDomNode = -1;
 	if (tab.focusNode >= 0 && tab.focusNode < (int)tab.page.fields.size())
 		focusedDomNode = tab.page.fields[(size_t)tab.focusNode].node;
@@ -1327,7 +1573,12 @@ void Browser::rerenderTab(int tabIdx)
 	diagBootNote("app_mem_free_before_layout",
 		(long)osGetMemRegionFree(MEMREGION_APPLICATION));
 	diagBootNote("linear_mem_free_before_layout", (long)linearSpaceFree());
-	if (!lay.render(tab.page, tab.url))
+	const int segmentIndex = clamp((tab.scrollY + NW_TOP_HEIGHT - 1) /
+		NW_PAGE_SEGMENT_HEIGHT, 0, NW_MAX_PAGE_SEGMENTS - 1);
+	const int segmentHeight = segmentIndex == 0
+		? NW_PAGE_SEGMENT_HEIGHT
+		: NW_PAGE_SEGMENT_HEIGHT + NW_PAGE_SEGMENT_OVERLAP;
+	if (!lay.renderSegment(tab.page, tab.url, segmentIndex, segmentHeight))
 	{
 		diagStage("layout failed; rendering fallback");
 		tab.page.clear();
@@ -1336,7 +1587,7 @@ void Browser::rerenderTab(int tabIdx)
 		if (htmlParse(rHtml, rDoc))
 		{
 			PageLayout lay2(rDoc, g_emptyCss, set_);
-			lay2.render(tab.page, tab.url);
+			lay2.renderSegment(tab.page, tab.url, 0, NW_PAGE_SEGMENT_HEIGHT);
 		}
 		else
 		{
@@ -1345,7 +1596,7 @@ void Browser::rerenderTab(int tabIdx)
 				"La page est trop lourde pour la New 3DS.</p></body></html>";
 			htmlParse(h, errDoc);
 			PageLayout lay2(errDoc, g_emptyCss, set_);
-			lay2.render(tab.page, tab.url);
+			lay2.renderSegment(tab.page, tab.url, 0, NW_PAGE_SEGMENT_HEIGHT);
 		}
 		diagStage("layout fallback complete");
 	}
@@ -1371,6 +1622,29 @@ void Browser::rerenderTab(int tabIdx)
 	}
 
 	tab.pageReady = true;
+	layoutPending_ = false;
+	progressStatus_ = tab.page.truncated
+		? "Page longue — rendu par étapes, limite 4 000 px"
+		: std::string();
+	if (tab.page.bmp.px &&
+		!pageSegmentCache_.store(tab.pageCacheKey, tab.page.segmentIndex,
+			tab.page.bmp, tab.url))
+		diagBootNote("segment_cache_write_failed", 1);
+	if (!tab.page.bmp.px)
+	{
+		tab.page.clear();
+		if (tab.page.bmp.create(NW_PAGE_WIDTH, NW_TOP_HEIGHT))
+		{
+			tab.page.bmp.clear(0xFF17131A);
+			TextEngine::instance().drawLine(tab.page.bmp,
+				"Mémoire insuffisante pour afficher cette page",
+				16, 96, 0.58f, 0xFFF2A25C, true, false);
+			tab.page.height = NW_TOP_HEIGHT;
+			tab.page.errorCode = 2;
+			tab.page.errorText = "Memoire insuffisante pour le rendu";
+			progressStatus_ = "Memoire insuffisante pour afficher la page";
+		}
+	}
 	if (focusedDomNode >= 0)
 	{
 		tab.focusNode = -1;
@@ -1820,8 +2094,22 @@ void Browser::scroll(int dy)
 {
 	Tab& tab = currentTab();
 	if (!tab.pageReady || tab.page.height <= NW_TOP_HEIGHT) return;
-	int max = tab.page.height - NW_TOP_HEIGHT;
-	tab.scrollY = clamp(tab.scrollY + dy, 0, max);
+	const int desired = std::max(0, tab.scrollY + dy);
+	const int max = maxPageScroll(tab.page);
+	if (desired > max && tab.page.truncated)
+	{
+		const int requestedSegment = (desired + NW_TOP_HEIGHT - 1) /
+			NW_PAGE_SEGMENT_HEIGHT;
+		const int index = std::min(requestedSegment, tab.page.segmentIndex + 1);
+		requestSegment(current_, index, desired);
+		tab.scrollY = max;
+		return;
+	}
+	tab.scrollY = std::min(desired, max);
+	const int visibleSegment = (tab.scrollY + NW_TOP_HEIGHT - 1) /
+		NW_PAGE_SEGMENT_HEIGHT;
+	if (visibleSegment != tab.page.segmentIndex)
+		requestSegment(current_, visibleSegment, tab.scrollY);
 }
 
 int Browser::scrollY() const
@@ -1834,9 +2122,124 @@ void Browser::scrollTo(int y)
 {
 	Tab& tab = currentTab();
 	if (!tab.pageReady) return;
-	int max = tab.page.height - NW_TOP_HEIGHT;
-	if (max < 0) max = 0;
-	tab.scrollY = clamp(y, 0, max);
+	const int desired = std::max(0, y);
+	const int max = maxPageScroll(tab.page);
+	if (desired > max && tab.page.truncated)
+	{
+		const int requestedSegment = (desired + NW_TOP_HEIGHT - 1) /
+			NW_PAGE_SEGMENT_HEIGHT;
+		const int index = std::min(requestedSegment, tab.page.segmentIndex + 1);
+		requestSegment(current_, index, desired);
+		tab.scrollY = max;
+		return;
+	}
+	tab.scrollY = std::min(desired, max);
+	const int visibleSegment = (tab.scrollY + NW_TOP_HEIGHT - 1) /
+		NW_PAGE_SEGMENT_HEIGHT;
+	if (visibleSegment != tab.page.segmentIndex)
+		requestSegment(current_, visibleSegment, tab.scrollY);
+}
+
+void Browser::requestSegment(int tabIdx, int segmentIndex, int desiredScrollY)
+{
+	if (tabIdx < 0 || tabIdx >= (int)tabs_.size() || segmentIndex < 0) return;
+	if (segmentIndex >= NW_MAX_PAGE_SEGMENTS)
+	{
+		progressStatus_ = "Limite de longueur atteinte (4 000 px)";
+		return;
+	}
+	Tab& tab = tabs_[(size_t)tabIdx];
+	if (tab.failedSegmentIndex == segmentIndex)
+	{
+		progressStatus_ = "Mémoire insuffisante pour ce segment";
+		return;
+	}
+	if (segmentIndex == tab.page.segmentIndex && !segmentPending_) return;
+	segmentPending_ = true;
+	segmentTab_ = tabIdx;
+	segmentIndexPending_ = segmentIndex;
+	pendingScrollY_ = desiredScrollY;
+	layoutPending_ = true;
+	progressStatus_ = "Mise en page du segment " +
+		itos((long)(segmentIndex + 1)) + "...";
+}
+
+bool Browser::tickProgressiveLayout()
+{
+	if (!segmentPending_) return false;
+	const int tabIdx = segmentTab_;
+	const int segmentIndex = segmentIndexPending_;
+	const int desiredScroll = pendingScrollY_;
+	segmentPending_ = false;
+	segmentTab_ = -1;
+	segmentIndexPending_ = -1;
+	if (tabIdx < 0 || tabIdx != current_ || tabIdx >= (int)tabs_.size())
+	{
+		pendingScrollY_ = -1;
+		layoutPending_ = false;
+		return false;
+	}
+
+	Tab& tab = tabs_[(size_t)tabIdx];
+	Bitmap cached;
+	const bool needsDomLayout = segmentIndex > tab.page.furthestSegmentIndex;
+	const bool cacheHit = !needsDomLayout &&
+		pageSegmentCache_.load(tab.pageCacheKey, segmentIndex, cached);
+	if (cacheHit && !needsDomLayout)
+	{
+		tab.page.bmp = std::move(cached);
+		tab.page.segmentIndex = segmentIndex;
+	}
+	else
+	{
+		const int segmentHeight = segmentIndex == 0
+			? NW_PAGE_SEGMENT_HEIGHT
+			: NW_PAGE_SEGMENT_HEIGHT + NW_PAGE_SEGMENT_OVERLAP;
+		PageModel rendered;
+		PageLayout layout(tab.doc, tab.css, set_);
+		if (!layout.renderSegment(rendered, tab.url, segmentIndex, segmentHeight))
+		{
+			layoutPending_ = false;
+			pendingScrollY_ = -1;
+			tab.failedSegmentIndex = segmentIndex;
+			progressStatus_ = "Mémoire insuffisante pour le segment suivant";
+			diagBootNote("progressive_segment_render_failed", segmentIndex);
+			return true;
+		}
+		if (cacheHit)
+			rendered.bmp = std::move(cached);
+		if (segmentIndex < tab.page.furthestSegmentIndex)
+		{
+			tab.page.bmp = std::move(rendered.bmp);
+			tab.page.segmentIndex = segmentIndex;
+		}
+		else
+		{
+			tab.page = std::move(rendered);
+		}
+		if (tab.page.bmp.px &&
+			!pageSegmentCache_.store(tab.pageCacheKey, segmentIndex,
+				tab.page.bmp, tab.url))
+			diagBootNote("segment_cache_write_failed", 1);
+		tab.pageReady = true;
+		tab.renderedDomVersion = tab.doc.mutationVersion;
+	}
+
+	const int max = maxPageScroll(tab.page);
+	tab.scrollY = std::min(std::max(0, desiredScroll), max);
+	pendingScrollY_ = -1;
+	layoutPending_ = false;
+	progressStatus_ = tab.page.truncated
+		? "Page longue — rendu par étapes, limite 4 000 px"
+		: std::string();
+
+	if (tab.page.truncated && desiredScroll > max)
+	{
+		const int nextIndex = (desiredScroll + NW_TOP_HEIGHT - 1) /
+			NW_PAGE_SEGMENT_HEIGHT;
+		requestSegment(tabIdx, nextIndex, desiredScroll);
+	}
+	return true;
 }
 
 // Sert au defilement gestuel : on veut savoir si la page peut encore bouger
@@ -1846,9 +2249,11 @@ bool Browser::canScrollBy(int dy) const
 	if (tabs_.empty()) return false;
 	const Tab& tab = tabs_[current_];
 	if (!tab.pageReady || tab.page.height <= NW_TOP_HEIGHT) return false;
-	const int max = tab.page.height - NW_TOP_HEIGHT;
+	const int max = maxPageScroll(tab.page);
 	if (dy < 0) return tab.scrollY > 0;
-	if (dy > 0) return tab.scrollY < max;
+	if (dy > 0)
+		return tab.scrollY < max ||
+			(tab.page.truncated && tab.page.segmentIndex + 1 < NW_MAX_PAGE_SEGMENTS);
 	return false;
 }
 

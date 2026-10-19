@@ -13,8 +13,9 @@ std::string tlsExplainError(const std::string& raw, bool sslError)
 		return "Connexion securisee impossible.\n\n"
 			"Ce site utilise une technologie TLS ou un\n"
 			"certificat non reconnu par la New 3DS.\n\n"
-			"Le contenu principal pourrait ne pas etre\n"
-			"accessible. Vous pouvez revenir en arriere\n"
-			"ou choisir \"Continuer quand meme\".";
+			"La verification du certificat n'a pas ete\n"
+			"desactivee automatiquement. Verifiez la date\n"
+			"de la console ou changez le reglage TLS en\n"
+			"connaissance des risques.";
 	return raw;
 }

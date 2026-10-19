@@ -199,7 +199,6 @@ void NetworkManager::worker()
 		HttpOptions opt;
 		opt.maxBytes = request.maxBytes;
 		opt.verifyTls = request.verifyTls;
-		opt.allowTlsBypass = request.verifyTls;
 		opt.method = request.method;
 		opt.postData = request.postData;
 		opt.timeoutMs = request.timeoutMs;

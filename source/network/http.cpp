@@ -19,8 +19,7 @@ static std::string resolveRedirect(const std::string& base, const std::string& r
 // Boucle complete d'une requete (avec redirections) selon la politique TLS.
 //--------------------------------------------------------------------------
 [[maybe_unused]] static bool httpGetInternal(const std::string& url0, const HttpOptions& opt,
-	const volatile int* cancelFlag, float* progressOut, NetResponse& out,
-	bool bypassTls)
+	const volatile int* cancelFlag, float* progressOut, NetResponse& out)
 {
 	std::string url = url0;
 	httpcContext ctx;
@@ -42,7 +41,7 @@ static std::string resolveRedirect(const std::string& base, const std::string& r
 				httpcAddDefaultCert(&ctx, (SSLC_DefaultRootCert)cert);
 
 			u32 sslOpts = SSLCOPT_Default;
-			if (bypassTls || !opt.verifyTls)
+			if (!opt.verifyTls)
 				sslOpts = SSLCOPT_DisableVerify;
 
 			httpcSetSSLOpt(&ctx, sslOpts);
@@ -81,13 +80,6 @@ static std::string resolveRedirect(const std::string& base, const std::string& r
 				(((r >> 10) & 0xFF) == 0x28 && (r & 0x3FF) == 0x3C) ||
 				(((r >> 10) & 0xFF) == 0x20);
 
-			if (isHttps && opt.verifyTls && opt.allowTlsBypass && !bypassTls && isSslErr)
-			{
-				// Repli automatique avec bypass
-				bypassTls = true;
-				out.sslBypassUsed = true;
-				continue;
-			}
 			if (isHttps && isSslErr)
 			{
 				out.sslError = true;
@@ -123,13 +115,6 @@ static std::string resolveRedirect(const std::string& base, const std::string& r
 					(((rs >> 10) & 0xFF) == 0x28 && (rs & 0x3FF) == 0x3C) ||
 					(((rs >> 10) & 0xFF) == 0x20);
 
-				if (isHttps && opt.verifyTls && opt.allowTlsBypass && !bypassTls && isSslErr)
-				{
-					// Repli automatique avec bypass
-					bypassTls = true;
-					out.sslBypassUsed = true;
-					continue;
-				}
 				if (isHttps && isSslErr)
 				{
 					out.sslError = true;
@@ -577,26 +562,5 @@ bool httpGet(const std::string& url0, const HttpOptions& opt, NetResponse& out,
 		return false;
 	}
 
-	if (!httpGetCurl(url0, opt, out, cancelFlag, progressOut, bytesOut))
-	{
-		if (out.sslError && opt.allowTlsBypass && opt.verifyTls)
-		{
-			// Retry sans verification TLS
-			HttpOptions optNoVerify = opt;
-			optNoVerify.verifyTls = false;
-			NetResponse out2;
-			if (httpGetCurl(url0, optNoVerify, out2, cancelFlag, progressOut, bytesOut))
-			{
-				out2.sslBypassUsed = true;
-				out = out2;
-				return true;
-			}
-			out.sslError = false;
-			out.error = "Connexion securisee impossible.";
-			out.sslBypassUsed = true;
-		}
-		return false;
-	}
-	return true;
+	return httpGetCurl(url0, opt, out, cancelFlag, progressOut, bytesOut);
 }
-

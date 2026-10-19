@@ -10,36 +10,43 @@ class Bitmap
 public:
 	int w = 0;       // largeur logique (payload)
 	int h = 0;       // hauteur (px) du buffer alloue
+	int originY = 0; // premiere ligne logique stockee dans le buffer
 	uint16_t* px = nullptr;
 
 	Bitmap() = default;
 	Bitmap(const Bitmap&) = delete;
 	Bitmap& operator=(const Bitmap&) = delete;
-	Bitmap(Bitmap&& o) noexcept : w(o.w), h(o.h), px(o.px) { o.w = o.h = 0; o.px = nullptr; }
+	Bitmap(Bitmap&& o) noexcept : w(o.w), h(o.h), originY(o.originY), px(o.px)
+		{ o.w = o.h = o.originY = 0; o.px = nullptr; }
 	Bitmap& operator=(Bitmap&& o) noexcept
 	{
 		if (this == &o) return *this;
 		destroy();
-		w = o.w; h = o.h; px = o.px;
-		o.w = o.h = 0; o.px = nullptr;
+		w = o.w; h = o.h; originY = o.originY; px = o.px;
+		o.w = o.h = o.originY = 0; o.px = nullptr;
 		return *this;
 	}
 
-	bool create(int width, int height)
+	bool create(int width, int height, int yOrigin = 0)
 	{
 		destroy();
 		w = width;
 		h = height;
-		if (width <= 0 || height <= 0 || height > 20000) return false;
+		originY = yOrigin;
+		if (width <= 0 || height <= 0 || height > 20000 || yOrigin < 0)
+		{
+			w = h = originY = 0;
+			return false;
+		}
 		px = (uint16_t*)malloc((size_t)width * height * 2);
-		if (!px) { w = h = 0; return false; }
+		if (!px) { w = h = originY = 0; return false; }
 		return true;
 	}
 
 	void destroy()
 	{
 		if (px) { free(px); px = nullptr; }
-		w = h = 0;
+		w = h = originY = 0;
 	}
 
 	// Conversion couleur 0xAABBGGRR -> RGB565
@@ -51,18 +58,28 @@ public:
 
 	inline void setPixel(int x, int y, uint16_t v)
 	{
-		if (x < 0 || y < 0 || x >= w || y >= h) return;
-		px[(size_t)y * w + x] = v;
+		if (x < 0 || y < originY || x >= w || y >= originY + h) return;
+		px[(size_t)(y - originY) * w + x] = v;
 	}
 
 	inline uint16_t getPixel(int x, int y) const
 	{
-		if (x < 0 || y < 0 || x >= w || y >= h) return 0;
-		return px[(size_t)y * w + x];
+		if (x < 0 || y < originY || x >= w || y >= originY + h) return 0;
+		return px[(size_t)(y - originY) * w + x];
 	}
 
 	void clear(uint32_t color);
 	void fillRect(int x, int y, int rw, int rh, uint32_t color);
+	void fillRoundedRect(int x, int y, int rw, int rh, int radius, uint32_t color);
+	void addRoundedRect(int x, int y, int rw, int rh, int radius,
+		uint32_t color, int thickness);
+	void shadowRoundedRect(int x, int y, int rw, int rh, int radius,
+		int offsetX, int offsetY, int blur, int spread, uint32_t color);
+	void fillLinearGradientRect(int x, int y, int rw, int rh,
+		const uint32_t* colors, const int* stops, int count, int angleDegrees,
+		int radius = 0);
+	void fillRadialGradientRect(int x, int y, int rw, int rh,
+		const uint32_t* colors, const int* stops, int count, int radius = 0);
 	void addRect(int x, int y, int rw, int rh, uint32_t edge, int tw); // bordure
 	void blendRect(int x, int y, int rw, int rh, uint32_t color);     // alpha
 	void hline(int x, int x2, int y, uint32_t color);

@@ -166,6 +166,51 @@ const char* modelDisplayName(ModelCheck m)
 	}
 }
 
+static void paintProgressScreen(PageModel& page, TextEngine& text,
+	const std::string& message, int progress, uint64_t animation)
+{
+	page.bmp.clear(0xFF1A1317);
+	page.bmp.fillRect(18, 48, 364, 2, 0xFF49343A);
+	page.bmp.fillRect(18, 50, 364, 1, 0xFF9A5D42);
+	const std::string title = "PIXELNAUTE";
+	const int titleX = (NW_PAGE_WIDTH -
+		(int)text.measure(title, 1.0f)) / 2;
+	text.drawLine(page.bmp, title, titleX, 76, 1.0f,
+		0xFFF2E8E8, true, false);
+	const int messageX = std::max(8, (NW_PAGE_WIDTH -
+		(int)text.measure(message, 0.62f)) / 2);
+	text.drawLine(page.bmp, message, messageX, 126, 0.62f,
+		0xFFD4C9C9, false, false);
+	page.bmp.fillRect(48, 164, 304, 8, 0xFF49343A);
+	if (progress >= 0)
+	{
+		const int width = clamp(progress, 0, 100) * 3;
+		if (width > 0) page.bmp.fillRect(48, 164, width, 8, 0xFFF2A25C);
+	}
+	else
+	{
+		const int width = 72;
+		const int x = 48 + (int)(animation % 5) * 58;
+		page.bmp.fillRect(x, 164, width, 8, 0xFFF2A25C);
+	}
+	page.bmp.fillRect(18, 191, 364, 1, 0xFF49343A);
+	page.height = NW_TOP_HEIGHT;
+}
+
+static void presentBootProgress(C3D_RenderTarget* target, PageRenderer& renderer,
+	PageModel& page, TextEngine& text, const char* message, int progress)
+{
+	if (!page.bmp.px)
+		return;
+	paintProgressScreen(page, text, message, progress, timeMs() / 90);
+	renderer.forceRedraw();
+	C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+	C2D_TargetClear(target, C2D_Color32(26, 19, 23, 255));
+	C2D_SceneBegin(target);
+	renderer.draw(page, 0);
+	C3D_FrameEnd(0);
+}
+
 // Ecran d'incompatibilite : message centre en couleur 565, puis sortie.
 static void showUnsupported(ModelCheck model)
 {
@@ -285,13 +330,6 @@ int main(int argc, char** argv)
 	}
 	diagBoot(7, "modele compatible");
 
-	storageInit();
-	diagBoot(8, "storageInit");
-
-	WebSettings settings;
-	settingsLoad(settings);
-	diagBoot(9, "settingsLoad");
-
 	TextEngine& te = TextEngine::instance();
 	const bool fontOk = te.init();
 	diagBoot(10, fontOk ? "police OK" : "police INDISPONIBLE");
@@ -300,29 +338,52 @@ int main(int argc, char** argv)
 	diagBootNote("font_sheet_fmt", te.ready() ? te.sheetFormatCode() : -1);
 	diagBootNote("font_sheets", te.ready() ? te.sheetCount() : -1);
 
+	PageRenderer renderer;
+	const bool rendererOk = renderer.init();
+	diagBoot(13, rendererOk ? "PageRenderer" : "PageRenderer ECHEC");
+	PageModel loadingPage;
+	loadingPage.bmp.create(NW_PAGE_WIDTH, NW_TOP_HEIGHT);
+	loadingPage.height = NW_TOP_HEIGHT;
+	presentBootProgress(topTarget, renderer, loadingPage, te,
+		"Preparation du stockage", 10);
+
+	storageInit();
+	diagBoot(8, "storageInit");
+
+	WebSettings settings;
+	settingsLoad(settings);
+	diagBoot(9, "settingsLoad");
+	presentBootProgress(topTarget, renderer, loadingPage, te,
+		"Chargement des reglages", 28);
+
 	NetworkManager net;
 	net.begin();
 	diagBoot(11, "NetworkManager");
+	presentBootProgress(topTarget, renderer, loadingPage, te,
+		"Initialisation du reseau", 48);
 	ReleaseUpdater updater;
 	updater.configure(argc > 0 && argv ? argv[0] : "");
 
 	Browser browser(net, settings);
+	presentBootProgress(topTarget, renderer, loadingPage, te,
+		"Chargement de l'historique", 65);
 	browser.history().load();
 	browser.bookmarks().load();
 	diagBoot(12, "Browser + historique/favoris");
 
-	PageRenderer renderer;
-	const bool rendererOk = renderer.init();
-	diagBoot(13, rendererOk ? "PageRenderer" : "PageRenderer ECHEC");
 	// Les vignettes des pages sont dessinees par le moteur d'affichage.
 	renderer.setImageStore(&browser.images());
 
 	BottomUi ui;
 	const bool uiOk = ui.init();
 	diagBoot(14, uiOk ? "BottomUi" : "BottomUi ECHEC");
+	presentBootProgress(topTarget, renderer, loadingPage, te,
+		"Preparation de l'accueil", 84);
 
 	browser.goHome();
 	diagBoot(15, "goHome (page d'accueil rendue)");
+	presentBootProgress(topTarget, renderer, loadingPage, te,
+		"Demarrage termine", 100);
 
 	// Instantane de demarrage : metadonnees seulement, sans image (le
 	// framebuffer n'est pas encore dessine a ce stade). L'image complete est
@@ -360,6 +421,7 @@ int main(int argc, char** argv)
 
 		ui.handleKeys(browser, net, settings, updater, in.down);
 		ui.handleTouch(browser, net, settings, updater, in);
+		ui.handleAnalog(browser, net, settings, in);
 
 		// Action interne demandee par un lien nw://
 		if (browser.internalNavPending())
@@ -609,8 +671,20 @@ int main(int argc, char** argv)
 			}
 			else
 			{
-				// page non prete : fond sobre + message
-				C2D_DrawRectSolid(0, 0, 0, 400, 240, C_NAVY);
+				std::string status = browser.progressStatus();
+				int progress = -1;
+				if (net.busy())
+				{
+					status = "Telechargement du site...";
+					progress = (int)(net.progress() * 100.0f);
+				}
+				else if (status.empty())
+				{
+					status = "Preparation de la page...";
+				}
+				paintProgressScreen(loadingPage, te, status, progress, timeMs() / 90);
+				renderer.forceRedraw();
+				renderer.draw(loadingPage, 0);
 				if (lastReady)
 				{
 					lastReady = false;
@@ -735,12 +809,16 @@ int main(int argc, char** argv)
 		C2D_TargetClear(bottomTarget, C_BLACK);
 		C2D_SceneBegin(bottomTarget);
 		ui.frame(browser, net, settings, updater);
+
+		C3D_FrameEnd(0);
+		if (browser.tickPageResponse())
+			renderer.forceRedraw();
+		if (browser.tickProgressiveLayout())
+			renderer.forceRedraw();
 		if (browser.tickStyles())
 			renderer.forceRedraw();
 		if (browser.tickScripts())
 			renderer.forceRedraw();
-
-		C3D_FrameEnd(0);
 		if (!updater.active() && browser.tickImages())
 			renderer.forceRedraw();
 

@@ -32,14 +32,16 @@ bool settingsLoad(WebSettings& s)
 		kv.save(NW_SD_SETTINGS);
 	}
 	s.verifyTLS    = readBool(kv.get("verifyTLS", "1"));
+	const int textScale = atoi(kv.get("textScalePercent", "100").c_str());
+	s.textScalePercent = textScale >= 85 && textScale <= 115 ? textScale : 100;
+	const int theme = atoi(kv.get("uiTheme", "0").c_str());
+	s.uiTheme = theme >= 0 && theme <= 2 ? theme : 0;
+	s.language = kv.get("language", "en");
+	if (s.language != "en" && s.language != "fr" &&
+		s.language != "it" && s.language != "es")
+		s.language = "en";
 	s.searchEngine = kv.get("searchEngine", defaultSearchEngine());
 	s.homePage     = kv.get("homePage", "");
-	s.tlsExceptions.clear();
-	for (int i = 0; i < 16; i++)
-	{
-		std::string v = kv.get("tlsExp" + itos(i), "");
-		if (!v.empty()) s.tlsExceptions.push_back(v);
-	}
 	if (!searchEngineKnown(s.searchEngine))
 	{
 		s.searchEngine = defaultSearchEngine();
@@ -55,9 +57,12 @@ bool settingsSave(const WebSettings& s)
 	kv.set("enableJS", s.enableJS ? "1" : "0");
 	kv.set("jsDefaultEnabledV1", "1");
 	kv.set("verifyTLS", s.verifyTLS ? "1" : "0");
+	kv.set("textScalePercent", itos((long)(s.textScalePercent >= 85 &&
+		s.textScalePercent <= 115 ? s.textScalePercent : 100)));
+	kv.set("uiTheme", itos((long)(s.uiTheme >= 0 && s.uiTheme <= 2 ? s.uiTheme : 0)));
+	kv.set("language", s.language == "fr" || s.language == "it" ||
+		s.language == "es" ? s.language : "en");
 	kv.set("searchEngine", s.searchEngine);
 	kv.set("homePage", s.homePage);
-	for (size_t i = 0; i < s.tlsExceptions.size() && i < 16; i++)
-		kv.set("tlsExp" + itos((long)i), s.tlsExceptions[i]);
 	return kv.save(NW_SD_SETTINGS);
 }

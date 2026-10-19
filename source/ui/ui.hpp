@@ -25,6 +25,7 @@ enum class UiMode
 	History,       // liste de l'historique
 	Bookmarks,     // liste des favoris
 	Settings,      // reglages
+	Cache,         // cache des pages
 	About,         // a propos
 };
 
@@ -50,6 +51,8 @@ public:
 	// Touches / toucher (appeler une fois par frame).
 	void handleKeys(Browser& b, NetworkManager& net, WebSettings& set,
 		ReleaseUpdater& updater, u32 kDown);
+	void handleAnalog(Browser& b, NetworkManager& net, WebSettings& set,
+		const InputState& in);
 	void handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 		ReleaseUpdater& updater, const InputState& in);
 
@@ -71,6 +74,7 @@ private:
 	// --- etat ---
 	UiMode mode_ = UiMode::Browsing;
 	std::string buf_;            // tampon clavier (adresse / champ)
+	size_t cursorPos_ = 0;
 	int focusIdx_ = -1;          // index du champ edite
 	bool homeTarget_ = false;    // le clavier edite la page d'accueil
 	std::string toastMsg_;
@@ -80,6 +84,12 @@ private:
 	std::string pendingBookmarkDelete_;
 	uint64_t bookmarkDeleteUntil_ = 0;
 	int kbdPage_ = 0;            // 0 = lettres, 1 = chiffres/symboles, 2 = accents
+	int keyboardFocus_ = 0;
+	int menuSel_ = 0;
+	int analogDirection_ = -1;
+	uint64_t analogRepeatAt_ = 0;
+	int caretDirection_ = 0;
+	uint64_t caretRepeatAt_ = 0;
 	bool shift_ = false;         // majuscule temporaire
 	uint64_t lastUpload_ = 0;
 	bool dirty_ = true;
@@ -87,6 +97,14 @@ private:
 	uint64_t repeatNext_ = 0;
 	int repeatCount_ = 0;
 	int touchNav_ = -1;          // index bouton nav enfonce
+	std::string language_ = "en";
+	int uiTheme_ = 0;
+	std::vector<PageSegmentCache::SiteEntry> cachedSites_;
+	bool cacheScanOk_ = true;
+	bool cacheInfoReady_ = false;
+	uint64_t cachedPageBytes_ = 0;
+	std::string pendingCacheDelete_;
+	uint64_t cacheDeleteUntil_ = 0;
 	UpdateState lastUpdateState_ = UpdateState::Idle;
 	int lastUpdateProgress_ = -1;
 
@@ -127,6 +145,7 @@ private:
 	void drawBookmarksList(Browser& b);
 	void drawSettingsList(Browser& b, WebSettings& set,
 		const ReleaseUpdater& updater);
+	void drawCacheList(Browser& b);
 	void drawAbout();
 
 	// --- interactions ---
@@ -135,6 +154,9 @@ private:
 	int  navHit(int x, int y) const;          // -1 si hors des boutons
 	int  tabHit(int x, int y, int count) const; // index onglet ou -1
 	void keyHit(Browser& b, WebSettings& set, int x, int y);
+	void moveKeyboardFocus(int dx, int dy);
+	void moveCaret(int direction);
+	void activateMenuItem(Browser& b, int index);
 
 	void uploadIfNeeded();
 	void commitBuf(Browser& b, WebSettings& set);
