@@ -13,6 +13,7 @@
 #define NW_SD_SETTINGS "sdmc:/N3DSWeb/settings.cfg"
 #define NW_SD_HISTORY "sdmc:/N3DSWeb/history.txt"
 #define NW_SD_BOOKMARKS "sdmc:/N3DSWeb/bookmarks.txt"
+#define NW_SD_COOKIES "sdmc:/N3DSWeb/cookies.txt"
 
 //--------------------------------------------------------------------------
 // Fichier cle=valeur (settings, exceptions...)

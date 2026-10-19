@@ -12,6 +12,8 @@ enum class NetRequestType : uint8_t
 	Page,
 	Stylesheet,
 	Image,
+	Script,
+	Fetch,
 };
 
 struct NetResponse
@@ -38,6 +40,7 @@ struct HttpOptions
 	std::string referer;
 	std::string method = "GET";
 	std::string postData;
+	std::string csrfToken;
 	size_t maxBytes = NW_MAX_HTML_BYTES; // 0 = taille illimitee (downloads)
 	int timeoutMs = 30000;
 	bool verifyTls = true;  // verifier avant le repli TLS automatique
@@ -57,6 +60,10 @@ bool httpGet(const std::string& url, const HttpOptions& opt, NetResponse& out,
 bool httpGetCurl(const std::string& url, const HttpOptions& opt, NetResponse& out,
 	const volatile int* cancelFlag, std::atomic<float>* progressOut,
 	std::atomic<size_t>* bytesOut = nullptr);
+
+// Accès au cookie-jar partagé pour document.cookie.
+std::string httpCookieHeaderForUrl(const std::string& url);
+bool httpSetCookieForUrl(const std::string& url, const std::string& cookie);
 
 
 // Initialise / finalise le service HTTP (a appeler au demarrage / a la sortie).

@@ -6,6 +6,7 @@
 #include "http.hpp"
 #include <3ds.h>
 #include <atomic>
+#include <deque>
 #include <string>
 
 enum class NetState
@@ -27,7 +28,7 @@ public:
 	bool start(const std::string& url, size_t maxBytes, bool verifyTls,
 	           const std::string& method = "GET", const std::string& postData = "",
 	           NetRequestType requestType = NetRequestType::Page, int timeoutMs = 30000,
-	           const std::string& referer = "");
+	           const std::string& referer = "", const std::string& csrfToken = "");
 
 	// Annule le transfert en cours.
 	void cancel();
@@ -61,9 +62,9 @@ private:
 		NetRequestType requestType = NetRequestType::Page;
 		int timeoutMs = 30000;
 		std::string referer;
+		std::string csrfToken;
 	};
-	Request queuedRequest_;
-	bool queuedRequestReady_ = false;
+	std::deque<Request> requestQueue_;
 	bool workerRunning_ = false;
 
 	static void threadFunc(void* arg);

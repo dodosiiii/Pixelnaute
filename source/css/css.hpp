@@ -7,42 +7,47 @@
 #include <string>
 #include <vector>
 
-enum CssProperty : uint32_t
+enum CssProperty : uint64_t
 {
-	CssPropColor       = 1u << 0,
-	CssPropBackground  = 1u << 1,
-	CssPropFontSize    = 1u << 2,
-	CssPropBold        = 1u << 3,
-	CssPropItalic      = 1u << 4,
-	CssPropUnderline   = 1u << 5,
-	CssPropAlign       = 1u << 6,
-	CssPropMarginTop   = 1u << 7,
-	CssPropMarginRight = 1u << 8,
-	CssPropMarginBottom= 1u << 9,
-	CssPropMarginLeft  = 1u << 10,
-	CssPropPaddingTop  = 1u << 11,
-	CssPropPaddingRight= 1u << 12,
-	CssPropPaddingBottom=1u << 13,
-	CssPropPaddingLeft = 1u << 14,
-	CssPropWidth       = 1u << 15,
-	CssPropHeight      = 1u << 16,
-	CssPropDisplay     = 1u << 17,
-	CssPropMono        = 1u << 18,
-	CssPropMinWidth    = 1u << 19,
-	CssPropMaxWidth    = 1u << 20,
-	CssPropBoxSizing   = 1u << 21,
-	CssPropFlex        = 1u << 22,
-	CssPropFlexRow     = 1u << 23,
-	CssPropFlexWrap    = 1u << 24,
-	CssPropJustify     = 1u << 25,
-	CssPropMarginLeftAuto  = 1u << 26,
-	CssPropMarginRightAuto = 1u << 27
+	CssPropColor       = 1ULL << 0,
+	CssPropBackground  = 1ULL << 1,
+	CssPropFontSize    = 1ULL << 2,
+	CssPropBold        = 1ULL << 3,
+	CssPropItalic      = 1ULL << 4,
+	CssPropUnderline   = 1ULL << 5,
+	CssPropAlign       = 1ULL << 6,
+	CssPropMarginTop   = 1ULL << 7,
+	CssPropMarginRight = 1ULL << 8,
+	CssPropMarginBottom= 1ULL << 9,
+	CssPropMarginLeft  = 1ULL << 10,
+	CssPropPaddingTop  = 1ULL << 11,
+	CssPropPaddingRight= 1ULL << 12,
+	CssPropPaddingBottom=1ULL << 13,
+	CssPropPaddingLeft = 1ULL << 14,
+	CssPropWidth       = 1ULL << 15,
+	CssPropHeight      = 1ULL << 16,
+	CssPropDisplay     = 1ULL << 17,
+	CssPropMono        = 1ULL << 18,
+	CssPropMinWidth    = 1ULL << 19,
+	CssPropMaxWidth    = 1ULL << 20,
+	CssPropBoxSizing   = 1ULL << 21,
+	CssPropFlex        = 1ULL << 22,
+	CssPropFlexRow     = 1ULL << 23,
+	CssPropFlexWrap    = 1ULL << 24,
+	CssPropJustify     = 1ULL << 25,
+	CssPropMarginLeftAuto  = 1ULL << 26,
+	CssPropMarginRightAuto = 1ULL << 27,
+	CssPropListStyle       = 1ULL << 29,
+	CssPropBorder          = 1ULL << 30,
+	CssPropRowGap          = 1ULL << 31,
+	CssPropColumnGap       = 1ULL << 32
 };
 
 // Style calcule pour un noeud.
 struct Style
 {
-	uint32_t declared = 0;
+	uint64_t declared = 0;
+	uint64_t important = 0;
 	bool  colorSet   = false;
 	uint32_t color   = 0xE8E8EC;
 	bool  bgSet      = false;
@@ -60,7 +65,12 @@ struct Style
 	int   height     = 0;
 	bool  displayNone = false;
 	bool  block       = false;  // display:block explicite
+	bool  displayInline = false;
 	bool  mono        = false;  // <pre>/<code>
+	bool  listStyleNone = false;
+	int   borderWidth = 0;
+	uint32_t borderColor = 0xFF968A8A;
+	int   rowGap = 0, columnGap = 0;
 	bool  marginLeftAuto = false, marginRightAuto = false;
 	bool  borderBox = false;
 	bool  flex = false, flexRow = false, flexWrap = false;
@@ -86,6 +96,12 @@ struct CssCompoundSelector
 	std::string id;
 	std::vector<CssAttrSelector> attrs;
 	bool firstChild = false;
+	bool hover = false;
+	bool focus = false;
+	bool checked = false;
+	bool disabled = false;
+	std::string notSelector;
+	bool unsupported = false;
 	char combinator = 0; // ' ' = descendant, '>' = child, 0 = target
 };
 
@@ -108,10 +124,10 @@ struct CssRule
 class CssEngine
 {
 public:
-	void clear() { rules_.clear(); stylesheetBytes_ = 0; }
+	void clear() { rules_.clear(); stylesheetBytes_ = 0; sourceOrder_ = -1; sourceRuleOrder_ = 0; }
 
 	// Analyse une feuille CSS entiere.
-	void parseStylesheet(const std::string& css);
+	void parseStylesheet(const std::string& css, int sourceOrder = -1);
 	static const size_t MaxRules = 512;
 	static const size_t MaxStylesheetBytes = 128 * 1024;
 
@@ -125,6 +141,8 @@ public:
 private:
 	std::vector<CssRule> rules_;
 	size_t stylesheetBytes_ = 0;
+	int sourceOrder_ = -1;
+	int sourceRuleOrder_ = 0;
 
 	// Parse une rule "selector { decls }"
 	void parseRule(const std::string& text);

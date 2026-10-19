@@ -147,17 +147,17 @@ static inline int utf8Decode(const char* p, uint32_t& cp)
 	if (s[0] == 0) { cp = 0; return 0; }
 	if (s[0] < 0x80) { cp = s[0]; return 1; }
 	if (s[0] < 0xC2) { cp = 0xFFFD; return 1; }
-	if (s[0] < 0xE0 && s[1])
+	if (s[0] < 0xE0 && (s[1] & 0xC0) == 0x80)
 	{
 		cp = ((uint32_t)(s[0] & 0x1F) << 6) | (s[1] & 0x3F);
 		return 2;
 	}
-	if (s[0] < 0xF0 && s[1] && s[2])
+	if (s[0] < 0xF0 && (s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80)
 	{
 		cp = ((uint32_t)(s[0] & 0x0F) << 12) | ((uint32_t)(s[1] & 0x3F) << 6) | (s[2] & 0x3F);
 		return 3;
 	}
-	if (s[0] < 0xF8 && s[1] && s[2] && s[3])
+	if (s[0] < 0xF8 && (s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80 && (s[3] & 0xC0) == 0x80)
 	{
 		cp = ((uint32_t)(s[0] & 0x07) << 18) | ((uint32_t)(s[1] & 0x3F) << 12)
 			| ((uint32_t)(s[2] & 0x3F) << 6) | (s[3] & 0x3F);
@@ -180,7 +180,7 @@ static inline void utf8Append(std::string& out, uint32_t cp)
 //-----------------------------------------------------------------------------
 // Encodage URL (x-www-form-urlencoded)
 //-----------------------------------------------------------------------------
-static std::string urlEncode(const std::string& in)
+static inline std::string urlEncode(const std::string& in)
 {
 	static const char* hex = "0123456789ABCDEF";
 	std::string out;
@@ -200,7 +200,7 @@ static std::string urlEncode(const std::string& in)
 }
 
 // Decodage x-www-form-urlencoded ("+" -> espace, %XX -> octet).
-static std::string urlDecode(const std::string& in)
+static inline std::string urlDecode(const std::string& in)
 {
 	std::string out;
 	out.reserve(in.size());
@@ -238,7 +238,7 @@ static std::string urlDecode(const std::string& in)
 // caractere. Laisser passer de l'UTF-8 produit des suites illisibles du genre
 // "(niÌ"nÌ"ndoÌ" 3DS, Nintendo ï¿½DS?)". On ramene donc le texte a un
 // alphabet sur : ASCII + les accents latins courants.
-static std::string utf8ToSimplified(const std::string& in)
+static inline std::string utf8ToSimplified(const std::string& in)
 {
 	std::string out;
 	out.reserve(in.size());
@@ -253,6 +253,11 @@ static std::string utf8ToSimplified(const std::string& in)
 		if (n == 1)
 		{
 			// Octet simple.
+			if (cp == 0xFFFD)
+			{
+				out += ' ';
+				continue;
+			}
 			const unsigned char c = (unsigned char)cp;
 			if (c == '\t' || c == '\n' || c == '\r' || (c >= 32 && c < 127))
 				out += (char)c;
@@ -285,9 +290,11 @@ static std::string utf8ToSimplified(const std::string& in)
 			case 0x00F9: case 0x00FA: case 0x00FB: case 0x00FC:
 				out += (cp < 0xE0) ? 'U' : 'u'; break;
 			case 0x00DD: case 0x00FD: case 0x00FF: out += (cp < 0xE0) ? 'Y' : 'y'; break;
-			case 0x0152: case 0x0153: out += (cp < 0xE0) ? 'O' : 'o'; break;
-			case 0x00DF: out += 's'; break;
-			case 0x00C6: case 0x00E6: out += (cp < 0xE0) ? 'A' : 'a'; break;
+			case 0x0152: out += "OE"; break;
+			case 0x0153: out += "oe"; break;
+			case 0x00DF: out += "ss"; break;
+			case 0x00C6: out += "AE"; break;
+			case 0x00E6: out += "ae"; break;
 			// Ponctuation typographique.
 			case 0x2018: case 0x2019: case 0x201A: out += '\''; break;
 			case 0x201C: case 0x201D: case 0x201E: out += '"'; break;
@@ -309,7 +316,7 @@ static std::string utf8ToSimplified(const std::string& in)
 }
 
 // Pour les URLs simples on conserve les caractères réservés de chemin.
-static std::string urlEncodePath(const std::string& in)
+static inline std::string urlEncodePath(const std::string& in)
 {
 	static const char* hex = "0123456789ABCDEF";
 	std::string out;
@@ -336,7 +343,7 @@ static inline int clamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? 
 static inline float fclamp(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
 // Echappement HTML d'une chaine (pour construire des pages internes).
-static std::string htmlEscape(const std::string& in)
+static inline std::string htmlEscape(const std::string& in)
 {
 	std::string out;
 	out.reserve(in.size());

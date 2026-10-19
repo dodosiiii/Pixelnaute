@@ -1,5 +1,6 @@
 #include "search_page.hpp"
 #include "../common.hpp"
+#include "../render/text.hpp"
 
 #include <vector>
 #include <string>
@@ -25,8 +26,9 @@ int searchPageLastResultCount()
 //--------------------------------------------------------------------------
 bool searchPageDetected(const std::string& html)
 {
-	if (html.find("result-link") != std::string::npos &&
-		html.find("result-snippet") != std::string::npos)
+	const bool hasLink = html.find("result-link") != std::string::npos ||
+		html.find("result__a") != std::string::npos;
+	if (hasLink)
 		return true;
 	return false;
 }
@@ -87,8 +89,8 @@ int searchPageSelfTest()
 		searchPageLastResultCount() != 1 ||
 		rewritten.find("Google Search") != std::string::npos ||
 		rewritten.find("https://example.org/bonjour") == std::string::npos ||
-		rewritten.find("<body style=\"background: #000000") == std::string::npos ||
-		rewritten.find("<div style=\"background: #000000; color: #ECE8E8\">") == std::string::npos)
+		rewritten.find("<body style=\"background: #FFFFFF") == std::string::npos ||
+		rewritten.find("background: #000000") != std::string::npos)
 		fails++;
 
 	const std::string sponsoredHtml =
@@ -217,10 +219,10 @@ static std::string textOf(const std::string& html)
 	}
 	decodeEntities(out);
 
-	// Le texte des pages est en UTF-8 : on le ramene a un alphabet que la
-	// police de la console sait dessiner, sinon les accents et les ideogrammes
-	// apparaissent sous forme de suites illisibles.
-	out = utf8ToSimplified(out);
+	// Le texte des pages est en UTF-8 : on ne le simplifie que si la
+	// police TrueType (qui gere l'UTF-8 complet) est absente.
+	if (!TextEngine::instance().isTrueType())
+		out = utf8ToSimplified(out);
 
 	// Normalise les espaces.
 	std::string clean;
@@ -367,15 +369,18 @@ struct SearchResult
 static void extractResults(const std::string& html, std::vector<SearchResult>& out)
 {
 	size_t pos = 0;
-	const std::string marker = "result-link";
-	while (out.size() < 15)
+	while (out.size() < 10)
 	{
-		size_t at = html.find(marker, pos);
+		size_t at = html.find("result-link", pos);
+		size_t modernAt = html.find("result__a", pos);
+		const bool modern = modernAt != std::string::npos &&
+			(at == std::string::npos || modernAt < at);
+		if (modern) at = modernAt;
 		if (at == std::string::npos) break;
 
 		// Remonte au debut de la balise <a ...>
 		size_t tagStart = html.rfind('<', at);
-		if (tagStart == std::string::npos) { pos = at + marker.size(); continue; }
+		if (tagStart == std::string::npos) { pos = at + 9; continue; }
 		size_t tagEnd = html.find('>', at);
 		if (tagEnd == std::string::npos) break;
 
@@ -420,27 +425,42 @@ static void extractResults(const std::string& html, std::vector<SearchResult>& o
 		r.title = title;
 		r.url = href;
 
-		// Resume : le prochain bloc class='result-snippet'.
+		// Resume : variantes Lite (td.result-snippet) et HTML (a.result__snippet).
 		size_t snipAt = html.find("result-snippet", pos);
+		size_t modernSnipAt = html.find("result__snippet", pos);
+		if (modernSnipAt != std::string::npos &&
+			(snipAt == std::string::npos || modernSnipAt < snipAt))
+			snipAt = modernSnipAt;
 		if (snipAt != std::string::npos && snipAt - pos < 4000)
 		{
 			size_t snipTagStart = html.rfind('<', snipAt);
 			size_t snipTagEnd = html.find('>', snipAt);
 			if (snipTagStart != std::string::npos && snipTagEnd != std::string::npos)
 			{
-				size_t snipClose = html.find("</td>", snipTagEnd);
+				size_t nameEnd = html.find_first_of(" />", snipTagStart + 1);
+				const std::string tagName = nameEnd == std::string::npos ? "a" :
+					toLower(html.substr(snipTagStart + 1, nameEnd - snipTagStart - 1));
+				const std::string closing = "</" + tagName + ">";
+				size_t snipClose = html.find(closing, snipTagEnd);
 				if (snipClose != std::string::npos)
 					r.snippet = textOf(html.substr(snipTagEnd + 1,
 						snipClose - snipTagEnd - 1));
 			}
 		}
 
-		// Domaine affiche : le prochain 'link-text'.
+		// Domaine affiche : variantes Lite et HTML.
 		size_t linkAt = html.find("link-text", pos);
+		size_t modernLinkAt = html.find("result__url", pos);
+		if (modernLinkAt != std::string::npos &&
+			(linkAt == std::string::npos || modernLinkAt < linkAt))
+			linkAt = modernLinkAt;
 		if (linkAt != std::string::npos && linkAt - pos < 3000)
 		{
 			std::string inner;
-			if (extractElement(html, linkAt, "span", inner))
+			const char* tagName = linkAt == modernLinkAt ? "a" : "span";
+			const size_t siteTagStart = html.rfind('<', linkAt);
+			if (siteTagStart != std::string::npos &&
+				extractElement(html, siteTagStart, tagName, inner))
 				r.site = textOf(inner);
 		}
 		if (r.site.empty() && !r.url.empty())
@@ -453,18 +473,18 @@ static void extractResults(const std::string& html, std::vector<SearchResult>& o
 		}
 
 		// Bornage du resume : un texte trop long mange tout l'ecran.
-		if (r.snippet.size() > 220)
+	if (r.snippet.size() > 160)
 		{
-			r.snippet.resize(220);
+			r.snippet.resize(160);
 			size_t space = r.snippet.find_last_of(' ');
-			if (space != std::string::npos && space > 160) r.snippet.resize(space);
+			if (space != std::string::npos && space > 110) r.snippet.resize(space);
 			r.snippet += "...";
 		}
-		if (r.title.size() > 110)
+	if (r.title.size() > 90)
 		{
-			r.title.resize(110);
+			r.title.resize(90);
 			size_t space = r.title.find_last_of(' ');
-			if (space != std::string::npos && space > 80) r.title.resize(space);
+			if (space != std::string::npos && space > 65) r.title.resize(space);
 			r.title += "...";
 		}
 
@@ -478,10 +498,34 @@ static void extractResults(const std::string& html, std::vector<SearchResult>& o
 // Le moteur de mise en page n'aime ni les tableaux ni les mises en page
 // complexes : on produit donc des blocs simples, un par resultat.
 //--------------------------------------------------------------------------
-bool searchPageRewrite(const std::string& html, std::string& out)
+bool searchPageRewrite(const std::string& html, std::string& out,
+	const std::string& responseUrl)
 {
 	g_lastResultCount = 0;
-	if (!searchPageDetected(html)) return false;
+	if (!searchPageDetected(html))
+	{
+		// DuckDuckGo Lite peut renvoyer sa page d'accueil ou sa navigation au
+		// lieu des resultats. Garder une recherche utilisable plutot que de
+		// presenter ses liens de navigation comme s'il s'agissait de resultats.
+		if ((responseUrl.find("lite.duckduckgo.com/lite") == std::string::npos &&
+			responseUrl.find("html.duckduckgo.com/html") == std::string::npos) ||
+			searchPageIsVerificationChallenge(html)) return false;
+		std::string query;
+		const size_t q = responseUrl.find("?q=");
+		if (q != std::string::npos)
+		{
+			const size_t end = responseUrl.find('&', q + 3);
+			query = urlDecode(responseUrl.substr(q + 3,
+				end == std::string::npos ? end : end - q - 3));
+		}
+		out = "<html><head><title>DuckDuckGo - recherche</title></head>"
+			"<body style=\"background:#FFFFFF;color:#202020\">"
+			"<form action=\"nw://search\"><input type=\"search\" name=\"q\" size=\"34\" value=\"" +
+			htmlEscape(query) + "\"/><button type=\"submit\" value=\"Rechercher\">Rechercher</button></form>"
+			"<p>Resultats indisponibles. Modifie la recherche ou choisis un autre moteur dans Reglages.</p>"
+			"</body></html>";
+		return true;
+	}
 
 	std::vector<SearchResult> results;
 	extractResults(html, results);
@@ -500,37 +544,23 @@ bool searchPageRewrite(const std::string& html, std::string& out)
 
 	std::string h;
 	h += "<html><head><title>" + htmlEscape(pageTitle) + "</title></head>";
-	h += "<body style=\"background: #000000; color: #ECE8E8\">";
-	// Le fond de page pur est aussi peint par un conteneur explicite : certains
-	// chemins de rendu ne propagent pas le fond du body dans les espaces vides.
-	h += "<div style=\"background: #000000; color: #ECE8E8\">";
-
-	h += "<div style=\"background: #241D28; padding: 6px; margin-bottom: 8px\">";
-	h += "<div style=\"font-size: 15px; font-weight: bold; color: #F2A25C\">"
-	     + htmlEscape(pageTitle) + "</div>";
-	h += "<div style=\"font-size: 12px; color: #9A8A8A\">"
-	     + std::to_string(results.size()) + " resultats</div>";
-	h += "</div>";
+	h += "<body style=\"background: #FFFFFF; color: #202020\">";
 
 	for (size_t i = 0; i < results.size(); i++)
 	{
 		const SearchResult& r = results[i];
-		h += "<a href=\"" + htmlEscape(r.url) + "\" style=\"display: block; "
-		     "background: #221B26; padding: 7px; margin: 6px\">";
-		h += "<span style=\"font-size: 16px; font-weight: bold; color: #7FB2F2\">"
-		     + htmlEscape(r.title) + "</span>";
+		h += "<div style=\"margin: 9px 5px\"><div>";
+		h += "<a href=\"" + htmlEscape(r.url) + "\" style=\"font-size: 20px; "
+		     "font-weight: bold; color: #1645AD\">"
+		     + htmlEscape(r.title) + "</a></div>";
 		if (!r.site.empty())
-			h += "<br/><span style=\"font-size: 12px; color: #6FCF6F\">"
-			     + htmlEscape(r.site) + "</span>";
+			h += "<div style=\"font-size: 15px; color: #333333\">"
+			     + htmlEscape(r.site) + "</div>";
 		if (!r.snippet.empty())
-			h += "<br/><span style=\"font-size: 13px; color: #C8C2C2\">"
-			     + htmlEscape(r.snippet) + "</span>";
-		h += "</a>";
+			h += "<div style=\"font-size: 16px; color: #202020\">"
+			     + htmlEscape(r.snippet) + "</div>";
+		h += "</div>";
 	}
-
-	h += "<div style=\"text-align: center; font-size: 12px; color: #7A6E70\">"
-	     "Resultats simplifies pour New 3DS</div>";
-	h += "</div>";
 	h += "</body></html>";
 
 	out = h;

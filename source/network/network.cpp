@@ -80,7 +80,8 @@ size_t NetworkManager::bytesReceived() const
 //--------------------------------------------------------------------------
 bool NetworkManager::start(const std::string& url, size_t maxBytes, bool verifyTls,
 	const std::string& method, const std::string& postData,
-	NetRequestType requestType, int timeoutMs, const std::string& referer)
+	NetRequestType requestType, int timeoutMs, const std::string& referer,
+	const std::string& csrfToken)
 {
 	if (!socInit_ || !curlInit_)
 	{
@@ -88,27 +89,26 @@ bool NetworkManager::start(const std::string& url, size_t maxBytes, bool verifyT
 	}
 
 	LightLock_Lock(&lock_);
-	queuedRequest_.url = url;
-	queuedRequest_.maxBytes = maxBytes;
-	queuedRequest_.verifyTls = verifyTls;
-	queuedRequest_.method = method;
-	queuedRequest_.postData = postData;
-	queuedRequest_.requestType = requestType;
-	queuedRequest_.timeoutMs = timeoutMs;
-	queuedRequest_.referer = referer;
-	queuedRequestReady_ = true;
-	resultReady_ = false;
-	result_ = NetResponse();
-	progress_.store(0.0f, std::memory_order_relaxed);
-	bytes_.store(0, std::memory_order_relaxed);
-	if (workerRunning_)
+	Request request;
+	request.url = url;
+	request.maxBytes = maxBytes;
+	request.verifyTls = verifyTls;
+	request.method = method;
+	request.postData = postData;
+	request.requestType = requestType;
+	request.timeoutMs = timeoutMs;
+	request.referer = referer;
+	request.csrfToken = csrfToken;
+	requestQueue_.push_back(std::move(request));
+	if (workerRunning_ || resultReady_)
 	{
-		cancelFlag_ = 1;
 		LightLock_Unlock(&lock_);
 		return true;
 	}
 	workerRunning_ = true;
 	cancelFlag_ = 0;
+	progress_.store(0.0f, std::memory_order_relaxed);
+	bytes_.store(0, std::memory_order_relaxed);
 	state_ = NetState::Connecting;
 	LightLock_Unlock(&lock_);
 
@@ -119,7 +119,7 @@ bool NetworkManager::start(const std::string& url, size_t maxBytes, bool verifyT
 	{
 		LightLock_Lock(&lock_);
 		workerRunning_ = false;
-		queuedRequestReady_ = false;
+		requestQueue_.clear();
 		state_ = NetState::Idle;
 		LightLock_Unlock(&lock_);
 		return false;
@@ -130,7 +130,7 @@ bool NetworkManager::start(const std::string& url, size_t maxBytes, bool verifyT
 void NetworkManager::cancel()
 {
 	LightLock_Lock(&lock_);
-	queuedRequestReady_ = false;
+	requestQueue_.clear();
 	cancelFlag_ = 1;
 	if (!workerRunning_)
 	{
@@ -153,6 +153,19 @@ bool NetworkManager::takeResult(NetResponse& out)
 	out = result_;
 	resultReady_ = false;
 	result_ = NetResponse();
+	if (!requestQueue_.empty() && !workerRunning_)
+	{
+		workerRunning_ = true;
+		cancelFlag_ = 0;
+		progress_.store(0.0f, std::memory_order_relaxed);
+		bytes_.store(0, std::memory_order_relaxed);
+		state_ = NetState::Connecting;
+		LightLock_Unlock(&lock_);
+		Thread t = threadCreate(threadFunc, this, 256 * 1024, 0x30, 0, true);
+		if (t) threadDetach(t);
+		else { LightLock_Lock(&lock_); workerRunning_ = false; requestQueue_.clear(); state_ = NetState::Idle; LightLock_Unlock(&lock_); }
+		return true;
+	}
 	state_ = NetState::Idle;
 	LightLock_Unlock(&lock_);
 	return true;
@@ -170,15 +183,15 @@ void NetworkManager::worker()
 	for (;;)
 	{
 		LightLock_Lock(&lock_);
-		if (!queuedRequestReady_)
+		if (requestQueue_.empty())
 		{
 			workerRunning_ = false;
 			if (!resultReady_) state_ = NetState::Idle;
 			LightLock_Unlock(&lock_);
 			return;
 		}
-		const Request request = queuedRequest_;
-		queuedRequestReady_ = false;
+		const Request request = requestQueue_.front();
+		requestQueue_.pop_front();
 		cancelFlag_ = 0;
 		state_ = NetState::Receiving;
 		LightLock_Unlock(&lock_);
@@ -191,6 +204,7 @@ void NetworkManager::worker()
 		opt.postData = request.postData;
 		opt.timeoutMs = request.timeoutMs;
 		opt.referer = request.referer;
+		opt.csrfToken = request.csrfToken;
 		opt.convertTextEncoding = request.requestType != NetRequestType::Image;
 
 		NetResponse resp;
@@ -200,14 +214,6 @@ void NetworkManager::worker()
 		resp.requestType = request.requestType;
 
 		LightLock_Lock(&lock_);
-		if (queuedRequestReady_)
-		{
-			progress_.store(0.0f, std::memory_order_relaxed);
-			bytes_.store(0, std::memory_order_relaxed);
-			state_ = NetState::Connecting;
-			LightLock_Unlock(&lock_);
-			continue;
-		}
 		if (cancelFlag_)
 		{
 			workerRunning_ = false;

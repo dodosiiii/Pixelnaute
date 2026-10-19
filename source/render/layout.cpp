@@ -28,7 +28,7 @@ static bool isBlockTag(const std::string& t)
 	{
 		"div","p","h1","h2","h3","h4","h5","h6","ul","ol","li","hr","blockquote","pre",
 		"table","tr","td","th","form","address","article","section","nav","header","footer",
-		"aside","figure","fieldset","center","body","dl","dt","dd","select","textarea",
+		"aside","figure","fieldset","center","body","main","dl","dt","dd","select","textarea",
 		nullptr
 	};
 	for (int i = 0; blocks[i]; i++)
@@ -64,6 +64,7 @@ void PageLayout::newline(int height)
 	iy_ = by_;
 	ix_ = x0_;
 	lineMaxH_ = 0;
+	pendingSpace_ = false;
 	if (height > 0) by_ += height;
 }
 
@@ -71,68 +72,11 @@ void PageLayout::flushLink()
 {
 }
 
-//--------------------------------------------------------------------------
-// Sauvegarde et restauration d'une zone de la page.
-//
-// Sert a peindre le fond d'un bloc APRES que son contenu a ete dessine (seule
-// facon de connaitre sa hauteur) sans masquer ce contenu : on sauvegarde la
-// zone, on peint le fond, puis on restaure le contenu par-dessus.
-//
-// La surface restauree est bornee : au-dela, le fond est simplement peint
-// avant le contenu, ce qui reste correct visuellement.
-//--------------------------------------------------------------------------
-static const size_t kMaxSavedPixels = 400u * 1200u;
-
-void PageLayout::saveRegion(int x, int y, int w, int h)
-{
-	regionSave_.clear();
-	if (!target_ || !target_->px || w <= 0 || h <= 0) return;
-	if ((size_t)w * (size_t)h > kMaxSavedPixels) return;
-
-	// Bornes utiles, pour ne pas allouer plus que necessaire.
-	const int x1 = (x + w > target_->w) ? target_->w : x + w;
-	const int y1 = (y + h > target_->h) ? target_->h : y + h;
-	const int x0 = x < 0 ? 0 : x;
-	const int y0 = y < 0 ? 0 : y;
-	if (x1 <= x0 || y1 <= y0) return;
-
-	regionSave_.reserve((size_t)(x1 - x0) * (size_t)(y1 - y0));
-	for (int row = y0; row < y1; row++)
-	{
-		const uint16_t* src = target_->px + (size_t)row * target_->w + x0;
-		regionSave_.insert(regionSave_.end(), src, src + (x1 - x0));
-	}
-}
-
-void PageLayout::restoreRegion(int x, int y, int w, int h)
-{
-	if (regionSave_.empty() || !target_ || !target_->px) return;
-	const int x1 = (x + w > target_->w) ? target_->w : x + w;
-	const int y1 = (y + h > target_->h) ? target_->h : y + h;
-	const int x0 = x < 0 ? 0 : x;
-	const int y0 = y < 0 ? 0 : y;
-	const int rowWidth = x1 - x0;
-	if (rowWidth <= 0) { regionSave_.clear(); return; }
-
-	size_t index = 0;
-	for (int row = y0; row < y1; row++)
-	{
-		uint16_t* dst = target_->px + (size_t)row * target_->w + x0;
-		for (int col = 0; col < rowWidth; col++)
-		{
-			if (index >= regionSave_.size()) { regionSave_.clear(); return; }
-			const uint16_t saved = regionSave_[index++];
-			if (saved != pageBg565_) dst[col] = saved;
-		}
-	}
-	regionSave_.clear();
-}
-
-void PageLayout::addLinkBox(int x0, int y0, int x1, int y1, const std::string& url)
+void PageLayout::addLinkBox(int x0, int y0, int x1, int y1, const std::string& url, int node)
 {
 	if (x1 <= x0 || y1 <= y0) return;
 	if ((int)out_->links.size() >= NW_MAX_LINKS) return;
-	out_->links.push_back({ x0, y0, x1 - x0, y1 - y0, url });
+	out_->links.push_back({ x0, y0, x1 - x0, y1 - y0, url, node });
 }
 
 //--------------------------------------------------------------------------
@@ -154,25 +98,31 @@ void PageLayout::drawTextWrapped(const std::string& text, const Style& st, bool 
 
 	auto drawSeg = [&](const std::string& s, float w)
 	{
-		const int bx0 = ix_;
 		const int by0 = iy_;
-		te.drawLine((*target_), s, ix_, iy_, scale, col, bold,
+		int drawX = ix_;
+		if (st.align == 1)
+			drawX = x0_ + std::max(0, (x1_ - x0_ - (int)ceilf(w)) / 2);
+		else if (st.align == 2)
+			drawX = x1_ - (int)ceilf(w);
+		te.drawLine((*target_), s, drawX, iy_, scale, col, bold,
 			linkActive_ || st.underline);
-		const int bx1 = ix_ + (int)ceilf(w);
+		const int bx1 = drawX + (int)ceilf(w);
 		// Un lien "display:block" (une tuile, un bouton) doit etre cliquable
 		// sur toute sa surface, pas seulement sur la largeur du texte.
 		if (linkActive_)
 		{
 			const int right = st.block ? std::min(x1_, NW_PAGE_WIDTH - 2) : std::min(bx1, NW_PAGE_WIDTH - 2);
-			addLinkBox(bx0, by0, right, iy_ + pitch, linkHref_);
+			addLinkBox(drawX, by0, right, iy_ + pitch, linkHref_, linkNode_);
 		}
-		ix_ = bx1;
+		ix_ = std::max(ix_, bx1);
 		if (pitch > lineMaxH_) lineMaxH_ = pitch;
 	};
 
-	auto placeSegment = [&](const std::string& segment)
+	auto placeSegment = [&](const std::string& segment, bool separator)
 	{
-		std::string cand = line.empty() ? segment : line + " " + segment;
+		std::string cand = line.empty()
+			? (separator ? " " + segment : segment)
+			: line + " " + segment;
 		float wc = te.measure(cand, scale);
 		if (ix_ + wc > x1_ && (!line.empty() || ix_ > x0_))
 		{
@@ -191,12 +141,15 @@ void PageLayout::drawTextWrapped(const std::string& text, const Style& st, bool 
 	int maxAvail = x1_ - x0_;
 	if (maxAvail < 40) maxAvail = 40;
 	size_t pos = 0;
+	bool sawWhitespace = false;
+	bool trailingWhitespace = false;
 	while (pos < text.size())
 	{
-		while (pos < text.size() &&
-			(text[pos] == ' ' || text[pos] == '\t' ||
-			 text[pos] == '\n' || text[pos] == '\r'))
+		const size_t whitespaceStart = pos;
+		while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t' ||
+			text[pos] == '\n' || text[pos] == '\r'))
 			++pos;
+		sawWhitespace = pos > whitespaceStart;
 		if (pos >= text.size()) break;
 
 		size_t end = pos;
@@ -205,10 +158,14 @@ void PageLayout::drawTextWrapped(const std::string& text, const Style& st, bool 
 			++end;
 		const std::string word = text.substr(pos, end - pos);
 		pos = end;
+		bool separator = (sawWhitespace || pendingSpace_) &&
+			(ix_ > x0_ || !line.empty());
+		pendingSpace_ = false;
+		sawWhitespace = false;
 
 		if (te.measure(word, scale) <= maxAvail)
 		{
-			placeSegment(word);
+			placeSegment(word, separator);
 			continue;
 		}
 
@@ -223,14 +180,18 @@ void PageLayout::drawTextWrapped(const std::string& text, const Style& st, bool 
 			offset += (size_t)n;
 			if (!chunk.empty() && te.measure(chunk + ch, scale) > maxAvail - 4)
 			{
-				placeSegment(chunk);
+				placeSegment(chunk, separator);
+				separator = true;
 				chunk.clear();
 			}
 			chunk += ch;
 		}
-		if (!chunk.empty()) placeSegment(chunk);
+		if (!chunk.empty()) placeSegment(chunk, separator);
 	}
 	if (!line.empty()) drawSeg(line, lineW);
+	trailingWhitespace = sawWhitespace || (!text.empty() &&
+		(text.back() == ' ' || text.back() == '\t' || text.back() == '\n' || text.back() == '\r'));
+	pendingSpace_ = trailingWhitespace && ix_ > x0_;
 }
 
 //--------------------------------------------------------------------------
@@ -249,7 +210,7 @@ void PageLayout::renderNode(int idx, const Style& st)
 
 	// Un element se comporte comme un bloc s'il s'agit d'une balise de bloc
 	// ou si son style declare display:block.
-	const bool block = node.isElement() && (isBlockTag(node.tag) || st.block);
+	const bool block = node.isElement() && !st.displayInline && (isBlockTag(node.tag) || st.block);
 	const bool isForm = node.isElement() && node.tag == "form";
 	const int previousFormId = curFormId_;
 	const std::string previousFormAction = isForm ? curFormAction_ : "";
@@ -264,13 +225,29 @@ void PageLayout::renderNode(int idx, const Style& st)
 			out_->jsUsed = true;
 			return;
 		}
+		if (tag == "noscript" && set_->enableJS) return;
+		if (tag == "meta")
+		{
+			const char* name = node.getAttr("name");
+			const char* content = node.getAttr("content");
+			if (name && content && *content)
+			{
+				std::string n = toLower(name);
+				if (n == "csrf-token" || n == "csrf_token" || n == "_token" || n == "csrf")
+					out_->csrfToken = content;
+				else if (n == "csrf-param" || n == "csrf_param")
+					out_->csrfParam = content;
+			}
+			return;
+		}
 		if (isHeadTag(tag)) return;
 
 		if (tag == "br")
 		{
+			const int previousLineHeight = lineMaxH_;
 			newline(0);
-			// interligne supplementaire si aucun contenu sur la ligne
-			if (lineMaxH_ == 0) by_ += TextEngine::instance().linePitch(baseScale_) / 2;
+			if (previousLineHeight == 0)
+				by_ += TextEngine::instance().linePitch(baseScale_) / 2;
 			iy_ = by_;
 			ix_ = x0_;
 			return;
@@ -330,19 +307,19 @@ void PageLayout::renderNode(int idx, const Style& st)
 				else if (t == "number") kind = FieldNumber;
 				else if (t == "search") kind = FieldSearch;
 				else if (t == "email") kind = FieldEmail;
+				else if (t == "checkbox") kind = FieldCheckbox;
+				else if (t == "radio") kind = FieldRadio;
 			}
 
 			if (tag == "input" && type && toLower(type) == "hidden")
 			{
-				if (curFormId_ >= 0)
-				{
-					FormField ff;
-					ff.name = name ? name : "";
-					ff.value = node.getAttr("value") ? node.getAttr("value") : "";
-					ff.node = idx;
-					ff.formId = curFormId_;
-					out_->fields.push_back(ff);
-				}
+				FormField ff;
+				ff.name = name ? name : "";
+				ff.value = node.getAttr("value") ? node.getAttr("value") : "";
+				ff.node = idx;
+				ff.formId = curFormId_;
+				ff.disabled = node.hasAttr("disabled");
+				out_->fields.push_back(ff);
 				return;
 			}
 
@@ -373,9 +350,69 @@ void PageLayout::renderNode(int idx, const Style& st)
 				fs.x = ix_; fs.y = iy_; fs.w = bw; fs.h = 22;
 				fs.node = idx; fs.formId = curFormId_;
 				fs.label = label;
+				fs.name = name ? name : "";
+				fs.value = node.getAttr("value") ? node.getAttr("value") : "";
 				fs.method = curFormMethod_;
 				const char* fsa = node.getAttr("formaction");
 				fs.action = fsa && *fsa ? fsa : curFormAction_;
+
+				// Si le bouton est dans un lien <a href="...">, lier la zone au lien
+				if (linkActive_)
+				{
+					fs.action = linkHref_;
+					fs.method = "get";
+					addLinkBox(ix_, iy_, ix_ + bw, iy_ + 22, linkHref_);
+				}
+				else if (fs.action.empty())
+				{
+					// Extraire une URL eventuelle depuis onclick, data-href, href
+					const char* href = node.getAttr("href");
+					if (!href) href = node.getAttr("data-href");
+					if (!href) href = node.getAttr("data-url");
+					if (href && *href)
+					{
+						fs.action = href;
+						fs.method = "get";
+					}
+					else
+					{
+						const char* oc = node.getAttr("onclick");
+						if (oc && *oc)
+						{
+							std::string soc = oc;
+							if (soc.find("history.back") != std::string::npos)
+							{
+								fs.action = "nw://back";
+							}
+							else if (soc.find("location.reload") != std::string::npos)
+							{
+								fs.action = "nw://reload";
+							}
+							else
+							{
+								size_t locPos = soc.find("location");
+								if (locPos != std::string::npos)
+								{
+									size_t eqPos = soc.find('=', locPos);
+									if (eqPos != std::string::npos)
+									{
+										size_t q1 = soc.find_first_of("'\"", eqPos);
+										if (q1 != std::string::npos)
+										{
+											size_t q2 = soc.find_first_of("'\"", q1 + 1);
+											if (q2 != std::string::npos)
+											{
+												fs.action = soc.substr(q1 + 1, q2 - q1 - 1);
+												fs.method = "get";
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+
 				out_->submits.push_back(fs);
 				ix_ += bw + 8;
 				if (22 > lineMaxH_) lineMaxH_ = 22;
@@ -386,6 +423,7 @@ void PageLayout::renderNode(int idx, const Style& st)
 			(*target_).fillRect(ix_, iy_, w, h, 0xFFF4F4F4);
 			(*target_).addRect(ix_, iy_, w, h, 0xFF968A8A, 1);
 			std::string val = node.getAttr("value") ? node.getAttr("value") : "";
+			if (tag == "textarea" && val.empty()) val = doc_->textOf(idx);
 			if (tag == "select")
 			{
 				// Chercher l'option sélectionnée ou la première option
@@ -414,6 +452,7 @@ void PageLayout::renderNode(int idx, const Style& st)
 			else if (type && (toLower(type) == "checkbox" || toLower(type) == "radio"))
 			{
 				bool checked = node.hasAttr("checked");
+				if (val.empty()) val = "on";
 				int sz = 14;
 				w = sz; h = sz;
 				(*target_).fillRect(ix_, iy_ + 2, sz, sz, 0xFFFFFFFF);
@@ -426,7 +465,20 @@ void PageLayout::renderNode(int idx, const Style& st)
 			else if (!val.empty())
 			{
 				TextEngine& te = TextEngine::instance();
-				std::string shown = val.size() > 18 ? val.substr(0, 17) + "..." : val;
+				std::string shown = val;
+				if (kind == FieldPassword)
+				{
+					shown.clear();
+					for (size_t offset = 0; offset < val.size(); )
+					{
+						uint32_t cp;
+						int bytes = utf8Decode(val.c_str() + offset, cp);
+						if (bytes <= 0) break;
+						shown += '*';
+						offset += (size_t)bytes;
+					}
+				}
+				if (shown.size() > 18) shown = shown.substr(0, 17) + "...";
 				te.drawLine((*target_), shown, ix_ + 3, iy_ + 3, 0.7f, 0xFF2C2222, false, false);
 			}
 			FormField ff;
@@ -436,6 +488,8 @@ void PageLayout::renderNode(int idx, const Style& st)
 			ff.value = val;
 			ff.node = idx;
 			ff.formId = curFormId_;
+			ff.checked = node.hasAttr("checked");
+			ff.disabled = node.hasAttr("disabled");
 			out_->fields.push_back(ff);
 			ix_ += w + 8;
 			if (h > lineMaxH_) lineMaxH_ = h;
@@ -452,13 +506,21 @@ void PageLayout::renderNode(int idx, const Style& st)
 		// Peindre le fond d'abord obligerait a un tampon temporaire et a deux
 		// systemes de coordonnees, source d'erreurs.
 		//------------------------------------------------------------------------
-		const bool isContainer =
-			(tag == "div") || (tag == "section") || (tag == "article") ||
-			(tag == "header") || (tag == "footer") || (tag == "nav") ||
-			(tag == "aside") || (tag == "a" && st.block);
-		if (isContainer && (st.bgSet || st.paddingLeft > 0 || st.paddingRight > 0 ||
+		const bool specialBlock = tag == "ul" || tag == "ol" || tag == "table" ||
+			tag == "tr" || tag == "blockquote" || tag == "pre" ||
+			tag == "select" || tag == "textarea";
+		if (isForm)
+		{
+			curFormId_ = ++formCounter_;
+			const char* fa = node.getAttr("action");
+			curFormAction_ = fa && *fa ? fa : "";
+			const char* fm = node.getAttr("method");
+			curFormMethod_ = fm && *fm ? toLower(fm) : "get";
+		}
+		const bool isContainer = (block && !specialBlock) || (tag == "a" && st.block);
+		if (isContainer && (st.flex || st.bgSet || st.paddingLeft > 0 || st.paddingRight > 0 ||
 			st.width > 0 || st.minWidth > 0 || st.maxWidth > 0 || st.flex ||
-			st.marginLeftAuto || st.marginRightAuto))
+			st.marginLeftAuto || st.marginRightAuto || st.borderWidth > 0))
 		{
 			newline(0);
 			if (st.marginTop > 0) by_ += st.marginTop;
@@ -469,9 +531,29 @@ void PageLayout::renderNode(int idx, const Style& st)
 			Style contentStyle = st;
 			if (isBlockLink)
 			{
-				contentStyle.color = C_LINK;
-				contentStyle.colorSet = true;
+				if (!(st.declared & CssPropColor))
+				{
+					contentStyle.color = C_LINK;
+					contentStyle.colorSet = true;
+				}
 				contentStyle.underline = true;
+			}
+			const bool heading = tag.size() == 2 && tag[0] == 'h' &&
+				tag[1] >= '1' && tag[1] <= '6';
+			if (heading)
+			{
+				if (!(st.declared & CssPropBold)) contentStyle.bold = true;
+				if (!(st.declared & CssPropFontSize))
+				{
+					switch (tag[1])
+					{
+					case '1': contentStyle.fontSize = 22; break;
+					case '2': contentStyle.fontSize = 19; break;
+					case '3': contentStyle.fontSize = 17; break;
+					default: contentStyle.fontSize = 15; break;
+					}
+				}
+				if (tag == "th" && !(st.declared & CssPropBold)) contentStyle.bold = true;
 			}
 
 			const int savedX0c = x0_, savedX1c = x1_;
@@ -488,12 +570,11 @@ void PageLayout::renderNode(int idx, const Style& st)
 				x0_ = savedX1c - containerWidth;
 			x1_ = std::min(savedX1c, x0_ + containerWidth);
 			// Bornes du fond : toute la largeur disponible, padding compris.
-			const int bgX0 = x0_ + st.paddingLeft;
-			const int bgX1 = x1_ - st.paddingRight;
+			const int bgX0 = x0_;
+			const int bgX1 = x1_;
 			const int bgY0 = by_;
-			// La hauteur du bloc n'est pas connue avant d'avoir rendu ses
-			// enfants : elle est mesuree plus bas, puis le fond est peint sous
-			// le contenu (voir saveRegion/restoreRegion).
+			// La hauteur est mesuree lors d'un premier passage. Si le bloc a un
+			// fond, son contenu est ensuite redessine par-dessus ce fond.
 			const bool hasBlockBackground = st.bgSet;
 
 			if (st.paddingLeft > 0) x0_ += st.paddingLeft;
@@ -505,12 +586,22 @@ void PageLayout::renderNode(int idx, const Style& st)
 			iy_ = by_;
 			ix_ = x0_;
 
-			// Rendu du contenu. Pour un lien, on active la zone cliquable
-			// pendant le rendu des enfants, exactement comme pour un lien en
-			// ligne, afin que le texte soit cliquable sur toute la largeur.
+			const int contentX0 = x0_, contentX1 = x1_;
+			const int contentIx = ix_, contentIy = iy_, contentBy = by_;
+			const int contentLineHeight = lineMaxH_;
+			const bool contentPendingSpace = pendingSpace_;
+			const int formCounterBefore = formCounter_;
+			const size_t linksBefore = out_->links.size();
+			const size_t fieldsBefore = out_->fields.size();
+			const size_t submitsBefore = out_->submits.size();
+			const size_t imagesBefore = out_->images.size();
+			auto renderChildren = [&]()
 			{
+				// Pour un lien bloc, rendre aussi les zones cliquables sur la
+				// surface complete, comme pour un lien en ligne.
 				const bool prevActive = linkActive_;
 				const std::string prevHref = linkHref_;
+				const int prevLinkNode = linkNode_;
 				if (isBlockLink)
 				{
 					const char* href = node.getAttr("href");
@@ -518,74 +609,115 @@ void PageLayout::renderNode(int idx, const Style& st)
 					{
 						linkActive_ = true;
 						linkHref_ = joinUrl(pageUrl_, href);
+						linkNode_ = idx;
 					}
 				}
-				if (st.flex && st.flexRow && !st.flexWrap && node.children.size() > 1)
+				if (st.flex && st.flexRow && node.children.size() > 1)
 				{
 					const int flexX0 = x0_, flexX1 = x1_;
 					const int flexY = by_;
 					const int flexWidth = flexX1 - flexX0;
 					std::vector<int> itemWidths;
 					itemWidths.reserve(node.children.size());
-					int totalItemsWidth = 0;
 					for (int child : node.children)
 					{
 						const Style itemStyle = css_->resolve(*doc_, child, contentStyle);
 						int itemWidth = itemStyle.width;
 						if (itemWidth <= 0)
 						{
-						const std::string label = strTrim(doc_->textOf(child));
-						itemWidth = label.empty() ? 48 : (int)TextEngine::instance().measure(label, baseScale_ * itemStyle.scale());
-						itemWidth += itemStyle.paddingLeft + itemStyle.paddingRight + 8;
+							const std::string label = strTrim(doc_->textOf(child));
+							itemWidth = label.empty() ? 48 : (int)TextEngine::instance().measure(label, baseScale_ * itemStyle.scale());
+							itemWidth += itemStyle.paddingLeft + itemStyle.paddingRight + 8;
+						}
+						itemWidth = std::max(24, std::min(itemWidth, flexWidth));
+						itemWidths.push_back(itemWidth);
 					}
-					itemWidth = std::max(24, std::min(itemWidth, flexWidth));
-					itemWidths.push_back(itemWidth);
-					totalItemsWidth += itemWidth;
-				}
-				int gap = 0;
-				int cursor = flexX0;
-				if (st.justifyContent == 1)
-					cursor += std::max(0, (flexWidth - totalItemsWidth) / 2);
-				else if (st.justifyContent == 2 && node.children.size() > 1)
-					gap = std::max(0, (flexWidth - totalItemsWidth) / ((int)node.children.size() - 1));
+					size_t rowStart = 0;
+					int rowY = flexY;
 					int maxBottom = flexY;
-					for (size_t i = 0; i < node.children.size(); ++i)
+					while (rowStart < node.children.size())
 					{
-						x0_ = cursor;
-						x1_ = std::min(flexX1, cursor + itemWidths[i]);
-						ix_ = x0_; iy_ = by_ = flexY; lineMaxH_ = 0;
-						resolveAndRender(node.children[i], contentStyle);
-						if (by_ > maxBottom) maxBottom = by_;
-						cursor = x1_ + gap;
+						size_t rowEnd = rowStart + 1;
+						int rowItemsWidth = itemWidths[rowStart];
+						if (st.flexWrap)
+						{
+							while (rowEnd < node.children.size() &&
+								rowItemsWidth + st.columnGap + itemWidths[rowEnd] <= flexWidth)
+							{
+								rowItemsWidth += st.columnGap + itemWidths[rowEnd];
+								++rowEnd;
+							}
+						}
+						else
+						{
+							for (; rowEnd < node.children.size(); ++rowEnd)
+								rowItemsWidth += st.columnGap + itemWidths[rowEnd];
+						}
+
+						const size_t rowCount = rowEnd - rowStart;
+						int extraGap = st.columnGap;
+						int cursor = flexX0;
+						if (st.justifyContent == 1)
+							cursor += std::max(0, (flexWidth - rowItemsWidth) / 2);
+						else if (st.justifyContent == 2 && rowCount > 1)
+							extraGap += std::max(0, (flexWidth - rowItemsWidth) / (int)(rowCount - 1));
+
+						int rowBottom = rowY;
+						for (size_t i = rowStart; i < rowEnd; ++i)
+						{
+							x0_ = cursor;
+							x1_ = std::min(flexX1, cursor + itemWidths[i]);
+							ix_ = x0_; iy_ = by_ = rowY; lineMaxH_ = 0;
+							resolveAndRender(node.children[i], contentStyle);
+							if (by_ > rowBottom) rowBottom = by_;
+							cursor = x1_ + extraGap;
+						}
+						maxBottom = std::max(maxBottom, rowBottom);
+						rowStart = rowEnd;
+						if (rowStart < node.children.size())
+							rowY = rowBottom + st.rowGap;
 					}
 					x0_ = flexX0; x1_ = flexX1; by_ = maxBottom; iy_ = by_; ix_ = x0_;
 				}
 				else for (int c : node.children) resolveAndRender(c, contentStyle);
 				linkActive_ = prevActive;
 				linkHref_ = prevHref;
-			}
+				linkNode_ = prevLinkNode;
+			};
+
+			renderChildren();
 			newline(0);
 
 			if (by_ < bgY0 + 8) by_ = bgY0 + 8;   // bloc vide : garder le fond
-			// Interrupteur de diagnostic : NW_NO_BLOCK_BG=1 desactive la
-			// peinture des fonds de blocs, pour isoler son effet.
-			if (hasBlockBackground)
 #ifdef NW_NO_BLOCK_BG
-			{
-				// desactive volontairement
-			}
+			(void)hasBlockBackground;
 #else
+			if (hasBlockBackground)
 			{
-				// Le fond est peint maintenant, donc APRES le contenu : sans
-				// precaution il masquerait le texte. On sauvegarde la zone, on
-				// peint le fond, puis on restaure le contenu par-dessus.
-				const int bgHeight = by_ - bgY0;
-				saveRegion(bgX0, bgY0, bgX1 - bgX0, bgHeight);
-				if (!regionSave_.empty())
-				{
-					(*target_).fillRect(bgX0, bgY0, bgX1 - bgX0, bgHeight, st.bg);
-					restoreRegion(bgX0, bgY0, bgX1 - bgX0, bgHeight);
-				}
+				const int bgHeight = by_ + st.paddingBottom - bgY0;
+				(*target_).fillRect(bgX0, bgY0, bgX1 - bgX0, bgHeight, st.bg);
+				if (st.borderWidth > 0)
+					(*target_).addRect(bgX0, bgY0, bgX1 - bgX0, bgHeight,
+						st.borderColor, std::min(4, st.borderWidth));
+
+				x0_ = contentX0; x1_ = contentX1;
+				ix_ = contentIx; iy_ = contentIy; by_ = contentBy;
+				lineMaxH_ = contentLineHeight;
+				pendingSpace_ = contentPendingSpace;
+				out_->links.resize(linksBefore);
+				out_->fields.resize(fieldsBefore);
+				out_->submits.resize(submitsBefore);
+				out_->images.resize(imagesBefore);
+				formCounter_ = formCounterBefore;
+				renderChildren();
+				newline(0);
+				if (by_ < bgY0 + 8) by_ = bgY0 + 8;
+			}
+			else if (st.borderWidth > 0)
+			{
+				const int borderHeight = std::max(1, by_ + st.paddingBottom - bgY0);
+				(*target_).addRect(bgX0, bgY0, bgX1 - bgX0, borderHeight,
+					st.borderColor, std::min(4, st.borderWidth));
 			}
 #endif
 
@@ -593,18 +725,16 @@ void PageLayout::renderNode(int idx, const Style& st)
 			by_ += st.paddingBottom + st.marginBottom + uaMarginBottom(node.tag);
 			iy_ = by_;
 			ix_ = x0_;
+			if (isForm)
+			{
+				curFormId_ = previousFormId;
+				curFormAction_ = previousFormAction;
+				curFormMethod_ = previousFormMethod;
+			}
 			return;
 		}
 
 		// --- balises structurelles ---
-		if (tag == "form")
-		{
-			curFormId_ = ++formCounter_;
-			const char* fa = node.getAttr("action");
-			curFormAction_ = fa && *fa ? fa : "";
-			const char* fm = node.getAttr("method");
-			curFormMethod_ = fm && *fm ? toLower(fm) : "get";
-		}
 		if (tag == "ul" || tag == "ol")
 		{
 			int savedX0 = x0_, savedX1 = x1_, savedIx = ix_;
@@ -618,11 +748,13 @@ void PageLayout::renderNode(int idx, const Style& st)
 				{
 					listItem++;
 					newline(0);
-					std::string marker = (tag == "ol") ? itos(listItem) + "." : "-";
+					std::string marker = st.listStyleNone ? "" :
+						((tag == "ol") ? itos(listItem) + "." : "-");
 					TextEngine& te = TextEngine::instance();
-					float mw = te.measure(marker + " ", baseScale_);
-					te.drawLine((*target_), marker + " ", x0_ - 14, iy_, baseScale_, 0xFFD4C9C9, false, false);
-					ix_ = x0_ - 14 + (int)mw;
+					float mw = marker.empty() ? 0.0f : te.measure(marker + " ", baseScale_);
+					if (!marker.empty())
+						te.drawLine((*target_), marker + " ", x0_ - 14, iy_, baseScale_, 0xFFD4C9C9, false, false);
+					ix_ = marker.empty() ? x0_ : x0_ - 14 + (int)mw;
 					resolveAndRender(c, st);
 					(void)mw;
 				}
@@ -769,7 +901,7 @@ void PageLayout::renderNode(int idx, const Style& st)
 	// --- noeuds de texte ---
 	if (node.type == NodeType::Text)
 	{
-		drawTextWrapped(node.text, st, false);
+		drawTextWrapped(node.text, st, st.mono);
 		return;
 	}
 
@@ -800,21 +932,31 @@ void PageLayout::renderNode(int idx, const Style& st)
 		const char* href = node.getAttr("href");
 		bool prevActive = linkActive_;
 		std::string prevHref = linkHref_;
+		int prevLinkNode = linkNode_;
 		Style as = st;
-		as.color = C_LINK; as.colorSet = true; as.underline = true;
+		if (!(st.declared & CssPropColor)) { as.color = C_LINK; as.colorSet = true; }
+		as.underline = true;
 		if (href && *href)
 		{
 			linkActive_ = true;
 			linkHref_ = joinUrl(pageUrl_, href);
+			linkNode_ = idx;
 		}
 		for (int c : node.children) resolveAndRender(c, as);
 		linkActive_ = prevActive;
 		linkHref_ = prevHref;
+		linkNode_ = prevLinkNode;
 		return;
 	}
 
 	// autre element inline : passe les enfants
 	for (int c : node.children) resolveAndRender(c, st);
+	if (isForm)
+	{
+		curFormId_ = previousFormId;
+		curFormAction_ = previousFormAction;
+		curFormMethod_ = previousFormMethod;
+	}
 }
 
 //--------------------------------------------------------------------------
@@ -837,7 +979,7 @@ void PageLayout::resolveAndRender(int idx, const Style& parentSt)
 		if (isHeadTag(node.tag)) return;
 		if (node.hasAttr("hidden")) return;
 		const char* aria = node.getAttr("aria-hidden");
-		if (aria && (std::string(aria) == "true" || std::string(aria) == "1")) return;
+		if (aria && (toLower(aria) == "true" || std::string(aria) == "1")) return;
 		const char* cls = node.getAttr("class");
 		if (cls)
 		{
@@ -852,6 +994,7 @@ void PageLayout::resolveAndRender(int idx, const Style& parentSt)
 	if (node.type == NodeType::Comment) return;
 
 	Style st = css_->resolve(*doc_, idx, parentSt);
+	if (node.isElement() && node.tag == "code") st.mono = true;
 	if (st.displayNone) return;
 	// Les liens en ligne prennent un chemin raccourci (couleur de lien,
 	// soulignement, zone cliquable). Un lien declare display:block doit au
@@ -861,14 +1004,17 @@ void PageLayout::resolveAndRender(int idx, const Style& parentSt)
 	if (node.isElement() && node.tag == "a" && !st.block)
 	{
 		Style as = st;
-		as.color = C_LINK; as.colorSet = true; as.underline = true;
+		if (!(st.declared & CssPropColor)) { as.color = C_LINK; as.colorSet = true; }
+		as.underline = true;
 		const char* href = node.getAttr("href");
 		bool prev = linkActive_;
 		std::string prevHref = linkHref_;
-		if (href && *href) { linkActive_ = true; linkHref_ = joinUrl(pageUrl_, href); }
+		int prevLinkNode = linkNode_;
+		if (href && *href) { linkActive_ = true; linkHref_ = joinUrl(pageUrl_, href); linkNode_ = idx; }
 		for (int c : node.children) resolveAndRender(c, as);
 		linkActive_ = prev;
 		linkHref_ = prevHref;
+		linkNode_ = prevLinkNode;
 		return;
 	}
 	renderNode(idx, st);
@@ -888,6 +1034,12 @@ bool PageLayout::render(PageModel& out, const std::string& pageUrl)
 		out.errorText = "Page vide";
 		return false;
 	}
+	for (const Node& node : doc_->nodes)
+		if (node.isElement() && node.tag == "script")
+		{
+			out.jsUsed = true;
+			break;
+		}
 
 	int cap = set_->maxPageHeight > 0 ? set_->maxPageHeight : NW_MAX_PAGE_HEIGHT;
 	while (!out.bmp.create(NW_PAGE_WIDTH, cap))
@@ -948,10 +1100,10 @@ bool PageLayout::render(PageModel& out, const std::string& pageUrl)
 
 	defaultTextColor_ = defaultText;
 	(*target_).clear(defaultBg);
-	pageBg565_ = target_->px ? target_->px[0] : 0xFFFF;
 
 	x0_ = 4; x1_ = NW_PAGE_WIDTH - 4;
 	ix_ = x0_; iy_ = 0; by_ = 0; lineMaxH_ = 0;
+	pendingSpace_ = false;
 	renderDepth_ = 0;
 	formCounter_ = 0; curFormId_ = -1; curFormAction_.clear(); curFormMethod_.clear();
 	linkActive_ = false; linkHref_.clear();
@@ -962,13 +1114,17 @@ bool PageLayout::render(PageModel& out, const std::string& pageUrl)
 	if (by_ < iy_ + lineMaxH_) by_ = iy_ + lineMaxH_;
 
 	out.height = by_ + 2;
-	if (out.height > cap) out.height = cap;
+	if (out.height >= cap) { out.height = cap; out.truncated = true; }
 
 	// associe les champs aux formulaires
 	for (auto& fs : out.submits)
 	{
 		for (const auto& f : out.fields)
-			if (f.formId == fs.formId) fs.fields.push_back((int)(&f - out.fields.data()));
+		{
+			// Si le champ appartient a ce formulaire, ou si le champ est orphelin (ex: input CSRF)
+			if (f.formId == fs.formId || (f.formId < 0 && (out.submits.size() == 1 || fs.formId == 1)))
+				fs.fields.push_back((int)(&f - out.fields.data()));
+		}
 	}
 	return true;
 }

@@ -51,7 +51,7 @@ std::string searchUrl(const std::string& query, const std::string& engine)
 	const SearchEngineInfo& e = resolveEngine(engine);
 
 	if (std::string(e.key) == "duckduckgo-lite")
-		return "https://lite.duckduckgo.com/lite/?q=" + q;
+		return "https://html.duckduckgo.com/html/?q=" + q;
 	if (std::string(e.key) == "wikipedia")
 		return "https://fr.m.wikipedia.org/w/index.php?search=" + q;
 	if (std::string(e.key) == "mojeek")

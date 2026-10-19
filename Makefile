@@ -27,6 +27,7 @@ include $(DEVKITARM)/3ds_rules
 TARGET		:=	N3DSWeb
 BUILD		:=	build
 SOURCES		:=	source \
+				source/js \
 				source/network \
 				source/browser \
 				source/html \
@@ -68,6 +69,11 @@ CFLAGS	+=	$(INCLUDE) -D__3DS__
 
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++17
 
+# QuickJS needs a version string and ARM/newlib compatibility flags. Keep
+# these scoped to the third-party C units to avoid hiding project warnings.
+quickjs.o: CFLAGS += -DCONFIG_VERSION=\"v0.4.0\"
+quickjs.o dtoa.o libregexp.o libunicode.o cutils.o: CFLAGS += -Wno-incompatible-pointer-types -Wno-format -Wno-maybe-uninitialized
+
 ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
@@ -94,11 +100,13 @@ export OUTPUT	:=	$(CURDIR)/$(TARGET)
 export TOPDIR	:=	$(CURDIR)
 
 export VPATH	:=	$(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
+			$(CURDIR)/third_party/js_eval/quickjs \
 			$(foreach dir,$(DATA),$(CURDIR)/$(dir))
 
 export DEPSDIR	:=	$(CURDIR)/$(BUILD)
 
 CFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
+CFILES		+=	quickjs.c dtoa.c libregexp.c libunicode.c cutils.c
 CPPFILES	:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
 SFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
 
@@ -107,6 +115,7 @@ export OFILES	:=	$(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(SFILES:.s=.o)
 export HFILES	:=
 
 export INCLUDE	:=	$(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
+			-I$(CURDIR)/third_party/js_eval/quickjs \
 			$(foreach dir,$(LIBDIRS),-I$(dir)/include) \
 			-I$(CURDIR)/$(BUILD)
 

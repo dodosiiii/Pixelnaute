@@ -474,9 +474,17 @@ void BottomUi::drawStatusRow(Browser& b, NetworkManager& net)
 	else
 	{
 		Browser::Tab& t = b.currentTab();
-		if (b.stylesPending())
+		if (t.pageReady && t.page.truncated)
+		{
+			text(bmp_, fitStr("Page tronquee (limite de hauteur)", maxStatusW, 0.52f), 6, 223, 0.52f, C_ACCENT);
+		}
+		else if (b.stylesPending())
 		{
 			text(bmp_, fitStr("Styles...", maxStatusW, 0.52f), 6, 223, 0.52f, C_ACCENT);
+		}
+		else if (b.scriptsPending())
+		{
+			text(bmp_, fitStr("JavaScript...", maxStatusW, 0.52f), 6, 223, 0.52f, C_ACCENT);
 		}
 		else if (net.busy())
 		{
@@ -501,9 +509,9 @@ void BottomUi::drawStatusRow(Browser& b, NetworkManager& net)
 	}
 
 	// Progression : fine ligne collee en haut de l'ecran, plus epaisse et visible.
-	if (net.busy())
+	if (net.busy() || b.scriptsPending())
 	{
-		const float prog = net.progress();
+		const float prog = net.busy() ? net.progress() : 0.0f;
 		// Fond semi-transparent de la barre
 		bmp_.fillRect(0, 0, 320, 3, C_BG_2);
 		const int w = prog > 0.0f ? (int)(prog * 320.0f) : 0;
@@ -849,15 +857,13 @@ void BottomUi::drawSettingsList(Browser& b, WebSettings& set,
 
 void BottomUi::drawAbout()
 {
-	text(bmp_, "Pixelnaute", 12, 92, 1.15f, C_TEXT, true);
-	text(bmp_, "Version " NW_VERSION_STRING " (" __DATE__ ")", 12, 122, 0.75f, C_TEXT_DD);
-	text(bmp_, "Navigateur autonome pour New Nintendo 3DS", 12, 144, 0.75f, C_TEXT);
-
-	text(bmp_, "Aucun PC, aucun proxy : connexion directe.", 12, 166, 0.72f, C_TEXT_D);
-	text(bmp_, "Moteur de recherche reglable dans Reglages.", 12, 188, 0.72f, C_TEXT_D);
-	text(bmp_, "Projet original : @dodosiiii", 12, 205, 0.65f, C_TEXT_DD);
-	text(bmp_, "github.com/dodosiiii/Pixelnaute", 12, 218, 0.6f, C_TEXT_DD);
-	text(bmp_, "Touchez l'ecran pour revenir.", 12, 231, 0.55f, C_TEXT_DD);
+	text(bmp_, "Pixelnaute", 12, 82, 1.05f, C_TEXT, true);
+	text(bmp_, fitStr("Version " NW_VERSION_STRING " (" __DATE__ ")", 296, 0.68f), 12, 108, 0.68f, C_TEXT_DD);
+	text(bmp_, fitStr("Navigateur autonome pour New Nintendo 3DS", 296, 0.68f), 12, 128, 0.68f, C_TEXT);
+	text(bmp_, fitStr("Aucun PC, aucun proxy : connexion directe.", 296, 0.65f), 12, 150, 0.65f, C_TEXT_D);
+	text(bmp_, fitStr("Moteur de recherche reglable dans Reglages.", 296, 0.65f), 12, 171, 0.65f, C_TEXT_D);
+	text(bmp_, fitStr("Projet original : @dodosiiii", 296, 0.62f), 12, 192, 0.62f, C_TEXT_DD);
+	text(bmp_, fitStr("github.com/dodosiiii/Pixelnaute", 296, 0.58f), 12, 211, 0.58f, C_TEXT_DD);
 }
 
 //--------------------------------------------------------------------------
@@ -973,7 +979,7 @@ void BottomUi::navAction(Browser& b, NetworkManager& net, WebSettings& set, int 
 			if (mode_ == UiMode::Browsing) b.back();
 			else
 			{
-				if (mode_ == UiMode::FieldEdit) b.currentTab().focusNode = -1;
+				if (mode_ == UiMode::FieldEdit) b.endEditField();
 				mode_ = UiMode::Browsing;
 			}
 			break;
@@ -1074,7 +1080,7 @@ void BottomUi::commitBuf(Browser& b, WebSettings& set)
 	else if (mode_ == UiMode::FieldEdit)
 	{
 		b.setFieldValue(focusIdx_, buf_);
-		b.currentTab().focusNode = -1;
+		b.endEditField();
 		mode_ = UiMode::Browsing;
 	}
 	else
@@ -1327,7 +1333,7 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 						else
 						{
 							settingsSave(set);
-							toast(set.enableJS ? "JavaScript active (scripts a venir)" : "JavaScript desactive");
+							toast(set.enableJS ? "Runtime JS active (execution web a venir)" : "JavaScript desactive");
 						}
 						dirty_ = true;
 						break;
@@ -1389,7 +1395,7 @@ void BottomUi::handleKeys(Browser& b, NetworkManager& net, WebSettings& set,
 			if (kDown & KEY_DDOWN) { b.scroll(48); dirty_ = true; return; }
 			if (kDown & KEY_B)
 			{
-				if (mode_ == UiMode::FieldEdit) b.currentTab().focusNode = -1;
+				if (mode_ == UiMode::FieldEdit) b.endEditField();
 				mode_ = UiMode::Browsing;
 				buf_.clear();
 				homeTarget_ = false;

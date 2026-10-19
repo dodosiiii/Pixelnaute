@@ -8,8 +8,91 @@
 #include "../js/js_runtime.hpp"
 #include <3ds/allocator/linear.h>
 #include <algorithm>
+#include <functional>
 
 static CssEngine g_emptyCss;
+
+static bool enqueueFetchBridge(void* owner, JSPageBinding* binding, int tabIndex,
+	uint32_t promiseId, bool xhr, const std::string& url, const std::string& method,
+	const std::string& body)
+{
+	return owner && static_cast<Browser*>(owner)->enqueuePageFetch(binding, tabIndex,
+		promiseId, xhr, url, method, body);
+}
+
+static std::string cssColorValue(uint32_t color)
+{
+	char value[8];
+	snprintf(value, sizeof(value), "#%02x%02x%02x",
+		(unsigned int)(color & 0xff), (unsigned int)((color >> 8) & 0xff),
+		(unsigned int)((color >> 16) & 0xff));
+	return value;
+}
+
+static void refreshComputedStyles(Browser::Tab& tab)
+{
+	if (!tab.jsBinding || (tab.jsBinding->computedDomVersion == tab.doc.mutationVersion &&
+		tab.jsBinding->computedCssBytes == tab.css.stylesheetBytes() &&
+		tab.jsBinding->computedStyles.size() == tab.doc.nodes.size())) return;
+	JSPageBinding& binding = *tab.jsBinding;
+	binding.computedStyles.clear(); binding.computedStyles.resize(tab.doc.nodes.size());
+	const Style initial = defaultStyle();
+	std::function<void(int, const Style&, int)> visit = [&](int index, const Style& parent, int depth)
+	{
+		if (depth > 64 || index < 0 || (size_t)index >= tab.doc.nodes.size()) return;
+		const Node& node = tab.doc.nodes[(size_t)index];
+		const std::string tag = node.tag;
+		Style style = tab.css.resolve(tab.doc, index, parent);
+		if (node.isElement())
+		{
+			auto& values = binding.computedStyles[(size_t)index];
+			values["color"] = cssColorValue(style.color);
+			values["backgroundColor"] = style.bgSet ? cssColorValue(style.bg) : "rgba(0, 0, 0, 0)";
+			values["fontSize"] = std::to_string(style.fontSize > 0 ? style.fontSize : 16) + "px";
+			values["fontWeight"] = style.bold ? "700" : "400";
+			values["fontStyle"] = style.italic ? "italic" : "normal";
+			values["textAlign"] = style.align == 1 ? "center" : (style.align == 2 ? "right" : "left");
+			const bool heading = tag.size() == 2 && tag[0] == 'h' && tag[1] >= '1' && tag[1] <= '6';
+			const bool uaBlock = tag == "html" || tag == "body" || tag == "div" || tag == "p" ||
+				tag == "section" || tag == "article" || tag == "header" || tag == "footer" ||
+				tag == "main" || tag == "nav" || tag == "ul" || tag == "ol" || tag == "li" ||
+				heading || tag == "form" || tag == "pre";
+			values["display"] = style.displayNone ? "none" :
+				(style.flex ? "flex" : (style.displayInline ? "inline" :
+					((style.block || uaBlock) ? "block" : "inline")));
+			values["width"] = style.width > 0 ? std::to_string(style.width) + "px" : "auto";
+			values["height"] = style.height > 0 ? std::to_string(style.height) + "px" : "auto";
+			values["marginTop"] = std::to_string(style.marginTop) + "px";
+			values["marginRight"] = style.marginRightAuto ? "auto" : std::to_string(style.marginRight) + "px";
+			values["marginBottom"] = std::to_string(style.marginBottom) + "px";
+			values["marginLeft"] = style.marginLeftAuto ? "auto" : std::to_string(style.marginLeft) + "px";
+			values["paddingTop"] = std::to_string(style.paddingTop) + "px";
+			values["paddingRight"] = std::to_string(style.paddingRight) + "px";
+			values["paddingBottom"] = std::to_string(style.paddingBottom) + "px";
+			values["paddingLeft"] = std::to_string(style.paddingLeft) + "px";
+			values["boxSizing"] = style.borderBox ? "border-box" : "content-box";
+			values["textDecoration"] = style.underline ? "underline" : "none";
+			values["fontFamily"] = style.mono ? "monospace" : "sans-serif";
+		}
+		for (int child : node.children) visit(child, node.isElement() ? style : parent, depth + 1);
+	};
+	if (tab.doc.root >= 0 && (size_t)tab.doc.root < tab.doc.nodes.size())
+		for (int child : tab.doc.nodes[(size_t)tab.doc.root].children) visit(child, initial, 0);
+	binding.computedDomVersion = tab.doc.mutationVersion;
+	binding.computedCssBytes = tab.css.stylesheetBytes();
+}
+
+static void bindBrowserPage(Browser& browser, Browser::Tab& tab, int tabIndex)
+{
+	refreshComputedStyles(tab);
+	if (tab.jsBinding)
+	{
+		tab.jsBinding->fetchOwner = &browser;
+		tab.jsBinding->fetchTabIndex = tabIndex;
+		tab.jsBinding->enqueueFetch = enqueueFetchBridge;
+	}
+	jsPageBindDocument(tab.jsContext, &tab.doc, tab.url.c_str(), tab.jsBinding.get());
+}
 
 // -------------------------------------------------------------------------
 // Detection URL / recherche
@@ -55,7 +138,76 @@ Browser::~Browser()
 bool Browser::initializeJavaScript(Tab& tab)
 {
 	if (!set_.enableJS || tab.jsContext) return true;
-	return jsPageContextCreate(tab.jsRuntime, tab.jsContext);
+	if (!jsPageContextCreate(tab.jsRuntime, tab.jsContext)) return false;
+	if (tab.jsBinding) ++tab.jsBinding->contextGeneration;
+	return true;
+}
+
+bool Browser::enqueuePageFetch(JSPageBinding* binding, int tabIndex, uint32_t promiseId,
+	bool xhr, const std::string& url, const std::string& method, const std::string& body)
+{
+	if (!binding || tabIndex < 0 || tabIndex >= (int)tabs_.size() || fetchQueue_.size() >= 16)
+		return false;
+	const size_t scheme = url.find("://"); if (scheme == std::string::npos) return false;
+	const size_t end = url.find_first_of("/?#", scheme + 3);
+	std::string origin = url.substr(0, end);
+	for (char& ch : origin) ch = (char)tolower((unsigned char)ch);
+	if (origin != binding->origin) return false; // CORS n'est pas encore implémenté.
+	FetchJob job;
+	job.tabIndex = tabIndex; job.promiseId = promiseId; job.generation = binding->contextGeneration; job.xhr = xhr;
+	job.binding = tabs_[(size_t)tabIndex].jsBinding; job.url = url; job.method = method; job.body = body; job.referer = binding->url;
+	fetchQueue_.push_back(std::move(job));
+	return true;
+}
+
+void Browser::serviceFetchQueue()
+{
+	if (fetchActive_ || fetchQueue_.empty() || net_.busy() || net_.state() != NetState::Idle ||
+		requestTab_ >= 0 || cssRequestTab_ >= 0 || scriptRequestTab_ >= 0 || imageRequestTab_ >= 0) return;
+	FetchJob& job = fetchQueue_.front();
+	if (job.tabIndex < 0 || job.tabIndex >= (int)tabs_.size() || job.binding.expired())
+	{ fetchQueue_.erase(fetchQueue_.begin()); return; }
+	if (!net_.start(job.url, 256 * 1024, set_.verifyTLS, job.method, job.body,
+		NetRequestType::Fetch, 10000, job.referer))
+	{
+		NetResponse failed;
+		onFetchResponse(failed); return;
+	}
+	fetchActive_ = true;
+}
+
+void Browser::cancelFetchQueue(const char* reason)
+{
+	for (FetchJob& job : fetchQueue_)
+	{
+		std::shared_ptr<JSPageBinding> binding = job.binding.lock();
+		if (!binding || job.tabIndex < 0 || job.tabIndex >= (int)tabs_.size()) continue;
+		Tab& tab = tabs_[(size_t)job.tabIndex];
+		if (tab.jsBinding == binding && binding->contextGeneration == job.generation && tab.jsRuntime && tab.jsContext)
+		{
+			if (job.xhr) jsPageResolveXHR(tab.jsRuntime, tab.jsContext, job.promiseId, "", "", 0, "", 0, reason);
+			else jsPageResolveFetch(tab.jsRuntime, tab.jsContext, job.promiseId, "", "", 0, "", 0, reason);
+		}
+	}
+	fetchQueue_.clear(); fetchActive_ = false;
+}
+
+void Browser::onFetchResponse(NetResponse& response)
+{
+	if (fetchQueue_.empty()) { fetchActive_ = false; return; }
+	FetchJob job = std::move(fetchQueue_.front()); fetchQueue_.erase(fetchQueue_.begin()); fetchActive_ = false;
+	std::shared_ptr<JSPageBinding> binding = job.binding.lock();
+	if (!binding || job.tabIndex < 0 || job.tabIndex >= (int)tabs_.size()) return;
+	Tab& tab = tabs_[(size_t)job.tabIndex];
+	if (tab.jsBinding != binding || binding->contextGeneration != job.generation || !tab.jsRuntime || !tab.jsContext) return;
+	const char* error = response.ok ? "" : (response.error.empty() ? "Network request failed" : response.error.c_str());
+	if (job.xhr)
+		jsPageResolveXHR(tab.jsRuntime, tab.jsContext, job.promiseId, response.url.c_str(),
+			response.body.data(), response.body.size(), response.contentType.c_str(), response.status, error);
+	else
+		jsPageResolveFetch(tab.jsRuntime, tab.jsContext, job.promiseId,
+			response.url.c_str(), response.body.data(), response.body.size(), response.contentType.c_str(),
+			response.status, error);
 }
 
 void Browser::releaseJavaScript(Tab& tab)
@@ -125,14 +277,16 @@ void Browser::openUrl(const std::string& url, bool record)
 		return;
 	}
 	Tab& t = currentTab();
+	std::string prevUrl = t.url;
 	resetTab(t);
-	loadUrlInto(current_, targetUrl, record);
+	loadUrlInto(current_, targetUrl, record, "GET", "", prevUrl);
 }
 
-void Browser::loadUrlInto(int tabIdx, const std::string& url, bool record, const std::string& method, const std::string& postData)
+void Browser::loadUrlInto(int tabIdx, const std::string& url, bool record, const std::string& method, const std::string& postData, const std::string& referer, const std::string& csrfToken)
 {
 	clearStyleQueue();
 	clearImageQueue();
+	clearScriptQueue();
 	cancelTabRequest(tabIdx);
 	responsePending_ = false;
 	layoutPending_ = false;
@@ -161,7 +315,7 @@ void Browser::loadUrlInto(int tabIdx, const std::string& url, bool record, const
 		t.fwd.clear();
 	}
 	requestTab_ = tabIdx;
-	if (!net_.start(url, (size_t)set_.maxHtmlBytes, set_.verifyTLS, method, postData))
+	if (!net_.start(url, (size_t)set_.maxHtmlBytes, set_.verifyTLS, method, postData, NetRequestType::Page, 30000, referer, csrfToken))
 	{
 		pendingResponse_.url = url;
 		pendingResponse_.error = "Impossible de demarrer la requete reseau.";
@@ -174,6 +328,7 @@ void Browser::reload()
 {
 	clearStyleQueue();
 	clearImageQueue();
+	clearScriptQueue();
 	responsePending_ = false;
 	layoutPending_ = false;
 	pendingResponse_ = NetResponse();
@@ -196,7 +351,9 @@ void Browser::stop()
 {
 	clearStyleQueue();
 	clearImageQueue();
+	clearScriptQueue();
 	net_.cancel();
+	cancelFetchQueue("fetch aborted");
 	requestTab_ = -1;
 	responsePending_ = false;
 	layoutPending_ = false;
@@ -292,8 +449,7 @@ std::string Browser::internalHomeHtml(const std::string& engine)
 
 	// --- en-tete ---
 	h += "<div style=\"text-align: center; margin-top: 26px; margin-bottom: 4px\">"
-	     "<span style=\"font-size: 40px; font-weight: bold; color: #F2A25C\">Pixel</span>"
-	     "<span style=\"font-size: 40px; font-weight: bold; color: #ECE8E8\">naute</span></div>";
+	     "<span style=\"font-size: 40px; font-weight: bold; color: #F2A25C\">Pixelnaute</span></div>";
 	h += "<div style=\"text-align: center; font-size: 13px; color: #9A8A8A; "
 	     "margin-bottom: 18px\">Navigateur autonome &middot; New Nintendo 3DS</div>";
 
@@ -453,6 +609,15 @@ void Browser::closeTab(int index)
 	else if (requestTab_ > index)
 		--requestTab_;
 	releaseJavaScript(tabs_[index]);
+	for (size_t i = 0; i < fetchQueue_.size(); )
+	{
+		if (fetchQueue_[i].tabIndex == index)
+		{
+			if (fetchActive_ && i == 0) { fetchQueue_[i].tabIndex = -1; ++i; }
+			else fetchQueue_.erase(fetchQueue_.begin() + i);
+		}
+		else { if (fetchQueue_[i].tabIndex > index) --fetchQueue_[i].tabIndex; ++i; }
+	}
 	tabs_.erase(tabs_.begin() + index);
 	if (current_ >= (int)tabs_.size()) current_ = (int)tabs_.size() - 1;
 }
@@ -463,6 +628,7 @@ void Browser::selectTab(int index)
 	{
 		clearStyleQueue();
 		clearImageQueue();
+		clearScriptQueue();
 		current_ = index;
 	}
 }
@@ -472,6 +638,7 @@ void Browser::nextTab()
 	if (tabs_.empty()) return;
 	clearStyleQueue();
 	clearImageQueue();
+	clearScriptQueue();
 	current_ = (current_ + 1) % (int)tabs_.size();
 }
 
@@ -480,6 +647,7 @@ void Browser::prevTab()
 	if (tabs_.empty()) return;
 	clearStyleQueue();
 	clearImageQueue();
+	clearScriptQueue();
 	current_ = (current_ == 0) ? (int)tabs_.size() - 1 : current_ - 1;
 }
 
@@ -505,9 +673,21 @@ void Browser::pollNetwork()
 	{
 		if (net_.takeResult(pendingResponse_))
 		{
+			if (pendingResponse_.requestType == NetRequestType::Fetch)
+			{
+				onFetchResponse(pendingResponse_);
+				pendingResponse_ = NetResponse();
+				return;
+			}
 			if (pendingResponse_.requestType == NetRequestType::Stylesheet)
 			{
 				onStylesheetResponse(pendingResponse_);
+				pendingResponse_ = NetResponse();
+				return;
+			}
+			if (pendingResponse_.requestType == NetRequestType::Script)
+			{
+				onScriptResponse(pendingResponse_);
 				pendingResponse_ = NetResponse();
 				return;
 			}
@@ -539,11 +719,173 @@ bool Browser::stylesPending() const
 		(cssQueueTab_ == current_ && !cssQueue_.empty());
 }
 
+bool Browser::scriptsPending() const
+{
+	return scriptRequestTab_ == current_ ||
+		(scriptQueueTab_ == current_ && !scriptQueue_.empty());
+}
+
+bool Browser::tickScripts()
+{
+	bool redraw = scriptRedrawPending_;
+	scriptRedrawPending_ = false;
+	if (current_ >= 0 && current_ < (int)tabs_.size())
+	{
+		Tab& activeTab = tabs_[(size_t)current_];
+		refreshComputedStyles(activeTab);
+		if (activeTab.jsRuntime && activeTab.jsContext)
+			jsPageTick(activeTab.jsRuntime, activeTab.jsContext);
+		if (activeTab.jsBinding && activeTab.jsBinding->navigationMode != 0)
+		{
+			const int mode = activeTab.jsBinding->navigationMode;
+			const std::string target = activeTab.jsBinding->pendingNavigation;
+			activeTab.jsBinding->navigationMode = 0;
+			activeTab.jsBinding->pendingNavigation.clear();
+			if (mode == 3) reload();
+			else if (mode == 4)
+			{
+				const int delta = activeTab.jsBinding->historyDelta;
+				if (delta == 0) reload();
+				else if (delta < 0) for (int i = 0; i < -delta; ++i) back();
+				else for (int i = 0; i < delta; ++i) forward();
+			}
+			else openUrl(target, mode == 1);
+			return true;
+		}
+		if (activeTab.pageReady && activeTab.renderedDomVersion != activeTab.doc.mutationVersion)
+		{
+			const int savedScroll = activeTab.scrollY;
+			rerenderTab(current_);
+			activeTab.scrollY = savedScroll;
+			redraw = true;
+		}
+	}
+	serviceFetchQueue();
+	if (scriptQueueTab_ != current_ || scriptRequestTab_ >= 0) return redraw;
+	int inlineBudget = 2; // garder la boucle de rendu fluide
+	while (!scriptQueue_.empty() && inlineBudget > 0)
+	{
+		ScriptRequest& next = scriptQueue_.front();
+		if (next.external)
+		{
+			if (net_.busy() || net_.state() != NetState::Idle) return redraw;
+			ScriptRequest request = std::move(next);
+			scriptQueue_.erase(scriptQueue_.begin());
+			if (!net_.start(request.url, 256 * 1024, set_.verifyTLS, "GET", "",
+				NetRequestType::Script, 8000, request.referer))
+				continue;
+			scriptRequestTab_ = current_;
+			scriptRequestUrl_ = request.url;
+			return redraw;
+		}
+		ScriptRequest request = std::move(next);
+		scriptQueue_.erase(scriptQueue_.begin());
+		--inlineBudget;
+		Tab& tab = tabs_[(size_t)current_];
+		if (tab.jsRuntime && tab.jsContext && !request.source.empty())
+		{
+			bindBrowserPage(*this, tab, current_);
+			const bool ok = jsPageEval(tab.jsRuntime, tab.jsContext, request.source.c_str(), request.source.size(), "<inline-script>");
+			if (!ok) diagBootNote("js_inline_script_failed", 1);
+			const int savedScroll = tab.scrollY;
+			rerenderTab(current_);
+			tab.scrollY = savedScroll;
+			redraw = true;
+		}
+	}
+	if (scriptQueue_.empty())
+	{
+		const int readyTab = scriptQueueTab_;
+		if (readyTab >= 0 && readyTab < (int)tabs_.size() &&
+			tabs_[(size_t)readyTab].jsContext)
+		{
+			Tab& tab = tabs_[(size_t)readyTab];
+			bindBrowserPage(*this, tab, readyTab);
+			jsPageDispatchEvent(tab.jsContext, "DOMContentLoaded", "document");
+			jsPageDispatchEvent(tab.jsContext, "load", "window");
+			const int savedScroll = tab.scrollY;
+			rerenderTab(readyTab);
+			tab.scrollY = savedScroll;
+			redraw = true;
+		}
+		scriptQueueTab_ = -1;
+	}
+	serviceFetchQueue();
+	return redraw;
+}
+
+void Browser::clearScriptQueue()
+{
+	if (scriptRequestTab_ >= 0) net_.cancel();
+	scriptQueue_.clear();
+	scriptQueueTab_ = -1;
+	scriptRequestTab_ = -1;
+	scriptRequestUrl_.clear();
+	scriptPageUrl_.clear();
+	scriptRedrawPending_ = false;
+}
+
+void Browser::queueScripts(int tabIdx, const Document& doc, const std::string& pageUrl)
+{
+	scriptQueue_.clear();
+	scriptQueueTab_ = tabIdx;
+	scriptPageUrl_ = pageUrl;
+	for (const Node& node : doc.nodes)
+	{
+		if (!node.isElement() || node.tag != "script") continue;
+		const char* src = node.getAttr("src");
+		const char* type = node.getAttr("type");
+		const std::string scriptType = type ? toLower(strTrim(type)) : "";
+		if (!scriptType.empty() && scriptType != "text/javascript" &&
+			scriptType != "application/javascript") continue;
+		if (src && *src)
+		{
+			const std::string url = urlJoin(pageUrl, src);
+			if (!strStartsWith(url, "http://") && !strStartsWith(url, "https://")) continue;
+			if (scriptQueue_.size() >= 12) break;
+			scriptQueue_.push_back({ url, pageUrl, std::string(), true });
+		}
+		else
+		{
+			const std::string source = doc.textOf((int)(&node - doc.nodes.data()));
+			if (source.empty() || source.size() > 128 * 1024) continue;
+			if (scriptQueue_.size() >= 32) break;
+			scriptQueue_.push_back({ std::string(), pageUrl, source, false });
+		}
+	}
+}
+
+void Browser::onScriptResponse(NetResponse& resp)
+{
+	const int tabIdx = scriptRequestTab_;
+	scriptRequestTab_ = -1;
+	const std::string requestedUrl = scriptRequestUrl_;
+	scriptRequestUrl_.clear();
+	if (tabIdx < 0 || tabIdx >= (int)tabs_.size()) return;
+	Tab& tab = tabs_[(size_t)tabIdx];
+	if (tabIdx != current_ || tab.url != scriptPageUrl_) { clearScriptQueue(); return; }
+	if (resp.ok && !resp.body.empty() && resp.body.size() <= 256 * 1024 &&
+		tab.jsRuntime && tab.jsContext)
+	{
+		bindBrowserPage(*this, tab, current_);
+		if (!jsPageEval(tab.jsRuntime, tab.jsContext, resp.body.c_str(), resp.body.size(), requestedUrl.c_str()))
+			diagBootNote("js_external_script_failed", 1);
+		const int savedScroll = tab.scrollY;
+		rerenderTab(tabIdx);
+		tab.scrollY = savedScroll;
+		scriptRedrawPending_ = true;
+	}
+	if (scriptQueue_.empty()) scriptQueueTab_ = -1;
+}
+
 bool Browser::tickStyles()
 {
 	const bool redraw = styleRedrawPending_;
 	styleRedrawPending_ = false;
-	if (cssLayoutPending_)
+	// Attendre la fin de la file : refaire le layout entre les feuilles
+	// applique la CSS en plusieurs etapes et peut bloquer l'interface plusieurs
+	// fois pour une meme page. Un seul rendu final incorpore toutes les regles.
+	if (cssLayoutPending_ && cssRequestTab_ < 0 && cssQueue_.empty())
 	{
 		const int tabIdx = cssLayoutTab_;
 		const std::string url = cssLayoutUrl_;
@@ -571,6 +913,7 @@ bool Browser::tickStyles()
 		if (cssQueue_.empty()) cssQueueTab_ = -1;
 		return redraw;
 	}
+	cssRequestOrder_ = request.sourceOrder;
 	cssRequestTab_ = current_;
 	return redraw;
 }
@@ -581,8 +924,8 @@ void Browser::clearStyleQueue()
 	cssQueue_.clear();
 	cssQueueTab_ = -1;
 	cssRequestTab_ = -1;
+	cssRequestOrder_ = -1;
 	cssPageUrl_.clear();
-	cssRelayoutCount_ = 0;
 	styleRedrawPending_ = false;
 	if (cssLayoutPending_) layoutPending_ = false;
 	cssLayoutPending_ = false;
@@ -595,25 +938,27 @@ void Browser::queueStyles(int tabIdx, const Document& doc, const std::string& pa
 	cssQueue_.clear();
 	cssQueueTab_ = tabIdx;
 	cssPageUrl_ = pageUrl;
-	cssRelayoutCount_ = 0;
 	cssStartMs_ = timeMs();
-	for (const Node& node : doc.nodes)
+	for (size_t i = 0; i < doc.nodes.size(); ++i)
 	{
+		const Node& node = doc.nodes[i];
 		if (!node.isElement() || node.tag != "link") continue;
 		const char* rel = node.getAttr("rel");
 		const char* href = node.getAttr("href");
 		const char* media = node.getAttr("media");
 		if (!rel || !href || !*href || toLower(rel).find("stylesheet") == std::string::npos) continue;
-		if (media && toLower(media).find("print") != std::string::npos) continue;
+		if (media)
+		{
+			const std::string mediaTypes = toLower(media);
+			if (mediaTypes.find("print") != std::string::npos &&
+				mediaTypes.find("screen") == std::string::npos) continue;
+		}
 		std::string url = urlJoin(pageUrl, href);
-		const std::string lowerUrl = toLower(url);
-		if (lowerUrl.find("font") != std::string::npos ||
-			lowerUrl.find("icon") != std::string::npos ||
-			lowerUrl.find("print") != std::string::npos) continue;
 		if (!strStartsWith(url, "http://") && !strStartsWith(url, "https://")) continue;
 		CssRequest request;
 		request.url = std::move(url);
 		request.referer = pageUrl;
+		request.sourceOrder = (int)i;
 		cssQueue_.push_back(std::move(request));
 	}
 	if (cssQueue_.empty()) cssQueueTab_ = -1;
@@ -627,10 +972,9 @@ void Browser::onStylesheetResponse(NetResponse& resp)
 	Tab& tab = tabs_[tabIdx];
 	if (tabIdx != current_ || tab.url != cssPageUrl_) { clearStyleQueue(); return; }
 	const size_t oldRuleCount = tab.css.rules().size();
-	if (resp.ok && !resp.body.empty()) tab.css.parseStylesheet(resp.body);
-	if (tab.css.rules().size() != oldRuleCount && cssRelayoutCount_ < 2)
+	if (resp.ok && !resp.body.empty()) tab.css.parseStylesheet(resp.body, cssRequestOrder_);
+	if (tab.css.rules().size() != oldRuleCount)
 	{
-		++cssRelayoutCount_;
 		cssLayoutPending_ = true;
 		cssLayoutTab_ = tabIdx;
 		cssLayoutUrl_ = tab.url;
@@ -809,7 +1153,7 @@ void Browser::onResponse(NetResponse& resp)
 	// on affiche cette version a la place.
 	std::string rewritten;
 	diagStage("parse html");
-	if (searchPageRewrite(resp.body, rewritten))
+	if (searchPageRewrite(resp.body, rewritten, t.url))
 	{
 		Document dr;
 		if (htmlParse(rewritten, dr))
@@ -958,6 +1302,11 @@ void Browser::renderInto(int tabIdx, Document&& doc)
 	tab.doc = std::move(doc);
 	if (set_.enableJS && !initializeJavaScript(tab))
 		diagBootNote("js_context_init_failed", 1);
+	if (set_.enableJS && tab.jsRuntime && tab.jsContext)
+	{
+			bindBrowserPage(*this, tab, tabIdx);
+		queueScripts(tabIdx, tab.doc, tab.url);
+	}
 	rerenderTab(tabIdx);
 }
 
@@ -966,6 +1315,9 @@ void Browser::rerenderTab(int tabIdx)
 	diagStage("layout");
 	pendingImages_.clear();
 	Tab& tab = tabs_[tabIdx];
+	int focusedDomNode = -1;
+	if (tab.focusNode >= 0 && tab.focusNode < (int)tab.page.fields.size())
+		focusedDomNode = tab.page.fields[(size_t)tab.focusNode].node;
 	tab.title = tab.doc.title();
 	tab.pageReady = false;
 
@@ -1019,8 +1371,15 @@ void Browser::rerenderTab(int tabIdx)
 	}
 
 	tab.pageReady = true;
+	if (focusedDomNode >= 0)
+	{
+		tab.focusNode = -1;
+		for (size_t i = 0; i < tab.page.fields.size(); ++i)
+			if (tab.page.fields[i].node == focusedDomNode) { tab.focusNode = (int)i; break; }
+	}
 	if (tab.page.jsUsed && !set_.enableJS)
 		tab.page.errorCode = 4; // avertissement JavaScript (affiche par l'UI)
+	tab.renderedDomVersion = tab.doc.mutationVersion;
 
 	// Vignettes : telechargees apres la mise en page, une fois qu'on connait
 	// les adresses reellement presentes sur la page.
@@ -1084,38 +1443,119 @@ void Browser::tap(int x, int y)
 	// focusNode restait positionne apres le premier champ touche, et tout
 	// appui suivant (meme sur un lien) rouvrait le clavier : impossible de
 	// continuer a se servir de la page.
-	tab.focusNode = -1;
+	endEditField();
 
 	// lien ?
 	int idx = hitLink(x, y);
 	if (idx >= 0)
 	{
-		const std::string& url = tab.page.links[idx].url;
+		const LinkBox& link = tab.page.links[idx];
+		if (tab.jsContext && link.node >= 0)
+		{
+			tab.doc.hoveredNode = link.node; ++tab.doc.mutationVersion; refreshComputedStyles(tab);
+			const std::string target = "node:" + std::to_string(link.node);
+			const bool pointerAllowed = jsPageDispatchEvent(tab.jsContext, "pointerdown", target.c_str(), nullptr, x, y + tab.scrollY);
+			jsPageDispatchEvent(tab.jsContext, "pointerup", target.c_str(), nullptr, x, y + tab.scrollY);
+			const bool clickAllowed = pointerAllowed && jsPageDispatchEvent(tab.jsContext, "click", target.c_str());
+			tab.doc.hoveredNode = -1; ++tab.doc.mutationVersion;
+			if (!clickAllowed) return;
+		}
+		const std::string& url = link.url;
 		if (strStartsWith(url, "javascript:")) return;
 		if (strStartsWith(url, "mailto:")) return;
 		openUrl(url);
 		return;
 	}
 
-	// champ de texte (coordonnees de page : on ajoute le defilement)
+	// champ de formulaire (coordonnees de page : on ajoute le defilement)
 	const int pageY = y + tab.scrollY;
 	for (size_t i = 0; i < tab.page.fields.size(); i++)
 	{
-		const FormField& f = tab.page.fields[i];
+		FormField& f = tab.page.fields[i];
 		if (x >= f.x && x < f.x + f.w && pageY >= f.y && pageY < f.y + f.h)
 		{
+			if (f.node >= 0 && tab.doc.nodes[(size_t)f.node].hasAttr("disabled")) return;
+			const std::string target = "node:" + std::to_string(f.node);
+			if (tab.jsContext && f.node >= 0)
+			{
+				tab.doc.hoveredNode = f.node; ++tab.doc.mutationVersion; refreshComputedStyles(tab);
+				const bool pointerAllowed = jsPageDispatchEvent(tab.jsContext, "pointerdown", target.c_str(), nullptr, x, pageY);
+				jsPageDispatchEvent(tab.jsContext, "pointerup", target.c_str(), nullptr, x, pageY);
+				const bool clickAllowed = pointerAllowed && jsPageDispatchEvent(tab.jsContext, "click", target.c_str());
+				tab.doc.hoveredNode = -1; ++tab.doc.mutationVersion;
+				if (!clickAllowed) return;
+			}
+			if (f.kind == FieldCheckbox)
+			{
+				const bool checked = f.checked;
+				f.checked = !checked;
+				if (f.node >= 0)
+				{
+					if (checked) tab.doc.removeAttr(f.node, "checked");
+					else tab.doc.setAttr(f.node, "checked", "");
+				}
+				if (tab.page.bmp.px && f.w > 4 && f.h > 4)
+				{
+					tab.page.bmp.fillRect(f.x + 1, f.y + 3, f.w - 2, f.h - 2, 0xFFFFFFFF);
+					if (!checked)
+						tab.page.bmp.fillRect(f.x + 3, f.y + 5, f.w - 6, f.h - 6, 0xFF9E5A2E);
+				}
+				if (tab.jsContext && f.node >= 0)
+				{
+					jsPageDispatchEvent(tab.jsContext, "input", target.c_str());
+					jsPageDispatchEvent(tab.jsContext, "change", target.c_str());
+					f.checked = tab.doc.nodes[(size_t)f.node].hasAttr("checked");
+				}
+				return;
+			}
+			else if (f.kind == FieldRadio)
+			{
+				f.checked = true;
+				if (f.node >= 0) tab.doc.setAttr(f.node, "checked", "");
+				for (size_t j = 0; j < tab.page.fields.size(); j++)
+				{
+					FormField& other = tab.page.fields[j];
+					if (j != i && other.kind == FieldRadio && other.formId == f.formId && other.name == f.name)
+					{
+						other.checked = false;
+						if (other.node >= 0) tab.doc.removeAttr(other.node, "checked");
+						if (tab.page.bmp.px && other.w > 4 && other.h > 4)
+							tab.page.bmp.fillRect(other.x + 1, other.y + 3, other.w - 2, other.h - 2, 0xFFFFFFFF);
+					}
+				}
+				if (tab.page.bmp.px && f.w > 4 && f.h > 4)
+					tab.page.bmp.fillRect(f.x + 3, f.y + 5, f.w - 6, f.h - 6, 0xFF9E5A2E);
+				if (tab.jsContext && f.node >= 0)
+				{
+					jsPageDispatchEvent(tab.jsContext, "input", target.c_str());
+					jsPageDispatchEvent(tab.jsContext, "change", target.c_str());
+					f.checked = tab.doc.nodes[(size_t)f.node].hasAttr("checked");
+				}
+				return;
+			}
 			beginEditField((int)i);
 			return;
 		}
 	}
 
-	// bouton submit (coordonnees de page)
+	// bouton submit ou action (coordonnees de page)
 	for (size_t i = 0; i < tab.page.submits.size(); i++)
 	{
 		const FormSubmit& fs = tab.page.submits[i];
 		if (x >= fs.x && x < fs.x + fs.w &&
 			pageY >= fs.y && pageY < fs.y + fs.h)
 		{
+			if (fs.node >= 0 && tab.doc.nodes[(size_t)fs.node].hasAttr("disabled")) return;
+			if (tab.jsContext && fs.node >= 0)
+			{
+				tab.doc.hoveredNode = fs.node; ++tab.doc.mutationVersion; refreshComputedStyles(tab);
+				const std::string target = "node:" + std::to_string(fs.node);
+				const bool pointerAllowed = jsPageDispatchEvent(tab.jsContext, "pointerdown", target.c_str(), nullptr, x, pageY);
+				jsPageDispatchEvent(tab.jsContext, "pointerup", target.c_str(), nullptr, x, pageY);
+				const bool clickAllowed = pointerAllowed && jsPageDispatchEvent(tab.jsContext, "click", target.c_str());
+				tab.doc.hoveredNode = -1; ++tab.doc.mutationVersion;
+				if (!clickAllowed) return;
+			}
 			submitFormByPage((int)i);
 			return;
 		}
@@ -1126,14 +1566,84 @@ void Browser::beginEditField(int fieldIndex)
 {
 	Tab& tab = currentTab();
 	if (fieldIndex < 0 || fieldIndex >= (int)tab.page.fields.size()) return;
+	if (tab.focusNode >= 0 && tab.focusNode != fieldIndex) endEditField();
+	const FormField& field = tab.page.fields[(size_t)fieldIndex];
+	if (field.node >= 0 && tab.doc.nodes[(size_t)field.node].hasAttr("readonly")) return;
 	tab.focusNode = fieldIndex;
+	if (field.node >= 0 && tab.doc.focusedNode != field.node)
+	{
+		tab.doc.focusedNode = field.node; ++tab.doc.mutationVersion; refreshComputedStyles(tab);
+	}
+	if (tab.jsContext && field.node >= 0)
+	{
+		const std::string target = "node:" + std::to_string(field.node);
+		jsPageDispatchEvent(tab.jsContext, "focus", target.c_str());
+	}
+}
+
+void Browser::endEditField()
+{
+	Tab& tab = currentTab();
+	const int fieldIndex = tab.focusNode;
+	if (fieldIndex >= 0 && fieldIndex < (int)tab.page.fields.size())
+	{
+		const FormField& field = tab.page.fields[(size_t)fieldIndex];
+		if (tab.jsContext && field.node >= 0)
+		{
+			const std::string target = "node:" + std::to_string(field.node);
+			jsPageDispatchEvent(tab.jsContext, "blur", target.c_str());
+			jsPageDispatchEvent(tab.jsContext, "change", target.c_str());
+		}
+	}
+	tab.focusNode = -1;
+	if (tab.doc.focusedNode >= 0) { tab.doc.focusedNode = -1; ++tab.doc.mutationVersion; refreshComputedStyles(tab); }
 }
 
 bool Browser::setFieldValue(int fieldIndex, const std::string& v)
 {
 	Tab& tab = currentTab();
 	if (fieldIndex < 0 || fieldIndex >= (int)tab.page.fields.size()) return false;
+	FormField& field = tab.page.fields[fieldIndex];
+	const std::string previousValue = field.value;
+	if (tab.jsContext && field.node >= 0)
+	{
+		std::string key = "Unidentified";
+		if (v.size() < previousValue.size()) key = "Backspace";
+		else if (v.size() > previousValue.size()) key = v.substr(previousValue.size());
+		const std::string target = "node:" + std::to_string(field.node);
+		if (!jsPageDispatchEvent(tab.jsContext, "keydown", target.c_str(), key.c_str())) return false;
+	}
 	tab.page.fields[fieldIndex].value = v;
+	if (field.node >= 0) tab.doc.setAttr(field.node, "value", v);
+	if (tab.jsContext && tab.page.fields[fieldIndex].node >= 0)
+	{
+		const std::string target = "node:" + std::to_string(field.node);
+		jsPageDispatchEvent(tab.jsContext, "input", target.c_str());
+		std::string key = v.size() < previousValue.size() ? "Backspace" :
+			(v.size() > previousValue.size() ? v.substr(previousValue.size()) : "Unidentified");
+		jsPageDispatchEvent(tab.jsContext, "keyup", target.c_str(), key.c_str());
+		if (field.node >= 0)
+		{
+			const char* domValue = tab.doc.nodes[(size_t)field.node].getAttr("value");
+			if (domValue) field.value = domValue;
+		}
+	}
+
+	// Rafraichir le rendu du champ modifie sur le bitmap de page
+	const FormField& f = tab.page.fields[fieldIndex];
+	if (tab.page.bmp.px && f.w > 4 && f.h > 4)
+	{
+		tab.page.bmp.fillRect(f.x + 1, f.y + 1, f.w - 2, f.h - 2, 0xFFF4F4F4);
+		tab.page.bmp.addRect(f.x, f.y, f.w, f.h, 0xFF968A8A, 1);
+		if (!v.empty())
+		{
+			std::string shown = v;
+			if (f.kind == FieldPassword)
+				shown = std::string(v.size(), '*');
+			if (shown.size() > 18) shown = shown.substr(0, 17) + "...";
+			TextEngine::instance().drawLine(tab.page.bmp, shown, f.x + 3, f.y + 3, 0.7f, 0xFF2C2222, false, false);
+		}
+	}
 	return true;
 }
 
@@ -1153,6 +1663,96 @@ void Browser::submitFormByPage(int submitIndex)
 	Tab& tab = currentTab();
 	if (submitIndex < 0 || submitIndex >= (int)tab.page.submits.size()) return;
 	const FormSubmit& fs = tab.page.submits[submitIndex];
+	auto syncFields = [&]() {
+		for (int fieldIndex : fs.fields)
+		{
+			if (fieldIndex < 0 || fieldIndex >= (int)tab.page.fields.size()) continue;
+			FormField& field = tab.page.fields[(size_t)fieldIndex];
+			if (field.node < 0 || (size_t)field.node >= tab.doc.nodes.size()) continue;
+			const Node& node = tab.doc.nodes[(size_t)field.node];
+			field.checked = node.hasAttr("checked");
+			if (const char* value = node.getAttr("value")) field.value = value;
+			field.disabled = node.hasAttr("disabled");
+		}
+	};
+	syncFields();
+	for (int fieldIndex : fs.fields)
+	{
+		if (fieldIndex < 0 || fieldIndex >= (int)tab.page.fields.size()) continue;
+		const FormField& field = tab.page.fields[(size_t)fieldIndex];
+		if (field.disabled || field.node < 0 || (size_t)field.node >= tab.doc.nodes.size()) continue;
+		const Node& node = tab.doc.nodes[(size_t)field.node];
+		if (node.hasAttr("readonly")) continue;
+		const bool required = node.hasAttr("required");
+		bool invalid = false;
+		if (field.kind == FieldCheckbox) invalid = required && !field.checked;
+		else if (field.kind == FieldRadio)
+		{
+			bool anyChecked = false;
+			for (int otherIndex : fs.fields)
+				if (otherIndex >= 0 && otherIndex < (int)tab.page.fields.size())
+				{
+					const FormField& other = tab.page.fields[(size_t)otherIndex];
+					if (other.kind == FieldRadio && other.formId == field.formId &&
+						other.name == field.name && other.checked) anyChecked = true;
+				}
+			invalid = required && !anyChecked;
+		}
+		else
+		{
+			invalid = required && strTrim(field.value).empty();
+			const char* type = node.getAttr("type");
+			if (!invalid && !strTrim(field.value).empty() && type && toLower(type) == "email")
+			{
+				const size_t at = field.value.find('@');
+				invalid = at == std::string::npos || at == 0 ||
+					field.value.find('.', at == std::string::npos ? 0 : at + 1) == std::string::npos;
+			}
+			if (!invalid && !strTrim(field.value).empty() && type && toLower(type) == "number")
+			{
+				char* end = nullptr;
+				std::strtod(field.value.c_str(), &end);
+				invalid = end == field.value.c_str() || !end || *end != '\0';
+			}
+		}
+		const char* minLength = node.getAttr("minlength");
+		if (!invalid && minLength && field.value.size() < (size_t)std::max(0, atoi(minLength))) invalid = true;
+		const char* maxLength = node.getAttr("maxlength");
+		if (!invalid && maxLength && field.value.size() > (size_t)std::max(0, atoi(maxLength))) invalid = true;
+		if (invalid)
+		{
+			if (tab.jsContext)
+			{
+				const std::string invalidTarget = "node:" + std::to_string(field.node);
+				jsPageDispatchEvent(tab.jsContext, "invalid", invalidTarget.c_str());
+			}
+			if (field.kind != FieldCheckbox && field.kind != FieldRadio)
+				beginEditField(fieldIndex);
+			return;
+		}
+	}
+	int formNode = fs.node;
+	while (formNode >= 0 && (size_t)formNode < tab.doc.nodes.size() &&
+		tab.doc.nodes[(size_t)formNode].tag != "form")
+		formNode = tab.doc.nodes[(size_t)formNode].parent;
+	if (formNode >= 0 && tab.jsContext)
+	{
+		const std::string formTarget = "node:" + std::to_string(formNode);
+		if (!jsPageDispatchEvent(tab.jsContext, "submit", formTarget.c_str())) return;
+	}
+	syncFields();
+
+	// Actions speciales
+	if (fs.action == "nw://back") { back(); return; }
+	if (fs.action == "nw://reload") { reload(); return; }
+
+	// Bouton d'action / navigation simple (hors formulaire complet)
+	if (fs.fields.empty() && toLower(fs.method) != "post" && !fs.action.empty() && fs.action != tab.url)
+	{
+		openUrl(urlJoin(tab.url, fs.action));
+		return;
+	}
+
 	const bool isPost = (toLower(fs.method) == "post");
 
 	std::string target = fs.action;
@@ -1162,20 +1762,48 @@ void Browser::submitFormByPage(int submitIndex)
 	if (strStartsWith(toLower(target), "javascript:")) return;
 
 	std::string q;
+	bool hasCsrf = false;
 	for (int fi : fs.fields)
 	{
 		if (fi < 0 || fi >= (int)tab.page.fields.size()) continue;
 		const FormField& f = tab.page.fields[fi];
-		if (f.name.empty()) continue;
+		if (f.name.empty() || f.disabled) continue;
+		// Ne pas soumettre les cases non cochees
+		if ((f.kind == FieldCheckbox || f.kind == FieldRadio) && !f.checked)
+			continue;
+		std::string nLow = toLower(f.name);
+		if (nLow.find("csrf") != std::string::npos ||
+		    nLow.find("token") != std::string::npos ||
+		    nLow.find("authenticity") != std::string::npos)
+		{
+			hasCsrf = true;
+		}
 		if (!q.empty()) q += "&";
 		q += urlEncode(f.name) + "=" + urlEncode(f.value);
 	}
 
+	// Ajouter le bouton submit clique s'il a un name/value
+	if (!fs.name.empty())
+	{
+		if (!q.empty()) q += "&";
+		q += urlEncode(fs.name) + "=" + urlEncode(fs.value);
+	}
+
+	// Si aucun champ CSRF trouve mais que la page a un jeton CSRF detecte (meta tag)
+	std::string pageCsrf = tab.page.csrfToken;
+	if (!hasCsrf && !pageCsrf.empty())
+	{
+		std::string paramName = !tab.page.csrfParam.empty() ? tab.page.csrfParam : "csrf_token";
+		if (!q.empty()) q += "&";
+		q += urlEncode(paramName) + "=" + urlEncode(pageCsrf);
+	}
+
+	std::string prevUrl = tab.url;
 	if (isPost)
 	{
 		cancelTabRequest(current_);
 		resetTab(tab);
-		loadUrlInto(current_, target, true, "POST", q);
+		loadUrlInto(current_, target, true, "POST", q, prevUrl, pageCsrf);
 	}
 	else
 	{

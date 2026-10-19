@@ -15,6 +15,7 @@ struct LinkBox
 {
 	int x, y, w, h;
 	std::string url;
+	int node = -1;
 };
 
 // Champ de formulaire (mode d'edition géré par l'application).
@@ -27,6 +28,8 @@ enum FieldKind
 	FieldNumber,
 	FieldSearch,
 	FieldEmail,
+	FieldCheckbox,
+	FieldRadio,
 };
 
 struct FormField
@@ -37,6 +40,8 @@ struct FormField
 	std::string value;
 	int node = -1;      // index DOM de l'element <input>/<textarea>/<select>
 	int formId = -1;    // proprietaire (voir FormSubmit)
+	bool checked = false;
+	bool disabled = false;
 };
 
 struct FormSubmit
@@ -48,6 +53,8 @@ struct FormSubmit
 	int formId = -1;
 	std::vector<int> fields; // indexes FormField associes
 	std::string label;
+	std::string name;
+	std::string value;
 };
 
 struct ImageBox
@@ -64,11 +71,14 @@ struct PageModel
 {
 	Bitmap bmp;                       // rendu RGB565 (largeur 400)
 	int height = 0;                   // hauteur du contenu
+	bool truncated = false;           // la mise en page a atteint sa limite de hauteur
 	std::vector<LinkBox> links;
 	std::vector<FormField> fields;
 	std::vector<FormSubmit> submits;
 	std::vector<ImageBox> images;
 	bool jsUsed = false;              // <script> present sur la page
+	std::string csrfToken;            // jeton CSRF de la page (ex: meta csrf-token)
+	std::string csrfParam;            // nom du parametre CSRF (ex: meta csrf-param)
 	int errorCode = 0;                // non zero = page d'erreur interne
 	std::string errorText;
 
@@ -82,11 +92,14 @@ struct PageModel
 	{
 		bmp.destroy();
 		height = 0;
+		truncated = false;
 		links.clear();
 		fields.clear();
 		submits.clear();
 		images.clear();
 		jsUsed = false;
+		csrfToken.clear();
+		csrfParam.clear();
 		errorCode = 0;
 		errorText.clear();
 	}
@@ -110,13 +123,6 @@ private:
 	PageModel* out_;
 	Bitmap* target_ = nullptr;       // surface de dessin courante (voir out_->bmp)
 
-	uint16_t pageBg565_ = 0xFFFF;
-
-	// Sauvegarde/restauration d'une zone de la page, pour peindre un fond de
-	// bloc sous le contenu deja dessine.
-	std::vector<uint16_t> regionSave_;
-	void saveRegion(int x, int y, int w, int h);
-	void restoreRegion(int x, int y, int w, int h);
 	int W_ = NW_PAGE_WIDTH;          // largeur page
 	// Echelle de base du texte de page.
 	//
@@ -138,15 +144,17 @@ private:
 	std::string pageUrl_;
 	bool linkActive_ = false;
 	std::string linkHref_;
+	int linkNode_ = -1;
 	int linkX0_ = 0, linkY0_ = 0;
 	int renderDepth_ = 0;
 	uint32_t defaultTextColor_ = 0xFF202020;
+	bool pendingSpace_ = false;
 
 	void renderNode(int idx, const Style& st);
 	void renderInline(int idx, const Style& st);
 	void newline(int height);
 	void flushLink();
-	void addLinkBox(int x0, int y0, int x1, int y1, const std::string& url);
+	void addLinkBox(int x0, int y0, int x1, int y1, const std::string& url, int node = -1);
 	void drawTextWrapped(const std::string& text, const Style& st, bool mono);
 	void resolveAndRender(int idx, const Style& parentSt);
 };

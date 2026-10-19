@@ -87,10 +87,21 @@ size_t htmlDecodeEntity(const std::string& s, size_t pos, std::string& out, bool
 				utf8Append(out, kEntities[k].cp);
 				return pos + 1 + len + 1;
 			}
-			if (!requireSemicolon && len >= 2) // sans point-virgule (uniquement hors attributs)
+			auto isLegacyWithoutSemi = [](const char* n) {
+				return strcmp(n, "amp") == 0 || strcmp(n, "lt") == 0 ||
+				       strcmp(n, "gt") == 0 || strcmp(n, "quot") == 0 ||
+				       strcmp(n, "apos") == 0 || strcmp(n, "nbsp") == 0 ||
+				       strcmp(n, "copy") == 0 || strcmp(n, "reg") == 0 ||
+				       strcmp(n, "deg") == 0;
+			};
+			if (!requireSemicolon && isLegacyWithoutSemi(name))
 			{
-				utf8Append(out, kEntities[k].cp);
-				return pos + 1 + len;
+				char nextC = (pos + 1 + len < n) ? s[pos + 1 + len] : 0;
+				if (!isalnum((unsigned char)nextC) && nextC != '=')
+				{
+					utf8Append(out, kEntities[k].cp);
+					return pos + 1 + len;
+				}
 			}
 		}
 	}
@@ -174,27 +185,9 @@ static size_t findRawClose(const std::string& html, size_t start, const std::str
 
 static bool isIgnoredSubtree(const std::string& tag)
 {
-	return tag == "script" || tag == "svg" || tag == "template" ||
+	return tag == "svg" || tag == "template" ||
 		tag == "iframe" || tag == "canvas" || tag == "video" || tag == "audio" ||
-		tag == "object" || tag == "embed" || tag == "picture" || tag == "source";
-}
-
-static bool isHiddenElement(const std::vector<Attribute>& attrs)
-{
-	for (const auto& attr : attrs)
-	{
-		if (attr.name == "hidden") return true;
-		if (attr.name == "aria-hidden" && toLower(strTrim(attr.value)) == "true") return true;
-		if (attr.name == "style")
-		{
-			std::string compact;
-			compact.reserve(attr.value.size());
-			for (char c : toLower(attr.value))
-				if (c != ' ' && c != '\t' && c != '\r' && c != '\n') compact += c;
-			if (compact.find("display:none") != std::string::npos) return true;
-		}
-	}
-	return false;
+		tag == "object" || tag == "embed";
 }
 
 //-----------------------------------------------------------------------------
@@ -298,6 +291,7 @@ bool htmlParse(const std::string& html, Document& doc)
 					while (j < n && html[j] != '>') j++;
 					i = j < n ? j + 1 : n;
 					if (tag.empty()) continue;
+					if (tag == "body" || tag == "html") continue;
 					for (int k = (int)stack.size() - 1; k >= 1; k--)
 						if (doc.nodes[stack[k]].tag == tag) { stack.resize(k); break; }
 					continue;
@@ -308,7 +302,7 @@ bool htmlParse(const std::string& html, Document& doc)
 				std::string tag;
 				while (j < n && html[j] != '>' && html[j] != '/' && html[j] > ' ' && html[j] != '=')
 					tag += (char)(html[j] >= 'A' && html[j] <= 'Z' ? html[j] + 32 : html[j]), j++;
-				if (tag.empty()) { i++; continue; }
+				if (tag.empty()) { textBuf += '<'; i++; continue; }
 				flushText();
 
 				bool selfClosing = false;
@@ -339,7 +333,7 @@ bool htmlParse(const std::string& html, Document& doc)
 						while (j < n)
 						{
 							if (q && html[j] == q) break;
-							if (!q && (html[j] == '>' || html[j] == ' ' || html[j] == '\t' || html[j] == '/')) break;
+							if (!q && (html[j] == '>' || html[j] <= ' ' || (html[j] == '/' && j + 1 < n && html[j+1] == '>'))) break;
 							if (html[j] == '&') { j = htmlDecodeEntity(html, j, aval, true); continue; }
 							aval += html[j++];
 						}
@@ -354,8 +348,9 @@ bool htmlParse(const std::string& html, Document& doc)
 				}
 				i = j < n ? j + 1 : n;
 
-				// Sauter les sous-arbres sans rendu ainsi que les elements masques.
-				if (isIgnoredSubtree(tag) || isHiddenElement(attrs))
+				// Le layout filtre les elements masques afin que le DOM reste
+				// modifiable par JavaScript.
+				if (isIgnoredSubtree(tag))
 				{
 					if (!selfClosing && !isVoidTag(tag))
 					{
@@ -381,6 +376,19 @@ bool htmlParse(const std::string& html, Document& doc)
 							stack.resize(k);
 							break;
 						}
+					}
+				}
+				if (tag == "li")
+				{
+					for (int k = (int)stack.size() - 1; k >= 1; --k)
+					{
+						const std::string& stag = doc.nodes[stack[k]].tag;
+						if (stag == "li")
+						{
+							stack.resize(k);
+							break;
+						}
+						if (stag == "ul" || stag == "ol") break;
 					}
 				}
 				while (stack.size() > 1 && autoCloses(doc.nodes[stack.back()].tag, tag))
@@ -436,7 +444,7 @@ bool htmlParse(const std::string& html, Document& doc)
 		{
 			size_t p = findRawClose(html, i, rawTag);
 			int cur = stack.back();
-			if (cur != root && rawTag != "script")
+			if (cur != root)
 			{
 				const size_t end = p == std::string::npos ? n : p;
 				doc.createText(cur, html.substr(i, end - i));
@@ -516,12 +524,16 @@ int htmlSelfTest()
 		Document doc;
 		htmlParse("<html><body><script>large script text</script><p>visible</p></body></html>", doc);
 		int body = doc.firstByTag(doc.root, "body");
-		if (body < 0 || doc.textOf(body) != "visible") HTML_SELF_FAIL();
+		int script = doc.firstByTag(doc.root, "script");
+		if (body < 0 || script < 0 || doc.textOf(script) != "large script text" ||
+			doc.textOf(body) != "large script textvisible") HTML_SELF_FAIL();
 	}
 	{
 		Document doc;
 		htmlParse("<script>hidden</SCRIPT ><p>shown</p>", doc);
-		if (doc.textOf(doc.root) != "shown") HTML_SELF_FAIL();
+		int script = doc.firstByTag(doc.root, "script");
+		if (script < 0 || doc.textOf(script) != "hidden" ||
+			doc.textOf(doc.root).find("shown") == std::string::npos) HTML_SELF_FAIL();
 	}
 	{
 		std::string html;
@@ -566,13 +578,12 @@ int htmlSelfTest()
 		htmlParse("<body><iframe><p>iframe</p></iframe><canvas><b>canvas</b></canvas>"
 			"<video><p>video</p></video><audio><p>audio</p></audio>"
 			"<object><p>object</p></object><embed src='hidden'>"
-			"<picture><img src='hidden.png'><source src='hidden.jpg'></picture>"
+			"<picture><img src='kept.png'><source src='kept.jpg'></picture>"
 			"<div hidden><b>hidden</b></div>"
 			"<div aria-hidden='true'><b>aria hidden</b></div>"
 			"<div style='display: none'><b>style hidden</b></div><p>visible</p></body>", doc);
 		static const char* ignored[] = {
-			"iframe", "canvas", "video", "audio", "object", "embed", "picture",
-			"source", "img"
+			"iframe", "canvas", "video", "audio", "object", "embed"
 		};
 		for (const char* tag : ignored)
 			if (doc.firstByTag(doc.root, tag) >= 0)
@@ -581,7 +592,10 @@ int htmlSelfTest()
 				HTML_SELF_FAIL();
 			}
 		int body = doc.firstByTag(doc.root, "body");
-		if (body < 0 || doc.textOf(body) != "visible")
+		int hidden = doc.firstByTag(doc.root, "div");
+		int image = doc.firstByTag(doc.root, "img");
+		if (body < 0 || doc.textOf(body).find("visible") == std::string::npos ||
+			hidden < 0 || !doc.nodes[hidden].hasAttr("hidden") || image < 0)
 		{
 			printf("Parseur: texte apres elements ignores: [%s]\n",
 				body < 0 ? "body manquant" : doc.textOf(body).c_str());
@@ -594,6 +608,47 @@ int htmlSelfTest()
 		htmlParse("<pre><code>&lt;hello&gt;</code></pre>", doc);
 		int code = doc.firstByTag(doc.root, "code");
 		if (code < 0 || doc.textOf(code) != "<hello>") HTML_SELF_FAIL();
+	}
+	{
+		// Test '<' isole dans le texte
+		Document doc;
+		htmlParse("<p>a < b</p>", doc);
+		int p = doc.firstByTag(doc.root, "p");
+		if (p < 0 || doc.textOf(p) != "a < b") HTML_SELF_FAIL();
+	}
+	{
+		// Test attribut non-quote avec slash
+		Document doc;
+		htmlParse("<a href=/chemin>lien</a>", doc);
+		int a = doc.firstByTag(doc.root, "a");
+		if (a < 0) HTML_SELF_FAIL();
+		else {
+			const char* h = doc.nodes[a].getAttr("href");
+			if (!h || std::string(h) != "/chemin") HTML_SELF_FAIL();
+		}
+	}
+	{
+		// Test entites sans point-virgule et protection des faux-positifs
+		Document doc;
+		htmlParse("<p>&region= &lesson &copy 2026</p>", doc);
+		int p = doc.firstByTag(doc.root, "p");
+		if (p < 0 || doc.textOf(p) != "&region= &lesson \xc2\xa9 2026") HTML_SELF_FAIL();
+	}
+	{
+		// Test li auto-closing avec balise inline non-fermee
+		Document doc;
+		htmlParse("<ul><li><a href='#'>one<li>two</ul>", doc);
+		int ul = doc.firstByTag(doc.root, "ul");
+		if (ul < 0 || doc.nodes[ul].children.size() != 2) HTML_SELF_FAIL();
+	}
+	{
+		// Test contenu apres </body> conserve dans body
+		Document doc;
+		htmlParse("<body><p>one</p></body><p>two</p>", doc);
+		int body = doc.firstByTag(doc.root, "body");
+		if (body >= 0 && !doc.nodes[body].children.empty() && doc.nodes[doc.nodes[body].children[0]].tag == "body")
+			body = doc.nodes[body].children[0];
+		if (body < 0 || doc.nodes[body].children.size() != 2) HTML_SELF_FAIL();
 	}
 #undef HTML_SELF_FAIL
 	return fails;

@@ -25,7 +25,8 @@ bool searchPageIsVerificationChallenge(const std::string& html);
 
 // Reecrit la page de resultats. Renvoie false si la page n'est pas reconnue,
 // auquel cas l'appelant doit utiliser le HTML d'origine.
-bool searchPageRewrite(const std::string& html, std::string& out);
+bool searchPageRewrite(const std::string& html, std::string& out,
+	const std::string& responseUrl = std::string());
 
 // Nombre de resultats extraits par le dernier appel reussi (diagnostic).
 int searchPageLastResultCount();

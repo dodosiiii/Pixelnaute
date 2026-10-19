@@ -13,6 +13,7 @@
 #include "../js/js_runtime.hpp"
 #include <string>
 #include <vector>
+#include <memory>
 
 class Browser
 {
@@ -30,8 +31,10 @@ public:
 		std::vector<std::string> back;   // historique arriere (URL)
 		std::vector<std::string> fwd;    // historique avant
 		int focusNode = -1;              // index du champ de formulaire en edition
+		uint64_t renderedDomVersion = 0;
 		JSRuntime* jsRuntime = nullptr;
 		JSContext* jsContext = nullptr;
+		std::shared_ptr<JSPageBinding> jsBinding = std::make_shared<JSPageBinding>();
 	};
 
 	Browser(NetworkManager& net, WebSettings& settings);
@@ -57,7 +60,9 @@ public:
 	// --- pipeline page (a appeler a chaque frame) ---
 	void pollNetwork();
 	bool tickStyles();
+	bool tickScripts();
 	bool stylesPending() const;
+	bool scriptsPending() const;
 	bool tickImages();
 	bool layoutPending() const { return layoutPending_; }
 
@@ -70,8 +75,11 @@ public:
 	int  hitLink(int x, int y) const;
 	void tap(int x, int y);
 	void beginEditField(int fieldIndex);
+	void endEditField();
 	bool setFieldValue(int fieldIndex, const std::string& v);
 	void submitFormByNode(int submitNode);
+	bool enqueuePageFetch(JSPageBinding* binding, int tabIndex, uint32_t promiseId, bool xhr,
+		const std::string& url, const std::string& method, const std::string& body);
 	void scroll(int dy);
 	bool syncJavaScriptContexts();
 
@@ -114,17 +122,24 @@ private:
 	bool responsePending_ = false;
 	bool layoutPending_ = false;
 	int requestTab_ = -1;
-	struct CssRequest { std::string url; std::string referer; };
+	struct CssRequest { std::string url; std::string referer; int sourceOrder = -1; };
 	std::vector<CssRequest> cssQueue_;
 	int cssQueueTab_ = -1;
 	int cssRequestTab_ = -1;
+	int cssRequestOrder_ = -1;
 	std::string cssPageUrl_;
 	uint64_t cssStartMs_ = 0;
-	int cssRelayoutCount_ = 0;
 	bool styleRedrawPending_ = false;
 	bool cssLayoutPending_ = false;
 	int cssLayoutTab_ = -1;
 	std::string cssLayoutUrl_;
+	struct ScriptRequest { std::string url; std::string referer; std::string source; bool external = false; };
+	std::vector<ScriptRequest> scriptQueue_;
+	int scriptQueueTab_ = -1;
+	int scriptRequestTab_ = -1;
+	std::string scriptPageUrl_;
+	std::string scriptRequestUrl_;
+	bool scriptRedrawPending_ = false;
 	std::vector<std::string> pendingImages_;
 	std::string pendingImagesReferer_;
 	int imageRequestTab_ = -1;
@@ -132,8 +147,19 @@ private:
 	std::string imageRequestReferer_;
 	bool imageRedrawPending_ = false;
 	int pendingImagesTab_ = -1;
+	struct FetchJob
+	{
+		int tabIndex = -1;
+		uint32_t promiseId = 0;
+		uint32_t generation = 0;
+		bool xhr = false;
+		std::weak_ptr<JSPageBinding> binding;
+		std::string url, method, body, referer;
+	};
+	std::vector<FetchJob> fetchQueue_;
+	bool fetchActive_ = false;
 
-	void loadUrlInto(int tabIdx, const std::string& url, bool record, const std::string& method = "GET", const std::string& postData = "");
+	void loadUrlInto(int tabIdx, const std::string& url, bool record, const std::string& method = "GET", const std::string& postData = "", const std::string& referer = "", const std::string& csrfToken = "");
 	void resetTab(Tab& t);
 	bool initializeJavaScript(Tab& t);
 	void releaseJavaScript(Tab& t);
@@ -141,11 +167,17 @@ private:
 	void clearStyleQueue();
 	void queueStyles(int tabIdx, const Document& doc, const std::string& pageUrl);
 	void onStylesheetResponse(NetResponse& resp);
+	void onScriptResponse(NetResponse& resp);
+	void queueScripts(int tabIdx, const Document& doc, const std::string& pageUrl);
+	void clearScriptQueue();
 	void onResponse(NetResponse& resp);
 	void renderInto(int tabIdx, Document&& doc);
 	void rerenderTab(int tabIdx);
 	void queueImages(int tabIdx, int maximum);
 	void clearImageQueue();
+	void serviceFetchQueue();
+	void onFetchResponse(NetResponse& response);
+	void cancelFetchQueue(const char* reason);
 	int  submitHit(const PageModel& page, int x, int y) const;
 	void submitFormByPage(int submitIndex);
 };

@@ -39,14 +39,16 @@ Pixelnaute dispose d'un moteur de rendu web autonome tournant nativement sur le 
 - **Moteur HTML tolérant & sécurisé :**
   - Traitement natif des balises `<pre>`, `<textarea>` et `<title>` avec décodage des entités HTML.
   - Gestion des balises auto-fermantes `/>` et saut intelligent des sous-arbres lourds invisibles (`<svg>`, `<template>`).
-  - Filtrage des éléments invisibles (`[hidden]`, `[aria-hidden="true"]`, `.sr-only`, `.visually-hidden`, `.skip-link`).
+  - Conservation des scripts et des éléments cachés dans le DOM ; leur filtrage est réalisé au rendu pour que JavaScript puisse les retrouver et les modifier.
   - Mode lecteur de repli (*Reader Mode*) automatique pour extraire et rendre le contenu texte lisible sur les pages complexes.
 
 - **Moteur CSS enrichi :**
   - Prise en charge des sélecteurs composés et combinateurs : descendant (` `), fils direct (`>`), classes multiples (`.a.b`), attributs (`[attr]`, `[attr=val]`), et pseudo-classe `:first-child`.
   - Évaluation des règles `@media` en vue mobile (largeur logique 400 px), et déballage transparent de `@supports` et `@layer`.
   - Téléchargement et application de feuilles de style externes (`<link rel="stylesheet">`).
-  - Cascade et spécificité affinées, gestion du `!important` et conversion multi-unités (`px`, `em`, `rem`, `pt`).
+  - Cascade et spécificité affinées selon l'ordre des feuilles dans le DOM, gestion du `!important` et conversion des unités des media queries (`px`, `em`, `rem`).
+  - Prise en charge de `display: inline`, `list-style: none` et des bordures simples.
+  - Mise en page flex en ligne avec retour à la ligne (`flex-wrap`) et espacements `gap` simples.
 
 - **Mise en page, formulaires et rendu graphique (PICA200) :**
   - Tableaux HTML (`table`, `tr`, `td`, `th`) alignés horizontalement par colonnes réparties.

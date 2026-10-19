@@ -75,7 +75,6 @@ void PageRenderer::upload(const PageModel& page, int scrollY)
 	if (y0 > layoutH_ - NW_TOP_HEIGHT) y0 = layoutH_ - NW_TOP_HEIGHT;
 	if (y0 < 0) y0 = 0;
 
-	memset(texData, 0, TEX_W * TEX_H * 2);
 	uint16_t* dst = (uint16_t*)texData;
 	const uint16_t* src = page.bmp.px;
 
@@ -84,6 +83,11 @@ void PageRenderer::upload(const PageModel& page, int scrollY)
 	int cols = layoutW_ > NW_PAGE_WIDTH ? NW_PAGE_WIDTH : layoutW_;
 
 	int tilesX = TEX_W / 8;
+	const uint16_t pageBackground = src[0];
+	for (int r = 0; r < TEX_H; ++r)
+		for (int c = 0; c < TEX_W; ++c)
+			dst[mortonTileIndex(c, r, tilesX)] = pageBackground;
+
 	for (int r = 0; r < rows; r++)
 	{
 		const uint16_t* srow = src + (size_t)(y0 + r) * layoutW_;
@@ -114,11 +118,15 @@ void PageRenderer::draw(const PageModel& page, int scrollY)
 {
 	if (!texReady) return;
 	if (page.height <= 0) return;
+	int boundedScroll = scrollY;
+	if (boundedScroll < 0) boundedScroll = 0;
+	if (boundedScroll > page.height - NW_TOP_HEIGHT) boundedScroll = page.height - NW_TOP_HEIGHT;
+	if (boundedScroll < 0) boundedScroll = 0;
 
-	if (dirty_ || scrollY != lastScroll_ || layoutH_ != page.height || layoutW_ != page.bmp.w)
+	if (dirty_ || boundedScroll != lastScroll_ || layoutH_ != page.height || layoutW_ != page.bmp.w)
 	{
-		upload(page, scrollY);
-		drawImages(page, scrollY);
+		upload(page, boundedScroll);
+		drawImages(page, boundedScroll);
 		C3D_TexUpload(&tex, texData);
 	}
 

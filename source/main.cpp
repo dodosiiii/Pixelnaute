@@ -7,6 +7,7 @@
 #include <exception>
 #include <new>
 #include <cstdlib>
+#include <algorithm>
 
 // Allouer 1 Mo de pile pour le thread principal (evite les debordements de pile avec stb_image / curl / layout)
 extern "C" {
@@ -404,68 +405,95 @@ int main(int argc, char** argv)
 				if (mouseY > 238.0f) mouseY = 238.0f;
 			}
 
-			// 4. Navigation de lien en lien avec D-PAD Gauche / Droite
+			// 4. Navigation d'element en element (liens, boutons, champs) avec D-PAD Gauche / Droite
 			if ((in.down & KEY_DRIGHT) || (in.down & KEY_DLEFT))
 			{
 				const Browser::Tab& ct = browser.currentTab();
-				if (ct.pageReady && !ct.page.links.empty())
+				if (ct.pageReady)
 				{
-					const int sy = browser.scrollY();
-					int bestIdx = -1;
-					int currentIdx = -1;
+					struct TargetBox { int x, y, w, h; };
+					std::vector<TargetBox> targets;
+					targets.reserve(ct.page.links.size() + ct.page.submits.size() + ct.page.fields.size());
 
-					for (size_t i = 0; i < ct.page.links.size(); i++)
-					{
-						const LinkBox& lb = ct.page.links[i];
-						if ((int)mouseX >= lb.x && (int)mouseX < lb.x + lb.w &&
-						    sy + (int)mouseY >= lb.y && sy + (int)mouseY < lb.y + lb.h)
-						{
-							currentIdx = (int)i;
-							break;
-						}
-					}
+					for (const auto& lb : ct.page.links)
+						if (lb.w > 0 && lb.h > 0) targets.push_back({ lb.x, lb.y, lb.w, lb.h });
+					for (const auto& fs : ct.page.submits)
+						if (fs.w > 0 && fs.h > 0) targets.push_back({ fs.x, fs.y, fs.w, fs.h });
+					for (const auto& f : ct.page.fields)
+						if (f.w > 0 && f.h > 0) targets.push_back({ f.x, f.y, f.w, f.h });
 
-					if (in.down & KEY_DRIGHT)
+					if (!targets.empty())
 					{
-						for (size_t i = (currentIdx >= 0 ? currentIdx + 1 : 0); i < ct.page.links.size(); i++)
+						std::sort(targets.begin(), targets.end(), [](const TargetBox& a, const TargetBox& b) {
+							if (a.y != b.y) return a.y < b.y;
+							return a.x < b.x;
+						});
+
+						const int sy = browser.scrollY();
+						int bestIdx = -1;
+						int currentIdx = -1;
+
+						for (size_t i = 0; i < targets.size(); i++)
 						{
-							const LinkBox& lb = ct.page.links[i];
-							if (lb.y + lb.h > sy && lb.y < sy + 240)
+							const TargetBox& tb = targets[i];
+							if ((int)mouseX >= tb.x && (int)mouseX < tb.x + tb.w &&
+							    sy + (int)mouseY >= tb.y && sy + (int)mouseY < tb.y + tb.h)
 							{
-								bestIdx = (int)i;
+								currentIdx = (int)i;
 								break;
 							}
 						}
-						if (bestIdx < 0)
-						{
-							for (size_t i = 0; i < ct.page.links.size(); i++)
-							{
-								const LinkBox& lb = ct.page.links[i];
-								if (lb.y + lb.h > sy && lb.y < sy + 240) { bestIdx = (int)i; break; }
-							}
-						}
-					}
-					else if (in.down & KEY_DLEFT)
-					{
-						int start = currentIdx >= 0 ? currentIdx - 1 : (int)ct.page.links.size() - 1;
-						for (int i = start; i >= 0; i--)
-						{
-							const LinkBox& lb = ct.page.links[(size_t)i];
-							if (lb.y + lb.h > sy && lb.y < sy + 240)
-							{
-								bestIdx = i;
-								break;
-							}
-						}
-					}
 
-					if (bestIdx >= 0)
-					{
-						const LinkBox& lb = ct.page.links[(size_t)bestIdx];
-						mouseX = (float)(lb.x + lb.w / 2);
-						mouseY = (float)(lb.y - sy + lb.h / 2);
-						if (mouseY < 4.0f) mouseY = 4.0f;
-						if (mouseY > 236.0f) mouseY = 236.0f;
+						if (in.down & KEY_DRIGHT)
+						{
+							for (size_t i = (currentIdx >= 0 ? currentIdx + 1 : 0); i < targets.size(); i++)
+							{
+								const TargetBox& tb = targets[i];
+								if (tb.y + tb.h > sy && tb.y < sy + 240)
+								{
+									bestIdx = (int)i;
+									break;
+								}
+							}
+							if (bestIdx < 0)
+							{
+								for (size_t i = 0; i < targets.size(); i++)
+								{
+									const TargetBox& tb = targets[i];
+									if (tb.y + tb.h > sy && tb.y < sy + 240) { bestIdx = (int)i; break; }
+								}
+							}
+						}
+						else if (in.down & KEY_DLEFT)
+						{
+							int start = currentIdx >= 0 ? currentIdx - 1 : (int)targets.size() - 1;
+							for (int i = start; i >= 0; i--)
+							{
+								const TargetBox& tb = targets[(size_t)i];
+								if (tb.y + tb.h > sy && tb.y < sy + 240)
+								{
+									bestIdx = i;
+									break;
+								}
+							}
+							if (bestIdx < 0)
+							{
+								for (int i = (int)targets.size() - 1; i >= 0; i--)
+								{
+									const TargetBox& tb = targets[(size_t)i];
+									if (tb.y + tb.h > sy && tb.y < sy + 240) { bestIdx = i; break; }
+								}
+							}
+						}
+
+						if (bestIdx >= 0)
+						{
+							const TargetBox& tb = targets[(size_t)bestIdx];
+							mouseX = (float)(tb.x + tb.w / 2);
+							mouseY = (float)(tb.y - sy + tb.h / 2);
+							if (mouseY < 4.0f) mouseY = 4.0f;
+							if (mouseY > 236.0f) mouseY = 236.0f;
+						}
 					}
 				}
 			}
@@ -516,7 +544,7 @@ int main(int argc, char** argv)
 				if (tap)
 				{
 					float targetX = (float)gesture.startPx * (400.0f / 320.0f);
-					float targetY = (float)(gesture.startPy - 88) * (240.0f / 134.0f);
+					float targetY = (float)(gesture.startPy - 88) * (240.0f / 152.0f);
 					mouseX = targetX;
 					mouseY = targetY;
 					browser.tap((int)targetX, (int)targetY);
@@ -597,24 +625,62 @@ int main(int argc, char** argv)
 			const float mx = mouseX;
 			const float my = mouseY;
 
-			// Hit-test : est-ce que le curseur survole un lien ?
+			enum class CursorStyle { Arrow, Hand, Text };
+			CursorStyle curStyle = CursorStyle::Arrow;
+
 			const Browser::Tab& ct = browser.currentTab();
-			bool onLink = false;
 			if (ct.pageReady)
 			{
 				const int pageY = browser.scrollY() + (int)my;
-				for (const LinkBox& lb : ct.page.links)
+				const int imx = (int)mx;
+
+				// 1. Survol d'un champ de formulaire
+				for (const FormField& f : ct.page.fields)
 				{
-					if ((int)mx >= lb.x && (int)mx < lb.x + lb.w &&
-					    pageY >= lb.y && pageY < lb.y + lb.h)
+					if (imx >= f.x && imx < f.x + f.w && pageY >= f.y && pageY < f.y + f.h)
 					{
-						onLink = true;
+						if (f.kind == FieldText || f.kind == FieldPassword ||
+						    f.kind == FieldTextarea || f.kind == FieldSearch ||
+						    f.kind == FieldNumber || f.kind == FieldEmail)
+						{
+							curStyle = CursorStyle::Text;
+						}
+						else
+						{
+							curStyle = CursorStyle::Hand;
+						}
 						break;
+					}
+				}
+
+				// 2. Survol d'un bouton de formulaire
+				if (curStyle == CursorStyle::Arrow)
+				{
+					for (const FormSubmit& fs : ct.page.submits)
+					{
+						if (imx >= fs.x && imx < fs.x + fs.w && pageY >= fs.y && pageY < fs.y + fs.h)
+						{
+							curStyle = CursorStyle::Hand;
+							break;
+						}
+					}
+				}
+
+				// 3. Survol d'un lien
+				if (curStyle == CursorStyle::Arrow)
+				{
+					for (const LinkBox& lb : ct.page.links)
+					{
+						if (imx >= lb.x && imx < lb.x + lb.w && pageY >= lb.y && pageY < lb.y + lb.h)
+						{
+							curStyle = CursorStyle::Hand;
+							break;
+						}
 					}
 				}
 			}
 
-			if (!onLink)
+			if (curStyle == CursorStyle::Arrow)
 			{
 				// Curseur fleche normal : contour noir + corps blanc + tip rouge
 				C2D_DrawTriangle(mx - 1.0f, my - 1.0f, C2D_Color32(20, 20, 20, 255),
@@ -625,9 +691,9 @@ int main(int argc, char** argv)
 				                 mx + 8.0f, my + 8.0f, C2D_Color32(255, 255, 255, 255), 0.6f);
 				C2D_DrawRectSolid(mx, my, 0.7f, 2.0f, 2.0f, C2D_Color32(255, 40, 40, 255));
 			}
-			else
+			else if (curStyle == CursorStyle::Hand)
 			{
-				// Curseur main (doigt qui pointe) sur un lien :
+				// Curseur main (doigt qui pointe) sur un lien ou un bouton :
 				//   paume = rectangle blanc, doigt index = petit rectangle fin au-dessus
 				const u32 cOut = C2D_Color32(20, 20, 20, 255);
 				const u32 cHand = C2D_Color32(250, 230, 60, 255); // jaune vif
@@ -640,6 +706,26 @@ int main(int argc, char** argv)
 				// Tip / pointe visible
 				C2D_DrawRectSolid(mx + 2.0f, my - 8.0f, 0.7f, 2.0f, 2.0f, C2D_Color32(255, 100, 0, 255));
 			}
+			else if (curStyle == CursorStyle::Text)
+			{
+				// Curseur I-beam (zone de texte) : barre en I avec contour pour excellente visibilite
+				const u32 cOut = C2D_Color32(20, 20, 20, 255);
+				const u32 cInner = C2D_Color32(255, 255, 255, 255);
+				const u32 cAccent = C2D_Color32(242, 162, 92, 255); // orange sable
+
+				// Contour noir
+				C2D_DrawRectSolid(mx - 3.0f, my - 7.0f, 0.5f, 7.0f, 3.0f, cOut);
+				C2D_DrawRectSolid(mx - 3.0f, my + 5.0f, 0.5f, 7.0f, 3.0f, cOut);
+				C2D_DrawRectSolid(mx - 1.0f, my - 6.0f, 0.5f, 3.0f, 13.0f, cOut);
+
+				// Corps blanc
+				C2D_DrawRectSolid(mx - 2.0f, my - 6.0f, 0.6f, 5.0f, 1.0f, cInner);
+				C2D_DrawRectSolid(mx - 2.0f, my + 6.0f, 0.6f, 5.0f, 1.0f, cInner);
+				C2D_DrawRectSolid(mx, my - 5.0f, 0.6f, 1.0f, 11.0f, cInner);
+
+				// Repere central
+				C2D_DrawRectSolid(mx - 1.0f, my, 0.7f, 3.0f, 1.0f, cAccent);
+			}
 		}
 
 
@@ -650,6 +736,8 @@ int main(int argc, char** argv)
 		C2D_SceneBegin(bottomTarget);
 		ui.frame(browser, net, settings, updater);
 		if (browser.tickStyles())
+			renderer.forceRedraw();
+		if (browser.tickScripts())
 			renderer.forceRedraw();
 
 		C3D_FrameEnd(0);

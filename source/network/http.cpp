@@ -1,7 +1,9 @@
 #include "http.hpp"
+#include "../storage/storage.hpp"
 #include <3ds.h>
 #include <string.h>
 #include <curl/curl.h>
+#include <time.h>
 
 //--------------------------------------------------------------------------
 static bool isRedirectWindow(int code)
@@ -55,6 +57,21 @@ static std::string resolveRedirect(const std::string& base, const std::string& r
 		// decompresse pas automatiquement, et un corps gzippe rend le status
 		// code illisible (httpcGetResponseStatusCode renvoie une erreur).
 		httpcAddRequestHeaderField(&ctx, "Accept-Encoding", "identity");
+
+		std::string httpcRef = opt.referer;
+		if (httpcRef.empty() && opt.method == "POST") httpcRef = url;
+		if (!httpcRef.empty())
+			httpcAddRequestHeaderField(&ctx, "Referer", httpcRef.c_str());
+		if (opt.method == "POST")
+		{
+			size_t pe = httpcRef.find("://");
+			if (pe != std::string::npos)
+			{
+				size_t he = httpcRef.find('/', pe + 3);
+				std::string og = (he != std::string::npos) ? httpcRef.substr(0, he) : httpcRef;
+				httpcAddRequestHeaderField(&ctx, "Origin", og.c_str());
+			}
+		}
 
 		r = httpcBeginRequest(&ctx);
 		if (R_FAILED(r))
@@ -265,6 +282,66 @@ static void cleanupCurlShare()
 	}
 }
 
+static bool cookieMatchesUrl(const std::string& domainField, const std::string& pathField,
+	bool tailmatch, bool secure, long expires, const std::string& url)
+{
+	const size_t schemeEnd = url.find("://"); if (schemeEnd == std::string::npos) return false;
+	const bool isSecure = url.compare(0, schemeEnd, "https") == 0;
+	const size_t hostStart = schemeEnd + 3, hostEnd = url.find_first_of("/:?#", hostStart);
+	std::string host = url.substr(hostStart, hostEnd == std::string::npos ? hostEnd : hostEnd - hostStart);
+	for (char& ch : host) ch = (char)tolower((unsigned char)ch);
+	std::string domain = domainField; while (!domain.empty() && domain.front() == '.') domain.erase(domain.begin());
+	for (char& ch : domain) ch = (char)tolower((unsigned char)ch);
+	const bool domainOk = host == domain || (tailmatch && host.size() > domain.size() &&
+		host.compare(host.size() - domain.size(), domain.size(), domain) == 0 && host[host.size() - domain.size() - 1] == '.');
+	std::string path = "/";
+	if (hostEnd != std::string::npos && url[hostEnd] == '/') { size_t end = url.find_first_of("?#", hostEnd); path = url.substr(hostEnd, end == std::string::npos ? end : end - hostEnd); }
+	const bool pathOk = path.compare(0, pathField.size(), pathField) == 0 &&
+		(path.size() == pathField.size() || (!pathField.empty() && pathField.back() == '/') || path[pathField.size()] == '/');
+	return domainOk && pathOk && (!secure || isSecure) && (expires == 0 || expires >= (long)time(nullptr));
+}
+
+std::string httpCookieHeaderForUrl(const std::string& url)
+{
+	ensureCurlShare(); if (!g_curlShare) return std::string();
+	CURL* h = curl_easy_init(); if (!h) return std::string();
+	curl_easy_setopt(h, CURLOPT_URL, url.c_str()); curl_easy_setopt(h, CURLOPT_SHARE, g_curlShare);
+	curl_easy_setopt(h, CURLOPT_COOKIEFILE, NW_SD_COOKIES);
+	curl_easy_setopt(h, CURLOPT_COOKIELIST, "RELOAD");
+	curl_slist* cookies = nullptr; std::string result;
+	if (curl_easy_getinfo(h, CURLINFO_COOKIELIST, &cookies) == CURLE_OK)
+	{
+		for (curl_slist* item = cookies; item; item = item->next)
+		{
+			std::string row = item->data ? item->data : "";
+			const bool httpOnly = row.rfind("#HttpOnly_", 0) == 0;
+			if (httpOnly) continue;
+			std::string fields[7]; size_t p = 0; int n = 0;
+			while (n < 6) { size_t tab = row.find('\t', p); if (tab == std::string::npos) break; fields[n++] = row.substr(p, tab - p); p = tab + 1; }
+			if (n != 6) continue;
+			fields[6] = row.substr(p);
+			if (!cookieMatchesUrl(fields[0], fields[2], fields[1] == "TRUE", fields[3] == "TRUE", atol(fields[4].c_str()), url)) continue;
+			if (!result.empty()) result += "; ";
+			result += fields[5] + "=" + fields[6];
+		}
+	}
+	curl_slist_free_all(cookies); curl_easy_cleanup(h); return result;
+}
+
+bool httpSetCookieForUrl(const std::string& url, const std::string& cookie)
+{
+	if (url.find("://") == std::string::npos || cookie.empty() || cookie.size() > 4096) return false;
+	ensureCurlShare(); if (!g_curlShare) return false;
+	CURL* h = curl_easy_init(); if (!h) return false;
+	curl_easy_setopt(h, CURLOPT_URL, url.c_str()); curl_easy_setopt(h, CURLOPT_SHARE, g_curlShare);
+	curl_easy_setopt(h, CURLOPT_COOKIEFILE, NW_SD_COOKIES);
+	const std::string setCookie = "Set-Cookie: " + cookie;
+	const CURLcode rc = curl_easy_setopt(h, CURLOPT_COOKIELIST, setCookie.c_str());
+	curl_easy_setopt(h, CURLOPT_COOKIEJAR, NW_SD_COOKIES);
+	curl_easy_cleanup(h);
+	return rc == CURLE_OK;
+}
+
 void httpServiceExit()
 {
 	cleanupCurlShare();
@@ -331,25 +408,57 @@ bool httpGetCurl(const std::string& url, const HttpOptions& opt, NetResponse& ou
 
 	curl_slist* hdr = curl_slist_append(nullptr, ("Accept: " + opt.accept).c_str());
 	hdr = curl_slist_append(hdr, "Accept-Language: fr,en;q=0.8");
+
+	std::string ref = opt.referer;
+	if (ref.empty() && opt.method == "POST")
+		ref = url;
+
 	if (opt.method == "POST")
 	{
 		curl_easy_setopt(h, CURLOPT_POST, 1L);
 		curl_easy_setopt(h, CURLOPT_POSTFIELDS, opt.postData.c_str());
 		curl_easy_setopt(h, CURLOPT_POSTFIELDSIZE, (long)opt.postData.size());
 		hdr = curl_slist_append(hdr, "Content-Type: application/x-www-form-urlencoded");
+
+		// En-tetes Fetch Metadata (protection CSRF standardisee moderne)
+		hdr = curl_slist_append(hdr, "Sec-Fetch-Dest: document");
+		hdr = curl_slist_append(hdr, "Sec-Fetch-Mode: navigate");
+		hdr = curl_slist_append(hdr, "Sec-Fetch-Site: same-origin");
+		hdr = curl_slist_append(hdr, "Sec-Fetch-User: ?1");
+	}
+
+	// En-tete Origin (indispensable pour la verification CSRF de la plupart des frameworks)
+	std::string originSrc = !ref.empty() ? ref : url;
+	size_t protoEnd = originSrc.find("://");
+	if (protoEnd != std::string::npos)
+	{
+		size_t hostEnd = originSrc.find('/', protoEnd + 3);
+		std::string origin = (hostEnd != std::string::npos) ? originSrc.substr(0, hostEnd) : originSrc;
+		if (opt.method == "POST" || !opt.referer.empty())
+			hdr = curl_slist_append(hdr, ("Origin: " + origin).c_str());
+	}
+
+	// En-tetes personnalises CSRF si un jeton a ete extrait de la page
+	if (!opt.csrfToken.empty())
+	{
+		hdr = curl_slist_append(hdr, ("X-CSRF-Token: " + opt.csrfToken).c_str());
+		hdr = curl_slist_append(hdr, ("X-CSRFToken: " + opt.csrfToken).c_str());
+		hdr = curl_slist_append(hdr, ("X-XSRF-Token: " + opt.csrfToken).c_str());
 	}
 
 	curl_easy_setopt(h, CURLOPT_URL, url.c_str());
 	curl_easy_setopt(h, CURLOPT_HTTPHEADER, hdr);
 	curl_easy_setopt(h, CURLOPT_USERAGENT, opt.userAgent.c_str());
-	if (!opt.referer.empty())
-		curl_easy_setopt(h, CURLOPT_REFERER, opt.referer.c_str());
+	if (!ref.empty())
+		curl_easy_setopt(h, CURLOPT_REFERER, ref.c_str());
 
 	ensureCurlShare();
 	if (g_curlShare)
 		curl_easy_setopt(h, CURLOPT_SHARE, g_curlShare);
 
-	curl_easy_setopt(h, CURLOPT_COOKIEFILE, "");
+	// Persistance des cookies sur carte SD (cookies de session, jetons CSRF)
+	curl_easy_setopt(h, CURLOPT_COOKIEFILE, NW_SD_COOKIES);
+	curl_easy_setopt(h, CURLOPT_COOKIEJAR, NW_SD_COOKIES);
 	curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L);
 	curl_easy_setopt(h, CURLOPT_MAXREDIRS, (long)NW_MAX_REDIRECTS);
 	curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT, 8L);

@@ -8,7 +8,7 @@
 struct WebSettings
 {
 	bool    loadImages   = false;    // charger les images (desactive par defaut, en developpement)
-	bool    enableJS     = false;    // JavaScript experimental, desactive par defaut
+	bool    enableJS     = true;     // runtime QuickJS experimental (execution des pages non integree)
 	bool    verifyTLS    = true;     // verifier d'abord, puis repli TLS automatique si necessaire
 	std::string searchEngine = "duckduckgo-lite";
 	std::string homePage     = "";   // page d'accueil (vide = page N3DS Web)

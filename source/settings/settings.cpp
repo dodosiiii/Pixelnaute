@@ -21,7 +21,16 @@ bool settingsLoad(WebSettings& s)
 	}
 
 	s.loadImages   = readBool(kv.get("loadImages", "0"));
-	s.enableJS     = readBool(kv.get("enableJS", "0"));
+	s.enableJS     = readBool(kv.get("enableJS", "1"));
+	// Migration unique : activer le runtime par defaut pour les installations
+	// existantes. L'utilisateur pourra ensuite le desactiver dans Reglages.
+	if (kv.get("jsDefaultEnabledV1", "") != "1")
+	{
+		s.enableJS = true;
+		kv.set("enableJS", "1");
+		kv.set("jsDefaultEnabledV1", "1");
+		kv.save(NW_SD_SETTINGS);
+	}
 	s.verifyTLS    = readBool(kv.get("verifyTLS", "1"));
 	s.searchEngine = kv.get("searchEngine", defaultSearchEngine());
 	s.homePage     = kv.get("homePage", "");
@@ -44,6 +53,7 @@ bool settingsSave(const WebSettings& s)
 	StorageKV kv;
 	kv.set("loadImages", s.loadImages ? "1" : "0");
 	kv.set("enableJS", s.enableJS ? "1" : "0");
+	kv.set("jsDefaultEnabledV1", "1");
 	kv.set("verifyTLS", s.verifyTLS ? "1" : "0");
 	kv.set("searchEngine", s.searchEngine);
 	kv.set("homePage", s.homePage);

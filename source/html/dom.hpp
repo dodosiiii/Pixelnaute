@@ -6,6 +6,7 @@
 // Cela evite toute allocation par noeud et rend le parcours tres rapide.
 //=============================================================================
 #include "../common.hpp"
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -120,11 +121,17 @@ class Document
 public:
 	std::vector<Node> nodes;
 	int root = -1;
+	uint64_t mutationVersion = 0;
+	int hoveredNode = -1;
+	int focusedNode = -1;
 
 	void clear()
 	{
 		nodes.clear();
 		root = -1;
+		hoveredNode = -1;
+		focusedNode = -1;
+		++mutationVersion;
 	}
 
 	bool empty() const { return root < 0 || nodes.empty(); }
@@ -132,7 +139,69 @@ public:
 	int addNode(Node&& n)
 	{
 		nodes.push_back(std::move(n));
+		++mutationVersion;
 		return (int)nodes.size() - 1;
+	}
+
+	bool insertChild(int parent, int child, int before = -1)
+	{
+		if (parent < 0 || child < 0 || (size_t)parent >= nodes.size() ||
+			(size_t)child >= nodes.size() || parent == child) return false;
+		if (!nodes[(size_t)parent].isElement() && nodes[(size_t)parent].type != NodeType::Document)
+			return false;
+		for (int ancestor = parent; ancestor >= 0 && (size_t)ancestor < nodes.size();
+			ancestor = nodes[(size_t)ancestor].parent)
+			if (ancestor == child) return false;
+		auto& destination = nodes[(size_t)parent].children;
+		auto beforeIt = before < 0 ? destination.end() :
+			std::find(destination.begin(), destination.end(), before);
+		if (before >= 0 && beforeIt == destination.end()) return false;
+		if (before == child) return true;
+		int insertionIndex = (int)(beforeIt - destination.begin());
+		const int oldParent = nodes[(size_t)child].parent;
+		if (oldParent >= 0 && (size_t)oldParent < nodes.size())
+		{
+			auto& oldSiblings = nodes[(size_t)oldParent].children;
+			auto oldIt = std::find(oldSiblings.begin(), oldSiblings.end(), child);
+			if (oldIt != oldSiblings.end())
+			{
+				const int oldIndex = (int)(oldIt - oldSiblings.begin());
+				oldSiblings.erase(oldIt);
+				if (oldParent == parent && oldIndex < insertionIndex) --insertionIndex;
+			}
+		}
+		if (insertionIndex < 0 || (size_t)insertionIndex > destination.size())
+			insertionIndex = (int)destination.size();
+		destination.insert(destination.begin() + insertionIndex, child);
+		nodes[(size_t)child].parent = parent;
+		++mutationVersion;
+		return true;
+	}
+
+	bool detachNode(int child)
+	{
+		if (child < 0 || (size_t)child >= nodes.size()) return false;
+		const int parent = nodes[(size_t)child].parent;
+		if (parent < 0 || (size_t)parent >= nodes.size()) return false;
+		auto& siblings = nodes[(size_t)parent].children;
+		auto it = std::find(siblings.begin(), siblings.end(), child);
+		if (it == siblings.end()) return false;
+		siblings.erase(it);
+		nodes[(size_t)child].parent = -1;
+		++mutationVersion;
+		return true;
+	}
+
+	void clearChildren(int parent)
+	{
+		if (parent < 0 || (size_t)parent >= nodes.size()) return;
+		for (int child : nodes[(size_t)parent].children)
+			if (child >= 0 && (size_t)child < nodes.size()) nodes[(size_t)child].parent = -1;
+		if (!nodes[(size_t)parent].children.empty())
+		{
+			nodes[(size_t)parent].children.clear();
+			++mutationVersion;
+		}
 	}
 
 	// Cree un element avec tag + attrs, attaché au parent (index).
@@ -171,11 +240,23 @@ public:
 
 	void setAttr(int idx, const std::string& name, const std::string& value)
 	{
+		if (idx < 0 || (size_t)idx >= nodes.size()) return;
 		for (auto& a : nodes[idx].attrs)
 		{
-			if (a.name == name) { a.value = value; return; }
+			if (a.name == name) { if (a.value != value) { a.value = value; ++mutationVersion; } return; }
 		}
 		nodes[idx].attrs.push_back({ name, value });
+		++mutationVersion;
+	}
+
+	void removeAttr(int idx, const std::string& name)
+	{
+		if (idx < 0 || (size_t)idx >= nodes.size()) return;
+		auto& attrs = nodes[(size_t)idx].attrs;
+		const size_t oldSize = attrs.size();
+		attrs.erase(std::remove_if(attrs.begin(), attrs.end(),
+			[&](const Attribute& attr) { return attr.name == name; }), attrs.end());
+		if (attrs.size() != oldSize) ++mutationVersion;
 	}
 
 	// Texte brut concatene de tous les descendants (utilise pour title, alt...)

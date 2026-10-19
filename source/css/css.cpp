@@ -15,7 +15,51 @@ static const NamedColor kColors[] =
 	{ "olive", 0x808000 }, { "purple", 0x800080 }, { "teal", 0x008080 },
 	{ "navy", 0x000080 }, { "orange", 0xFFA500 }, { "brown", 0xA52A2A },
 	{ "pink", 0xFFC0CB }, { "gold", 0xFFD700 }, { "violet", 0xEE82EE },
-	{ "indigo", 0x4B0082 }, { "darkgray", 0xA9A9A9 }, { "lightgray", 0xD3D3D3 },
+	{ "indigo", 0x4B0082 }, { "darkgray", 0xA9A9A9 }, { "darkgrey", 0xA9A9A9 },
+	{ "lightgray", 0xD3D3D3 }, { "lightgrey", 0xD3D3D3 },
+	{ "whitesmoke", 0xF5F5F5 }, { "gainsboro", 0xDCDCDC },
+	{ "dimgray", 0x696969 }, { "dimgrey", 0x696969 },
+	{ "darkblue", 0x00008B }, { "darkred", 0x8B0000 }, { "darkgreen", 0x006400 },
+	{ "darkorange", 0xFF8C00 }, { "darkviolet", 0x9400D3 },
+	{ "lightblue", 0xADD8E6 }, { "lightgreen", 0x90EE90 },
+	{ "lightyellow", 0xFFFFE0 }, { "lightcoral", 0xF08080 },
+	{ "lightpink", 0xFFB6C1 }, { "lightsalmon", 0xFFA07A },
+	{ "salmon", 0xFA8072 }, { "coral", 0xFF7F50 }, { "tomato", 0xFF6347 },
+	{ "orangered", 0xFF4500 }, { "crimson", 0xDC143C }, { "firebrick", 0xB22222 },
+	{ "chocolate", 0xD2691E }, { "peru", 0xCD853F }, { "tan", 0xD2B48C },
+	{ "wheat", 0xF5DEB3 }, { "beige", 0xF5F5DC }, { "ivory", 0xFFFFF0 },
+	{ "lavender", 0xE6E6FA }, { "plum", 0xDDA0DD }, { "orchid", 0xDA70D6 },
+	{ "thistle", 0xD8BFD8 }, { "hotpink", 0xFF69B4 }, { "deeppink", 0xFF1493 },
+	{ "royalblue", 0x4169E1 }, { "steelblue", 0x4682B4 }, { "skyblue", 0x87CEEB },
+	{ "dodgerblue", 0x1E90FF }, { "cornflowerblue", 0x6495ED },
+	{ "mediumblue", 0x0000CD }, { "cadetblue", 0x5F9EA0 },
+	{ "turquoise", 0x40E0D0 }, { "mediumturquoise", 0x48D1CC },
+	{ "springgreen", 0x00FF7F }, { "lawngreen", 0x7CFC00 },
+	{ "chartreuse", 0x7FFF00 }, { "yellowgreen", 0x9ACD32 },
+	{ "olivedrab", 0x6B8E23 }, { "seagreen", 0x2E8B57 }, { "forestgreen", 0x228B22 },
+	{ "limegreen", 0x32CD32 }, { "darkslategray", 0x2F4F4F }, { "darkslategrey", 0x2F4F4F },
+	{ "slategray", 0x708090 }, { "slategrey", 0x708090 },
+	{ "lightslategray", 0x778899 }, { "lightslategrey", 0x778899 },
+	{ "midnightblue", 0x191970 }, { "darkturquoise", 0x00CED1 },
+	{ "sienna", 0xA0522D }, { "saddlebrown", 0x8B4513 },
+	{ "snow", 0xFFFAFA }, { "mintcream", 0xF5FFFA }, { "honeydew", 0xF0FFF0 },
+	{ "azure", 0xF0FFFF }, { "aliceblue", 0xF0F8FF }, { "ghostwhite", 0xF8F8FF },
+	{ "floralwhite", 0xFFFAF0 }, { "linen", 0xFAF0E6 }, { "oldlace", 0xFDF5E6 },
+	{ "antiquewhite", 0xFAEBD7 }, { "mistyrose", 0xFFE4E1 }, { "papayawhip", 0xFFEFD5 },
+	{ "peachpuff", 0xFFDAB9 }, { "bisque", 0xFFE4C4 }, { "blanchedalmond", 0xFFEBCD },
+	{ "moccasin", 0xFFE4B5 }, { "navajowhite", 0xFFDEAD }, { "burlywood", 0xDEB887 },
+	{ "khaki", 0xF0E68C }, { "darkkhaki", 0xBDB76B }, { "palegoldenrod", 0xEEE8AA },
+	{ "goldenrod", 0xDAA520 }, { "darkgoldenrod", 0xB8860B },
+	{ "rosybrown", 0xBC8F8F }, { "indianred", 0xCD5C5C }, { "mediumvioletred", 0xC71585 },
+	{ "palevioletred", 0xDB7093 }, { "deepskyblue", 0x00BFFF },
+	{ "powderblue", 0xB0E0E6 }, { "paleturquoise", 0xAFEEEE },
+	{ "mediumaquamarine", 0x66CDAA }, { "aquamarine", 0x7FFFD4 },
+	{ "mediumspringgreen", 0x00FA9A }, { "palegreen", 0x98FB98 },
+	{ "greenyellow", 0xADFF2F }, { "mediumseagreen", 0x3CB371 },
+	{ "darkseagreen", 0x8FBC8F }, { "darkcyan", 0x008B8B }, { "darkmagenta", 0x8B008B },
+	{ "mediumpurple", 0x9370DB }, { "blueviolet", 0x8A2BE2 }, { "darkorchid", 0x9932CC },
+	{ "darkslateblue", 0x483D8B }, { "slateblue", 0x6A5ACD }, { "mediumslateblue", 0x7B68EE },
+	{ "rebeccapurple", 0x663399 }, { "maroon", 0x800000 },
 	{ "transparent", 0xFFFFFFFF },
 	{ nullptr, 0 }
 };
@@ -33,6 +77,15 @@ bool cssParseColor(const std::string& str, uint32_t& out)
 			out = 0xFF000000 | ((uint32_t)(b * 17) << 16) | ((uint32_t)(g * 17) << 8) | (uint32_t)(r * 17);
 			return true;
 		}
+		if (s.size() == 5)  // #rgba
+		{
+			unsigned r, g, b, a;
+			if (sscanf(s.c_str() + 1, "%1x%1x%1x%1x", &r, &g, &b, &a) != 4) return false;
+			uint32_t aa = a * 17;
+			if (aa < 26) { out = 0; return true; }  // alpha <= ~0.1 -> transparent
+			out = (aa << 24) | ((uint32_t)(b * 17) << 16) | ((uint32_t)(g * 17) << 8) | (uint32_t)(r * 17);
+			return true;
+		}
 		if (s.size() == 7)
 		{
 			unsigned v;
@@ -40,15 +93,27 @@ bool cssParseColor(const std::string& str, uint32_t& out)
 			out = 0xFF000000 | ((v & 0xFF) << 16) | (v & 0xFF00) | ((v & 0xFF0000) >> 16);
 			return true;
 		}
+		if (s.size() == 9)  // #rrggbbaa
+		{
+			unsigned v;
+			if (sscanf(s.c_str() + 1, "%8x", &v) != 1) return false;
+			uint32_t aa = v & 0xFF;
+			if (aa < 26) { out = 0; return true; }  // alpha <= ~0.1 -> transparent
+			out = (aa << 24) | (((v >> 8) & 0xFF) << 16) | (((v >> 16) & 0xFF) << 8) | ((v >> 24) & 0xFF);
+			return true;
+		}
 		return false;
 	}
 	if (strStartsWith(s, "rgb(") || strStartsWith(s, "rgba("))
 	{
-		size_t start = strStartsWith(s, "rgba(") ? 5 : 4;
+		bool isRgba = strStartsWith(s, "rgba(");
+		size_t start = isRgba ? 5 : 4;
 		int r = 0, g = 0, b = 0;
+		float af = 1.0f;
 		std::string inner = s.substr(start);
 		for (char& ch : inner) if (ch == ',' || ch == ')') ch = ' ';
-		if (sscanf(inner.c_str(), "%d %d %d", &r, &g, &b) >= 3)
+		int parsed = sscanf(inner.c_str(), "%d %d %d %f", &r, &g, &b, &af);
+		if (parsed >= 3)
 		{
 			if (r < 0) r = 0;
 			if (r > 255) r = 255;
@@ -56,7 +121,11 @@ bool cssParseColor(const std::string& str, uint32_t& out)
 			if (g > 255) g = 255;
 			if (b < 0) b = 0;
 			if (b > 255) b = 255;
-			out = 0xFF000000 | ((uint32_t)b << 16) | ((uint32_t)g << 8) | (uint32_t)r;
+			if (isRgba && parsed >= 4 && af <= 0.1f) { out = 0; return true; }
+			uint32_t aa = 0xFF;
+			if (isRgba && parsed >= 4) aa = (uint32_t)(af * 255.0f + 0.5f);
+			if (aa > 255) aa = 255;
+			out = (aa << 24) | ((uint32_t)b << 16) | ((uint32_t)g << 8) | (uint32_t)r;
 			return true;
 		}
 		return false;
@@ -100,15 +169,10 @@ static int parseCssLength(const std::string& token, int base = 16, int percentBa
 //-----------------------------------------------------------------------------
 // Parse d'une declaration "prop: value"
 //-----------------------------------------------------------------------------
-static void parseDeclaration(const std::string& prop, const std::string& value, Style& out)
+static void parseDeclarationValues(const std::string& prop, const std::string& value, Style& out)
 {
 	std::string p = toLower(strTrim(prop));
 	std::string v = toLower(strTrim(value));
-
-	// Ignorer / extraire !important pour ne pas corrompre la valeur
-	size_t impPos = v.find("!important");
-	if (impPos != std::string::npos)
-		v = strTrim(v.substr(0, impPos));
 
 	if (p == "color" || p == "text-color")
 	{
@@ -150,7 +214,9 @@ static void parseDeclaration(const std::string& prop, const std::string& value, 
 	}
 	if (p == "font-weight")
 	{
-		out.bold = (v == "bold" || v == "bolder" || v == "700" || v == "800" || v == "900");
+		int w = 0;
+		sscanf(v.c_str(), "%d", &w);
+		out.bold = (v == "bold" || v == "bolder" || v == "600" || w >= 600);
 		out.declared |= CssPropBold;
 		return;
 	}
@@ -178,17 +244,27 @@ static void parseDeclaration(const std::string& prop, const std::string& value, 
 	{
 		if (v == "none")
 		{
-			out.displayNone = true; out.block = false;
-			out.declared |= CssPropDisplay;
+			out.displayNone = true; out.block = false; out.displayInline = false; out.flex = false;
+			out.declared |= CssPropDisplay | CssPropFlex;
 		}
 		else if (v == "block")
 		{
-			out.displayNone = false; out.block = true;
-			out.declared |= CssPropDisplay;
+			out.displayNone = false; out.block = true; out.displayInline = false; out.flex = false;
+			out.declared |= CssPropDisplay | CssPropFlex;
 		}
 		else if (v == "flex")
 		{
-			out.displayNone = false; out.block = true; out.flex = true;
+			out.displayNone = false; out.block = true; out.displayInline = false; out.flex = true;
+			out.declared |= CssPropDisplay | CssPropFlex;
+		}
+		else if (v == "inline")
+		{
+			out.displayNone = false; out.block = false; out.displayInline = true; out.flex = false;
+			out.declared |= CssPropDisplay | CssPropFlex;
+		}
+		else if (v == "inline-block")
+		{
+			out.displayNone = false; out.block = true; out.displayInline = false; out.flex = false;
 			out.declared |= CssPropDisplay | CssPropFlex;
 		}
 		return;
@@ -213,6 +289,38 @@ static void parseDeclaration(const std::string& prop, const std::string& value, 
 			(v == "space-between" ? 2 : 0));
 		out.flex = true;
 		out.declared |= CssPropFlex | CssPropJustify;
+		return;
+	}
+	if (p == "gap" || p == "row-gap" || p == "column-gap")
+	{
+		std::vector<std::string> tokens;
+		size_t pos = 0;
+		while (pos < v.size())
+		{
+			while (pos < v.size() && (v[pos] == ' ' || v[pos] == '\t')) ++pos;
+			if (pos >= v.size()) break;
+			size_t next = v.find_first_of(" \t", pos);
+			if (next == std::string::npos) next = v.size();
+			tokens.push_back(v.substr(pos, next - pos));
+			pos = next;
+		}
+		if (p == "row-gap")
+		{
+			out.rowGap = std::max(0, parseCssLength(v));
+			out.declared |= CssPropRowGap;
+		}
+		else if (p == "column-gap")
+		{
+			out.columnGap = std::max(0, parseCssLength(v));
+			out.declared |= CssPropColumnGap;
+		}
+		else if (!tokens.empty())
+		{
+			out.rowGap = std::max(0, parseCssLength(tokens[0]));
+			out.columnGap = tokens.size() > 1
+				? std::max(0, parseCssLength(tokens[1])) : out.rowGap;
+			out.declared |= CssPropRowGap | CssPropColumnGap;
+		}
 		return;
 	}
 	if (p == "box-sizing")
@@ -321,10 +429,53 @@ static void parseDeclaration(const std::string& prop, const std::string& value, 
 		out.declared |= CssPropMono;
 		return;
 	}
+	if (p == "list-style" || p == "list-style-type")
+	{
+		out.listStyleNone = (v == "none");
+		out.declared |= CssPropListStyle;
+		return;
+	}
+	if (p == "border" || p == "border-width" || p == "border-color")
+	{
+		if (p == "border")
+		{
+			out.borderWidth = v == "none" ? 0 : 1;
+			size_t start = 0;
+			while (start < v.size())
+			{
+				while (start < v.size() && isspace((unsigned char)v[start])) ++start;
+				size_t end = v.find_first_of(" \t", start);
+				if (end == std::string::npos) end = v.size();
+				const std::string token = v.substr(start, end - start);
+				if (!token.empty())
+				{
+					uint32_t color;
+					if (cssParseColor(token, color)) out.borderColor = color;
+					else if (token == "none") out.borderWidth = 0;
+					else if (token == "0") out.borderWidth = 0;
+					else if (token.find("px") != std::string::npos)
+						out.borderWidth = std::max(0, parseCssLength(token));
+				}
+				start = end;
+			}
+		}
+		else if (p == "border-width")
+		{
+			out.borderWidth = std::max(0, parseCssLength(v));
+		}
+		else
+		{
+			uint32_t color;
+			if (cssParseColor(v, color)) out.borderColor = color;
+		}
+		out.declared |= CssPropBorder;
+		return;
+	}
 }
 
-static void applyProperty(Style& out, const Style& source, uint32_t property)
+static void applyProperty(Style& out, const Style& source, uint64_t property)
 {
+	out.declared |= property;
 	switch (property)
 	{
 	case CssPropColor: out.color = source.color; out.colorSet = source.colorSet; break;
@@ -356,13 +507,21 @@ static void applyProperty(Style& out, const Style& source, uint32_t property)
 	case CssPropDisplay:
 		out.displayNone = source.displayNone;
 		out.block = source.block;
+		out.displayInline = source.displayInline;
 		break;
 	case CssPropMono: out.mono = source.mono; break;
+	case CssPropListStyle: out.listStyleNone = source.listStyleNone; break;
+	case CssPropBorder:
+		out.borderWidth = source.borderWidth;
+		out.borderColor = source.borderColor;
+		break;
+	case CssPropRowGap: out.rowGap = source.rowGap; break;
+	case CssPropColumnGap: out.columnGap = source.columnGap; break;
 	}
 	out.declared |= property;
 }
 
-static const uint32_t kCssProperties[] =
+static const uint64_t kCssProperties[] =
 {
 	CssPropColor, CssPropBackground, CssPropFontSize, CssPropBold, CssPropItalic,
 	CssPropUnderline, CssPropAlign, CssPropMarginTop, CssPropMarginRight,
@@ -370,8 +529,29 @@ static const uint32_t kCssProperties[] =
 	CssPropPaddingRight, CssPropPaddingBottom, CssPropPaddingLeft,
 	CssPropWidth, CssPropMinWidth, CssPropMaxWidth, CssPropBoxSizing,
 	CssPropHeight, CssPropDisplay, CssPropMono, CssPropFlex, CssPropFlexRow,
-	CssPropFlexWrap, CssPropJustify, CssPropMarginLeftAuto, CssPropMarginRightAuto
+	CssPropFlexWrap, CssPropJustify, CssPropMarginLeftAuto, CssPropMarginRightAuto,
+	CssPropListStyle, CssPropBorder, CssPropRowGap, CssPropColumnGap
 };
+
+static void parseDeclaration(const std::string& prop, const std::string& value, Style& out)
+{
+	std::string cleaned = strTrim(value);
+	const std::string lower = toLower(cleaned);
+	const size_t importantPos = lower.find("!important");
+	const bool important = importantPos != std::string::npos;
+	if (important) cleaned = strTrim(cleaned.substr(0, importantPos));
+
+	Style parsed;
+	parseDeclarationValues(prop, cleaned, parsed);
+	for (uint64_t property : kCssProperties)
+	{
+		if (!(parsed.declared & property)) continue;
+		if ((out.important & property) && !important) continue;
+		applyProperty(out, parsed, property);
+		if (important) out.important |= property;
+		else out.important &= ~((uint64_t)property);
+	}
+}
 
 //-----------------------------------------------------------------------------
 // Parse de declarations inline "a: b; c: d"
@@ -462,16 +642,42 @@ static void parseCompound(const std::string& token, CssCompoundSelector& comp, i
 		{
 			// Pseudo-classes / pseudo-elements
 			size_t j = i + 1;
-			while (j < token.size() && (isalnum((unsigned char)token[j]) || token[j] == '-' || token[j] == ':'))
+			// double-colon ::before ::after etc.
+			if (j < token.size() && token[j] == ':') j++;
+			while (j < token.size() && (isalnum((unsigned char)token[j]) || token[j] == '-'))
 				j++;
 			std::string pseudo = toLower(token.substr(i, j - i));
+			std::string pseudoArgument;
+			if (j < token.size() && token[j] == '(')
+			{
+				const size_t argumentStart = j + 1;
+				size_t depth = 1;
+				j++;
+				while (j < token.size() && depth > 0)
+				{
+					if (token[j] == '(') depth++;
+					else if (token[j] == ')') depth--;
+					j++;
+				}
+				if (depth == 0) pseudoArgument = strTrim(token.substr(argumentStart, j - argumentStart - 1));
+			}
 			if (pseudo == ":first-child")
 			{
 				comp.firstChild = true;
 				spec += 10;
 			}
-			// Les pseudo-classes de survol/focus (:hover, :focus, ::before, etc.)
-			// sont ignorees gracieusement sans invalider le reste du selecteur.
+			else if (pseudo == ":hover") { comp.hover = true; spec += 10; }
+			else if (pseudo == ":focus") { comp.focus = true; spec += 10; }
+			else if (pseudo == ":checked") { comp.checked = true; spec += 10; }
+			else if (pseudo == ":disabled") { comp.disabled = true; spec += 10; }
+			else if (pseudo == ":not" && !pseudoArgument.empty() && pseudoArgument.find_first_of(" >+~") == std::string::npos)
+			{ comp.notSelector = pseudoArgument; spec += 10; }
+			else
+			{
+				// :hover, :focus, :not(), ::before, ::after, etc.
+				// On marque la regle comme non supportee : elle ne doit pas s'appliquer.
+				comp.unsupported = true;
+			}
 			i = j;
 		}
 		else if (c == '*')
@@ -493,6 +699,7 @@ static void parseCompound(const std::string& token, CssCompoundSelector& comp, i
 	}
 }
 
+static bool matchCompound(const Document& doc, int nodeIdx, const CssCompoundSelector& sel);
 static bool matchCompound(const Document& doc, int nodeIdx, const CssCompoundSelector& sel)
 {
 	if (nodeIdx < 0 || (size_t)nodeIdx >= doc.nodes.size()) return false;
@@ -506,6 +713,22 @@ static bool matchCompound(const Document& doc, int nodeIdx, const CssCompoundSel
 	{
 		const char* nid = node.getAttr("id");
 		if (!nid || std::string(nid) != sel.id) return false;
+	}
+	if (sel.hover)
+	{
+		bool hovered = false;
+		for (int current = doc.hoveredNode; current >= 0 && (size_t)current < doc.nodes.size(); current = doc.nodes[(size_t)current].parent)
+			if (current == nodeIdx) { hovered = true; break; }
+		if (!hovered) return false;
+	}
+	if (sel.focus && doc.focusedNode != nodeIdx) return false;
+	if (sel.checked && !node.hasAttr("checked")) return false;
+	if (sel.disabled && !node.hasAttr("disabled")) return false;
+	if (!sel.notSelector.empty())
+	{
+		CssCompoundSelector excluded; int specificity = 0;
+		parseCompound(sel.notSelector, excluded, specificity);
+		if (matchCompound(doc, nodeIdx, excluded)) return false;
 	}
 
 	if (!sel.classes.empty())
@@ -629,6 +852,9 @@ void CssEngine::parseRule(const std::string& text)
 	if (endBrace != std::string::npos) body = body.substr(0, endBrace);
 
 	if (selector.empty()) return;
+	// Les combinateurs de freres ne sont pas implementees : ignorer la regle
+	// au complet plutot que de la decouper en selecteurs descendants faux.
+	if (selector.find('+') != std::string::npos || selector.find('~') != std::string::npos) return;
 
 	// Decoupe en composants selon les combinateurs (' ' ou '>')
 	struct RawToken { std::string text; char comb; };
@@ -663,13 +889,16 @@ void CssEngine::parseRule(const std::string& text)
 	if (rawTokens.empty()) return;
 
 	CssRule rule;
-	rule.order = (int)rules_.size();
+	rule.order = sourceOrder_ >= 0
+		? sourceOrder_ * ((int)MaxRules + 1) + sourceRuleOrder_++
+		: (int)rules_.size();
 
 	// Construire la chaine de droite a gauche (la cible en premier index 0)
 	for (int k = (int)rawTokens.size() - 1; k >= 0; k--)
 	{
 		CssCompoundSelector comp;
 		parseCompound(rawTokens[k].text, comp, rule.specificity);
+		if (comp.unsupported) return;
 		comp.combinator = (k > 0) ? rawTokens[k].comb : 0;
 		rule.selectorChain.push_back(comp);
 	}
@@ -698,10 +927,24 @@ void CssEngine::parseRule(const std::string& text)
 	rules_.push_back(rule);
 }
 
+static int mediaWidth(const std::string& query, size_t valuePos)
+{
+	char* end = nullptr;
+	const float value = strtof(query.c_str() + valuePos, &end);
+	if (end == query.c_str() + valuePos || value <= 0.0f) return 0;
+	const std::string unit = toLower(strTrim(std::string(end)));
+	float pixels = value;
+	if (unit.find("rem") == 0 || unit.find("em") == 0) pixels *= 16.0f;
+	else if (unit.find("pt") == 0) pixels *= 4.0f / 3.0f;
+	else if (unit.find("vw") == 0) pixels *= (float)NW_PAGE_WIDTH / 100.0f;
+	return (int)pixels;
+}
+
 static bool evalMediaQuery(const std::string& query)
 {
 	std::string q = toLower(query);
-	if (q.find("print") != std::string::npos) return false;
+	if (q.find("print") != std::string::npos && q.find("screen") == std::string::npos)
+		return false;
 
 	size_t mw = q.find("max-width");
 	if (mw != std::string::npos)
@@ -709,7 +952,7 @@ static bool evalMediaQuery(const std::string& query)
 		size_t colon = q.find(':', mw);
 		if (colon != std::string::npos)
 		{
-			int maxW = atoi(q.c_str() + colon + 1);
+			int maxW = mediaWidth(q, colon + 1);
 			if (maxW > 0 && NW_PAGE_WIDTH > maxW) return false;
 		}
 	}
@@ -720,16 +963,28 @@ static bool evalMediaQuery(const std::string& query)
 		size_t colon = q.find(':', minw);
 		if (colon != std::string::npos)
 		{
-			int minW = atoi(q.c_str() + colon + 1);
+			int minW = mediaWidth(q, colon + 1);
 			if (minW > 0 && NW_PAGE_WIDTH < minW) return false;
 		}
 	}
 	return true;
 }
 
-void CssEngine::parseStylesheet(const std::string& css)
+void CssEngine::parseStylesheet(const std::string& css, int sourceOrder)
 {
-	if (stylesheetBytes_ >= MaxStylesheetBytes) return;
+	const int previousSourceOrder = sourceOrder_;
+	const int previousSourceRuleOrder = sourceRuleOrder_;
+	if (sourceOrder >= 0)
+	{
+		sourceOrder_ = sourceOrder;
+		sourceRuleOrder_ = 0;
+	}
+	if (stylesheetBytes_ >= MaxStylesheetBytes)
+	{
+		sourceOrder_ = previousSourceOrder;
+		sourceRuleOrder_ = previousSourceRuleOrder;
+		return;
+	}
 	const size_t bytesToParse = (css.size() < MaxStylesheetBytes - stylesheetBytes_)
 		? css.size() : MaxStylesheetBytes - stylesheetBytes_;
 	stylesheetBytes_ += bytesToParse;
@@ -752,6 +1007,19 @@ void CssEngine::parseStylesheet(const std::string& css)
 	size_t pos = 0;
 	while (pos < clean.size() && rules_.size() < MaxRules)
 	{
+		// Les at-rules simples terminent par un point-virgule et n'ont pas de
+		// bloc. Les ignorer avant de rechercher le prochain bloc de regles.
+		while (pos < clean.size())
+		{
+			while (pos < clean.size() && isspace((unsigned char)clean[pos])) ++pos;
+			if (pos >= clean.size() || clean[pos] != '@') break;
+			size_t semi = clean.find(';', pos);
+			size_t braceAt = clean.find('{', pos);
+			if (semi != std::string::npos && (braceAt == std::string::npos || semi < braceAt))
+				pos = semi + 1;
+			else break;
+		}
+		if (pos >= clean.size()) break;
 		size_t brace = clean.find('{', pos);
 		if (brace == std::string::npos) break;
 		const std::string selector = strTrim(clean.substr(pos, brace - pos));
@@ -796,6 +1064,8 @@ void CssEngine::parseStylesheet(const std::string& css)
 		}
 		pos = endBrace;
 	}
+	sourceOrder_ = previousSourceOrder;
+	sourceRuleOrder_ = previousSourceRuleOrder;
 }
 
 Style defaultStyle()
@@ -815,15 +1085,14 @@ void collectStyleBlocks(const Document& doc, CssEngine& css)
 		const Node& n = doc.nodes[i];
 		if (n.isElement() && n.tag == "style")
 		{
+			std::string sheet;
 			for (int c : n.children)
 			{
 				const Node& ch = doc.nodes[c];
 				if (ch.type == NodeType::RawText || ch.type == NodeType::Text)
-				{
-					if (!ch.text.empty())
-						css.parseStylesheet(ch.text);
-				}
+					sheet += ch.text;
 			}
+			if (!sheet.empty()) css.parseStylesheet(sheet, (int)i);
 		}
 	}
 }
@@ -847,10 +1116,12 @@ Style CssEngine::resolve(const Document& doc, int nodeIdx, const Style& parent) 
 
 	int bestSpec[sizeof(kCssProperties) / sizeof(kCssProperties[0])];
 	int bestOrder[sizeof(kCssProperties) / sizeof(kCssProperties[0])];
+	bool bestImportant[sizeof(kCssProperties) / sizeof(kCssProperties[0])];
 	for (size_t p = 0; p < sizeof(kCssProperties) / sizeof(kCssProperties[0]); ++p)
 	{
 		bestSpec[p] = -1;
 		bestOrder[p] = -1;
+		bestImportant[p] = false;
 	}
 
 	for (const auto& r : rules_)
@@ -859,13 +1130,18 @@ Style CssEngine::resolve(const Document& doc, int nodeIdx, const Style& parent) 
 		{
 			for (size_t p = 0; p < sizeof(kCssProperties) / sizeof(kCssProperties[0]); ++p)
 			{
-				const uint32_t property = kCssProperties[p];
+				const uint64_t property = kCssProperties[p];
 				if (r.style.declared & property)
 				{
-					if (r.specificity > bestSpec[p] || (r.specificity == bestSpec[p] && r.order >= bestOrder[p]))
+					const bool important = (r.style.important & property) != 0;
+					if ((important && !bestImportant[p]) ||
+						(important == bestImportant[p] &&
+						 (r.specificity > bestSpec[p] ||
+						  (r.specificity == bestSpec[p] && r.order >= bestOrder[p]))))
 					{
 						bestSpec[p] = r.specificity;
 						bestOrder[p] = r.order;
+						bestImportant[p] = important;
 						applyProperty(out, r.style, property);
 					}
 				}
@@ -881,7 +1157,12 @@ Style CssEngine::resolve(const Document& doc, int nodeIdx, const Style& parent) 
 		parseInlineStyle(inlineStyle, inlineRules);
 		for (size_t p = 0; p < sizeof(kCssProperties) / sizeof(kCssProperties[0]); ++p)
 			if (inlineRules.declared & kCssProperties[p])
-				applyProperty(out, inlineRules, kCssProperties[p]);
+			{
+				const uint64_t property = kCssProperties[p];
+				const bool important = (inlineRules.important & property) != 0;
+				if (!bestImportant[p] || important)
+					applyProperty(out, inlineRules, property);
+			}
 	}
 
 	return out;
@@ -1017,21 +1298,54 @@ int cssSelfTest()
 		Style s;
 		parseInlineStyle("width: 50vw; min-width: 25%; max-width: 80%; margin: 0 auto; "
 			"box-sizing: border-box; display: flex; flex-direction: row; "
-			"flex-wrap: wrap; justify-content: space-between;", s);
+			"flex-wrap: wrap; justify-content: space-between; gap: 8px 12px;", s);
 		if (s.width != 200 || s.minWidth != 100 || s.maxWidth != 320 ||
 			!s.marginLeftAuto || !s.marginRightAuto || !s.borderBox || !s.flex ||
-			!s.flexRow || !s.flexWrap || s.justifyContent != 2)
+			!s.flexRow || !s.flexWrap || s.justifyContent != 2 ||
+			s.rowGap != 8 || s.columnGap != 12)
 			CSS_SELF_FAIL();
 		Document doc;
 		const int node = doc.createElement(-1, "div");
 		CssEngine css;
 		css.parseStylesheet("div { min-width: 30%; max-width: 70%; margin: 0 auto; display: flex; "
-			"flex-direction: row; flex-wrap: nowrap; justify-content: center; box-sizing: border-box; }");
+			"flex-direction: row; flex-wrap: nowrap; justify-content: center; box-sizing: border-box; "
+			"row-gap: 5px; column-gap: 9px; }");
 		const Style resolved = css.resolve(doc, node, defaultStyle());
 		if (resolved.minWidth != 120 || resolved.maxWidth != 280 ||
 			!resolved.marginLeftAuto || !resolved.marginRightAuto || !resolved.flex ||
 			!resolved.flexRow || resolved.flexWrap || resolved.justifyContent != 1 ||
-			!resolved.borderBox)
+			!resolved.borderBox || resolved.rowGap != 5 || resolved.columnGap != 9)
+			CSS_SELF_FAIL();
+	}
+	{
+		Document doc;
+		const int node = doc.createElement(-1, "p");
+		CssEngine css;
+		css.parseStylesheet("p { color: red !important; } p { color: blue; } "
+			"p { color: green !important; }", 2);
+		css.parseStylesheet("p { color: blue; }", 1);
+		doc.setAttr(node, "style", "color: blue");
+		Style resolved = css.resolve(doc, node, defaultStyle());
+		if (resolved.color != 0xFF008000) CSS_SELF_FAIL();
+		doc.setAttr(node, "style", "color: blue !important");
+		resolved = css.resolve(doc, node, defaultStyle());
+		if (resolved.color != 0xFFFF0000) CSS_SELF_FAIL();
+	}
+	{
+		Document doc;
+		const int node = doc.createElement(-1, "p");
+		CssEngine css;
+		css.parseStylesheet("@media screen and (max-width: 48em), print { p { color: red; } } "
+			"@media (min-width: 48em) { p { color: blue; } }");
+		Style resolved = css.resolve(doc, node, defaultStyle());
+		if (css.rules().size() != 1 || resolved.color != 0xFF0000FF)
+			CSS_SELF_FAIL();
+	}
+	{
+		Style s;
+		parseInlineStyle("display: inline; list-style: none; border: 2px solid #123456;", s);
+		if (!s.displayInline || !s.listStyleNone || s.borderWidth != 2 ||
+			s.borderColor != 0xFF563412)
 			CSS_SELF_FAIL();
 	}
 #undef CSS_SELF_FAIL
