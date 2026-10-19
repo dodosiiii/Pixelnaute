@@ -4,7 +4,7 @@
 New Nintendo 2DS XL. Il est conçu pour rester léger et afficher des pages web
 avec un moteur HTML/CSS natif simplifié.
 
-> **Version en développement : 0.3.0**
+> **Version en développement : 0.4.0**
 >
 > Pixelnaute est un projet en développement. Il peut ouvrir certaines pages,
 > mais ne remplace pas un navigateur moderne : les sites complexes, les
