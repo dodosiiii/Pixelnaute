@@ -24,57 +24,33 @@ avec un moteur HTML/CSS natif simplifié.
 - [Contribuer](#contribuer)
 - [Licence](#licence)
 
-## Fonctionnalités & Progrès récents (v0.3.0)
+## Fonctionnalités
 
-Pixelnaute dispose d'un moteur de rendu web autonome tournant nativement sur le matériel de la New 3DS, sans serveur intermédiaire :
+Pixelnaute récupère les pages directement sur la console et les rend avec son
+moteur HTML/CSS natif. Il ne s'appuie pas sur un navigateur PC distant ni sur
+un proxy de rendu.
 
-- **Réseau moderne & sessions partagées :**
-  - Session partagée `CURLSH` mutualisant le cache DNS, les sessions TLS (accélération des handshakes) et les cookies.
-  - User-Agent standard mobile (Safari Mobile) complété par le suffixe Pixelnaute.
-  - Prise en charge des requêtes **GET** et **POST** (permettant la navigation paginée et l'envoi de formulaires).
-  - Détection automatique et conversion de charset (**ISO-8859-1** et **Windows-1252** vers UTF-8 propre).
-  - Préservation du corps HTML sur les codes d'erreur HTTP 4xx/5xx et téléchargement partiel en cas de dépassement de limite de taille.
-  - Suivi des redirections automatiques `<meta http-equiv="refresh">`.
+- **HTML, CSS et JavaScript :**
+  - Analyse HTML tolérante, DOM manipulable par les scripts et styles externes.
+  - Moteur CSS partiel : sélecteurs courants, cascade, feuilles `@media` mobiles,
+    dimensions, couleurs, bordures simples et une prise en charge limitée de
+    Flexbox (rangées, retour à la ligne et espacements `gap`).
+  - Moteur JavaScript QuickJS intégré, activé par défaut, avec des bindings DOM,
+    événements, temporisateurs, stockage, `fetch` et XMLHttpRequest partiels.
+  - Indicateur de chargement pendant le traitement des scripts.
 
-- **Moteur HTML tolérant & sécurisé :**
-  - Traitement natif des balises `<pre>`, `<textarea>` et `<title>` avec décodage des entités HTML.
-  - Gestion des balises auto-fermantes `/>` et saut intelligent des sous-arbres lourds invisibles (`<svg>`, `<template>`).
-  - Conservation des scripts et des éléments cachés dans le DOM ; leur filtrage est réalisé au rendu pour que JavaScript puisse les retrouver et les modifier.
-  - Mode lecteur de repli (*Reader Mode*) automatique pour extraire et rendre le contenu texte lisible sur les pages complexes.
+- **Navigation et réseau :**
+  - Requêtes HTTP/HTTPS, redirections, cookies de session, historique, favoris
+    et onglets.
+  - Formulaires GET et POST encodés en URL (`application/x-www-form-urlencoded`).
+  - Moteurs de recherche DuckDuckGo Lite, Wikipedia et Mojeek.
+  - Chargement des images désactivé par défaut ; il peut être activé dans les
+    réglages, mais augmente la consommation mémoire et peut ralentir ou faire
+    échouer le rendu sur la console.
 
-- **Moteur CSS enrichi :**
-  - Prise en charge des sélecteurs composés et combinateurs : descendant (` `), fils direct (`>`), classes multiples (`.a.b`), attributs (`[attr]`, `[attr=val]`), et pseudo-classe `:first-child`.
-  - Évaluation des règles `@media` en vue mobile (largeur logique 400 px), et déballage transparent de `@supports` et `@layer`.
-  - Téléchargement et application de feuilles de style externes (`<link rel="stylesheet">`).
-  - Cascade et spécificité affinées selon l'ordre des feuilles dans le DOM, gestion du `!important` et conversion des unités des media queries (`px`, `em`, `rem`).
-  - Prise en charge de `display: inline`, `list-style: none` et des bordures simples.
-  - Mise en page flex en ligne avec retour à la ligne (`flex-wrap`) et espacements `gap` simples.
-
-- **Mise en page, formulaires et rendu graphique (PICA200) :**
-  - Tableaux HTML (`table`, `tr`, `td`, `th`) alignés horizontalement par colonnes réparties.
-  - Contrôles de formulaires complets : affichage des textes de `<button>`, sélection dynamique dans `<select>`, cases à cocher (`checkbox`) et boutons radio.
-  - Gestion multi-lignes fluide dans les blocs `<pre>`.
-  - Allocation mémoire adaptative (réduction dynamique de la hauteur du bitmap en cas de contrainte mémoire pour éliminer les crashs OOM).
-  - Rendu GPU tuilé Morton sans conflit mémoire avec le framebuffer Citro2D.
-
-- **Recherche & navigation :**
-  - Moteur DuckDuckGo Lite par défaut avec réécriture lisible des résultats, moteurs alternatifs Wikipedia et Mojeek.
-  - Historique, favoris, onglets multiples, défilement gestuel tactile et curseur virtuel C-Stick.
-
-## Feuille de route pour la v0.4 (Roadmap)
-
-La version 0.4 sera axée sur l'introduction de l'interactivité dynamique et l'optimisation des performances :
-
-1. **Intégration d'un moteur JavaScript léger (QuickJS) :**
-   - Portage et initialisation de QuickJS adapté aux contraintes de mémoire de la New 3DS.
-   - Bindings de base pour l'API DOM minimale (`document.getElementById`, `addEventListener`, manipulation de texte et de styles).
-   - Exécution ciblée des scripts essentiels et gestion d'événements (clics, validations de formulaires).
-2. **Gestion réseau asynchrone des médias :**
-   - Déplacement du chargement des images et des feuilles de style secondaires sur un thread d'arrière-plan pour supprimer tout gel de l'interface lors de la navigation.
-3. **Persistance des sessions et cookies :**
-   - Sauvegarde sur carte SD des cookies de session pour maintenir les connexions utilisateur entre redémarrages.
-4. **Moteur CSS étendu :**
-   - Amélioration de la gestion des unités relatives (`%`, `vh`/`vw`) et amorce d'un modèle de boîte flexible (flexbox basique).
+Le rendu et les API web restent volontairement limités par la mémoire et les
+capacités de la New 3DS. Une page visible dans un navigateur PC peut donc avoir
+une mise en page différente ou ne pas fonctionner ici.
 
 ## Installation sur la console
 
@@ -147,8 +123,10 @@ et peut réessayer sans cette vérification si la connexion échoue. Ce repli
 facilite la compatibilité avec certains certificats, mais réduit la sécurité :
 les connexions ainsi réessayées ne garantissent plus l’identité du site.
 
-Les formulaires GET sont pris en charge. Les formulaires POST sont signalés
-comme non pris en charge et ne sont pas envoyés.
+Les formulaires GET et POST encodés en URL sont pris en charge. Les
+téléversements multiparties, par exemple l'envoi de fichiers, ne le sont pas.
+Le runtime JavaScript est expérimental : ses APIs et son comportement ne sont
+pas équivalents à ceux de Chrome, Firefox ou Safari.
 
 ### Mises à jour
 
@@ -205,12 +183,13 @@ n’est requis ou utilisé par la version actuelle.**
 
 ## Limites connues
 
-- Pas de moteur JavaScript (programmé pour la v0.4) : les applications web monopages (SPA) ou les scripts dynamiques ne s'exécutent pas encore.
-- Pas de flexbox complexe ni de grille CSS moderne.
-- Les défis anti-bot interactifs (Cloudflare Turnstile, reCAPTCHA complexe) ne peuvent pas être résolus sans moteur JS complet.
+- QuickJS est intégré, mais ce n'est pas un moteur de navigateur complet. Les APIs DOM et Web disponibles sont partielles ; de nombreuses applications monopages (SPA), bibliothèques modernes et fonctions JavaScript peuvent échouer ou dépasser les budgets d'exécution et de mémoire.
+- Le moteur CSS ne prend pas en charge tout le standard : notamment CSS Grid et les mises en page complexes, ainsi que de nombreuses propriétés, unités et sélecteurs.
+- Les images sont désactivées par défaut pour limiter les risques de manque de mémoire. Lorsqu'elles sont activées, le navigateur limite le nombre d'images chargées et la taille de son cache.
+- Les défis anti-bot interactifs (Cloudflare Turnstile, reCAPTCHA complexe) et les connexions exigeant un navigateur officiellement pris en charge peuvent échouer. Modifier le User-Agent ne fournit pas les fonctions manquantes et ne garantit pas l'acceptation d'un site.
 - Le parseur DOM conserve jusqu'à 32 768 nœuds et le budget de règles CSS autorise jusqu'à 512 règles et 128 Ko de feuilles de style.
-- L'envoi de formulaires supporte GET et POST encodé en URL (`application/x-www-form-urlencoded`). Les formulaires multi-parties (téléversement de fichiers multipart/form-data) ne sont pas pris en charge.
-- Le chargement des images volumineuses et des polices reste limité pour préserver la mémoire linéaire de la console.
+- Les formulaires multiparties (notamment le téléversement de fichiers) ne sont pas pris en charge.
+- Les ressources réseau sont traitées séquentiellement ; le chargement de pages complexes peut donc prendre du temps.
 
 ## Contribuer
 
