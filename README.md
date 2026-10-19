@@ -6,10 +6,10 @@ avec un moteur HTML/CSS natif simplifié.
 
 > **Version en développement : 0.5.0**
 >
-> Pixelnaute est un projet en développement. Il peut ouvrir certaines pages,
+> Pixelnaute est un projet en développement. Il peut ouvrir la plus pars des page pages,
 > mais ne remplace pas un navigateur moderne : les sites complexes, les
-> applications web et les pages protégées par des défis JavaScript peuvent ne
-> pas fonctionner.
+> applications web et les pages protégées par des défis JavaScript ne
+> marche pas.
 
 ## Sommaire
 
