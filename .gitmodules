@@ -1,0 +1,6 @@
+[submodule "third_party/js_eval/quickjs"]
+	path = third_party/js_eval/quickjs
+	url = https://github.com/bellard/quickjs.git
+[submodule "third_party/js_eval/mujs"]
+	path = third_party/js_eval/mujs
+	url = https://github.com/ArtifexSoftware/mujs.git

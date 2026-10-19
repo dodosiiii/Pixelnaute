@@ -14,6 +14,8 @@ jobs:
     container: devkitpro/devkitarm:latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Install project libraries
         run: dkp-pacman -Syu --noconfirm 3ds-curl 3ds-mbedtls 3ds-zlib citro2d citro3d
       - name: Build 3DSX
