@@ -30,15 +30,18 @@ public:
 	bool create(int width, int height, int yOrigin = 0)
 	{
 		destroy();
+		if (width <= 0 || width > 1024 || height <= 0 || height > 20000 || yOrigin < 0 ||
+			(size_t)width > SIZE_MAX / sizeof(uint16_t) / (size_t)height)
+		{
+			return false;
+		}
+		const size_t bytes = (size_t)width * (size_t)height * sizeof(uint16_t);
+		// Une seule surface ne doit jamais monopoliser le tas application.
+		if (bytes > 8u * 1024u * 1024u) return false;
 		w = width;
 		h = height;
 		originY = yOrigin;
-		if (width <= 0 || height <= 0 || height > 20000 || yOrigin < 0)
-		{
-			w = h = originY = 0;
-			return false;
-		}
-		px = (uint16_t*)malloc((size_t)width * height * 2);
+		px = (uint16_t*)malloc(bytes);
 		if (!px) { w = h = originY = 0; return false; }
 		return true;
 	}

@@ -39,6 +39,13 @@ const StoredImage* ImageStore::find(const std::string& url) const
 	return nullptr;
 }
 
+bool ImageStore::contains(const std::string& url) const
+{
+	for (const auto& img : images_)
+		if (img.url == url && img.valid) return true;
+	return false;
+}
+
 void ImageStore::evictLeastRecentlyUsed()
 {
 	if (images_.empty()) return;
@@ -115,6 +122,24 @@ bool ImageStore::decode(const std::string& data, StoredImage& out)
 		lastError_ = "image trop grande pour le budget memoire de la New 3DS";
 		return false;
 	}
+	// Le corps source reste vivant pendant le decodage et stb_image alloue un
+	// tampon RGBA temporaire. Conserver 4 Mio au tas application pour le DOM,
+	// le rendu et le reseau au lieu de laisser une image faire echouer newlib.
+#ifdef __3DS__
+	const size_t freeHeap = diagApplicationHeapFree();
+	const size_t reserve = 4u * 1024u * 1024u;
+	if (freeHeap < reserve + 64u * 1024u)
+	{
+		lastError_ = "memoire insuffisante pour decoder cette image";
+		return false;
+	}
+	const size_t availablePixels = (freeHeap - reserve) / 4u;
+	if ((size_t)w > availablePixels / (size_t)h)
+	{
+		lastError_ = "image ignoree pour conserver une marge memoire";
+		return false;
+	}
+#endif
 
 #ifdef __3DS__
 	diagStage("image decode");

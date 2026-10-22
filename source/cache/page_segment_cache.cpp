@@ -117,7 +117,7 @@ bool PageSegmentCache::load(uint64_t pageKey, int segmentIndex, Bitmap& out) con
 	if (!file) return false;
 	uint32_t header[4] = {};
 	const bool headerOk = fread(header, sizeof(uint32_t), 4, file) == 4 &&
-		header[0] == kMagic && header[1] == NW_PAGE_WIDTH &&
+		header[0] == kMagic && header[1] >= NW_PAGE_WIDTH && header[1] <= 640 &&
 		header[2] > 0 && header[2] <=
 			(uint32_t)(NW_PAGE_SEGMENT_HEIGHT + NW_PAGE_SEGMENT_OVERLAP) &&
 		header[3] <= (uint32_t)(NW_PAGE_SEGMENT_HEIGHT * NW_MAX_PAGE_SEGMENTS);
@@ -143,7 +143,7 @@ bool PageSegmentCache::load(uint64_t pageKey, int segmentIndex, Bitmap& out) con
 bool PageSegmentCache::store(uint64_t pageKey, int segmentIndex, const Bitmap& bitmap,
 	const std::string& pageUrl) const
 {
-	if (segmentIndex < 0 || !bitmap.px || bitmap.w != NW_PAGE_WIDTH ||
+	if (segmentIndex < 0 || !bitmap.px || bitmap.w < NW_PAGE_WIDTH || bitmap.w > 640 ||
 		bitmap.h <= 0 ||
 		bitmap.h > NW_PAGE_SEGMENT_HEIGHT + NW_PAGE_SEGMENT_OVERLAP ||
 		bitmap.originY < 0 ||

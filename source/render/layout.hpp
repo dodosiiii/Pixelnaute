@@ -64,6 +64,14 @@ struct ImageBox
 	std::string alt;
 };
 
+struct AnchorBox { std::string name; int y = 0; };
+
+struct TextRunBox
+{
+	int x = 0, y = 0, w = 0, h = 0;
+	std::string text;
+};
+
 //=============================================================================
 // Resultat complet d'une mise en page
 //=============================================================================
@@ -78,6 +86,8 @@ struct PageModel
 	std::vector<FormField> fields;
 	std::vector<FormSubmit> submits;
 	std::vector<ImageBox> images;
+	std::vector<AnchorBox> anchors;
+	std::vector<TextRunBox> textRuns;
 	bool jsUsed = false;              // <script> present sur la page
 	std::string csrfToken;            // jeton CSRF de la page (ex: meta csrf-token)
 	std::string csrfParam;            // nom du parametre CSRF (ex: meta csrf-param)
@@ -101,6 +111,8 @@ struct PageModel
 		fields.clear();
 		submits.clear();
 		images.clear();
+		anchors.clear();
+		textRuns.clear();
 		jsUsed = false;
 		csrfToken.clear();
 		csrfParam.clear();
@@ -115,7 +127,8 @@ struct PageModel
 class PageLayout
 {
 public:
-	PageLayout(const Document& doc, const CssEngine& css, const WebSettings& settings);
+	PageLayout(const Document& doc, const CssEngine& css, const WebSettings& settings,
+		int viewportWidth = NW_PAGE_WIDTH);
 
 	// Convertit le document en PageModel. Retourne false en cas de limite memoire.
 	bool render(PageModel& out, const std::string& pageUrl);
@@ -159,6 +172,7 @@ private:
 	int stopAtY_ = 0;
 	bool segmented_ = false;
 	bool renderStopped_ = false;
+	size_t linkStorageBytes_ = 0;
 
 	void renderNode(int idx, const Style& st);
 	void renderInline(int idx, const Style& st);

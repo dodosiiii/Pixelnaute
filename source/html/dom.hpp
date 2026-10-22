@@ -8,6 +8,7 @@
 #include "../common.hpp"
 #include <algorithm>
 #include <string>
+#include <string_view>
 #include <vector>
 
 enum class NodeType
@@ -90,7 +91,8 @@ struct Node
 {
 	NodeType type = NodeType::Element;
 	TagId tag;                    // identifiant compact (un octet)
-	std::string text;            // contenu pour Text/RawText/Comment
+	uint32_t textOffset = 0;      // contenu dans l'arene texte du Document
+	uint32_t textLength = 0;
 	std::vector<Attribute> attrs;
 	int parent = -1;
 	std::vector<int> children;
@@ -128,6 +130,7 @@ public:
 	void clear()
 	{
 		nodes.clear();
+		textArena_.clear();
 		root = -1;
 		hoveredNode = -1;
 		focusedNode = -1;
@@ -228,7 +231,7 @@ public:
 	{
 		Node n;
 		n.type = NodeType::Text;
-		n.text = std::move(text);
+		if (!appendText(n, text)) return -1;
 		int idx = addNode(std::move(n));
 		if (parent >= 0)
 		{
@@ -236,6 +239,74 @@ public:
 			nodes[parent].children.push_back(idx);
 		}
 		return idx;
+	}
+
+	// Le texte des noeuds est contigu et indexe par offset : les longues pages
+	// n'allouent plus une std::string distincte pour chaque fragment de texte.
+	std::string_view nodeTextView(int idx) const
+	{
+		if (idx < 0 || (size_t)idx >= nodes.size()) return {};
+		const Node& node = nodes[(size_t)idx];
+		if ((size_t)node.textOffset > textArena_.size() ||
+			node.textLength > textArena_.size() - (size_t)node.textOffset)
+			return {};
+		return std::string_view(textArena_.data() + node.textOffset, node.textLength);
+	}
+
+	std::string nodeText(int idx) const
+	{
+		const std::string_view value = nodeTextView(idx);
+		if (value.empty()) return std::string();
+		return std::string(value.data(), value.size());
+	}
+
+	bool setNodeText(int idx, const std::string& text)
+	{
+		if (idx < 0 || (size_t)idx >= nodes.size()) return false;
+		const size_t limit = 4u * 1024u * 1024u;
+		if (text.size() > limit) return false;
+		if (text.size() <= limit - textArena_.size())
+		{
+			Node& node = nodes[(size_t)idx];
+			node.textOffset = (uint32_t)textArena_.size();
+			node.textLength = (uint32_t)text.size();
+			textArena_ += text;
+			++mutationVersion;
+			return true;
+		}
+
+		// Les scripts peuvent remplacer plusieurs fois le même Text. Compacter
+		// avant de refuser évite que les anciennes valeurs gonflent l'arene.
+		size_t total = text.size();
+		for (size_t i = 0; i < nodes.size(); ++i)
+			if ((int)i != idx) total += nodes[i].textLength;
+		if (total > limit) return false;
+		std::string compact;
+		compact.reserve(total);
+		for (size_t i = 0; i < nodes.size(); ++i)
+		{
+			const Node& node = nodes[i];
+			const std::string_view value = (int)i == idx
+				? std::string_view(text) : nodeTextView((int)i);
+			compact += value;
+		}
+		size_t offset = 0;
+		for (size_t i = 0; i < nodes.size(); ++i)
+		{
+			Node& node = nodes[i];
+			node.textOffset = (uint32_t)offset;
+			if ((int)i == idx) node.textLength = (uint32_t)text.size();
+			offset += node.textLength;
+		}
+		textArena_.swap(compact);
+		++mutationVersion;
+		return true;
+	}
+
+	void clearNodeText(int idx)
+	{
+		if (idx < 0 || (size_t)idx >= nodes.size()) return;
+		setNodeText(idx, std::string());
 	}
 
 	void setAttr(int idx, const std::string& name, const std::string& value)
@@ -273,7 +344,8 @@ public:
 			const Node& n = nodes[current];
 			if (n.type == NodeType::Text || n.type == NodeType::RawText)
 			{
-				out += n.text;
+				const std::string_view value = nodeTextView(current);
+				if (!value.empty()) out.append(value.data(), value.size());
 				continue;
 			}
 			for (auto child = n.children.rbegin(); child != n.children.rend(); ++child)
@@ -281,6 +353,18 @@ public:
 		}
 		return out;
 	}
+
+	bool appendText(Node& node, const std::string& text)
+	{
+		const size_t limit = 4u * 1024u * 1024u;
+		if (text.size() > limit - textArena_.size()) return false;
+		node.textOffset = (uint32_t)textArena_.size();
+		node.textLength = (uint32_t)text.size();
+		textArena_ += text;
+		return true;
+	}
+
+	std::string textArena_;
 
 	// Premier noeud descendant correspondant a un tag (parcours en profondeur)
 	int firstByTag(int idx, const char* tag) const

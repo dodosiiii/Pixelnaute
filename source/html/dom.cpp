@@ -16,13 +16,13 @@ void Document::dump(int idx, int depth) const
 			break;
 		case NodeType::Text:
 		{
-			std::string t = strTrim(n.text);
+			std::string t = strTrim(nodeText(idx));
 			if (t.size() > 60) t = t.substr(0, 60) + "...";
 			printf("\"%s\"\n", t.c_str());
 			return;
 		}
 		case NodeType::RawText:
-			printf("[raw %zu bytes]\n", n.text.size());
+			printf("[raw %u bytes]\n", n.textLength);
 			return;
 		case NodeType::Comment:
 			return;

@@ -21,6 +21,13 @@
 void diagBoot(int step, const char* label);
 // Ajoute une ligne libre (mesure, erreur, valeur de service).
 void diagBootNote(const char* label, long value);
+// Enregistre l'usage du tas et de la memoire lineaire a une etape du chargement.
+void diagBootMemory(const char* stage);
+// Estime l'espace application encore disponible, y compris le tas non encore
+// demande a newlib par sbrk().
+size_t diagApplicationHeapFree();
+// Pic d'allocations observe depuis le demarrage.
+size_t diagHeapPeakUsed();
 // Ecrase step.txt avec la derniere etape active (utile apres un plantage).
 void diagStage(const char* label);
 // Ajoute une entree crash.txt sans dependance aux exceptions C++.

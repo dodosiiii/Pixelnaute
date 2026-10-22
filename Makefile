@@ -145,11 +145,14 @@ ifneq ($(ROMFS),)
 endif
 
 
-.PHONY: all clean
+.PHONY: all cia clean
 
 #---------------------------------------------------------------------------------
 all: $(BUILD) $(DEPSDIR)
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
+
+cia: all
+	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile cia
 
 $(BUILD):
 	@mkdir -p $@
@@ -162,7 +165,7 @@ endif
 #---------------------------------------------------------------------------------
 clean:
 	@echo clean ...
-	@rm -fr $(BUILD) $(TARGET).3dsx $(TARGET).smdh $(TARGET).elf
+	@rm -fr $(BUILD) $(TARGET).3dsx $(TARGET).cia $(TARGET).smdh $(TARGET).elf
 
 #---------------------------------------------------------------------------------
 else
@@ -173,6 +176,40 @@ else
 $(OUTPUT).3dsx	:	$(OUTPUT).elf $(_3DSXDEPS)
 
 $(OUTPUT).elf	:	$(OFILES)
+
+CIA_VERSION := $(shell sed -n 's/^#define NW_VERSION_STRING "\([^"]*\)"/\1/p' "$(TOPDIR)/source/common.hpp")
+CIA_VERSION_MAJOR := $(word 1,$(subst ., ,$(CIA_VERSION)))
+CIA_VERSION_MINOR := $(word 2,$(subst ., ,$(CIA_VERSION)))
+CIA_VERSION_MICRO := $(word 3,$(subst ., ,$(CIA_VERSION)))
+CIA_BANNER := $(DEPSDIR)/$(TARGET).bnr
+CIA_SMDH := $(DEPSDIR)/$(TARGET)-cia.smdh
+CIA_RSF := $(TOPDIR)/cia/$(TARGET).rsf
+CIA_BANNER_CGFX := $(TOPDIR)/assets/pixelnaute-banner.cgfx
+CIA_BANNER_PNG := $(TOPDIR)/assets/cia_banner.png
+
+ifneq ($(wildcard $(CIA_BANNER_CGFX)),)
+CIA_BANNER_SOURCE := $(CIA_BANNER_CGFX)
+CIA_BANNER_IMAGE_FLAG := -ci
+else
+CIA_BANNER_SOURCE := $(CIA_BANNER_PNG)
+CIA_BANNER_IMAGE_FLAG := -i
+endif
+
+.PHONY: cia
+cia: $(OUTPUT).cia
+
+$(CIA_BANNER): $(CIA_BANNER_SOURCE) $(TOPDIR)/assets/cia_banner.wav
+	@bannertool makebanner $(CIA_BANNER_IMAGE_FLAG) "$<" -a "$(TOPDIR)/assets/cia_banner.wav" -o "$@"
+
+$(CIA_SMDH): $(TOPDIR)/assets/icon.png
+	@bannertool makesmdh -s "Pixelnaute" -l "Navigateur web autonome pour New 3DS" \
+		-p "dodosiiii" -i "$<" -o "$@" -f visible,new3ds
+
+$(OUTPUT).cia: $(OUTPUT).elf $(CIA_SMDH) $(CIA_BANNER) $(CIA_RSF)
+	@makerom -f cia -target t -rsf "$(CIA_RSF)" -elf "$(OUTPUT).elf" \
+		-icon "$(CIA_SMDH)" -banner "$(CIA_BANNER)" \
+		-major $(CIA_VERSION_MAJOR) -minor $(CIA_VERSION_MINOR) -micro $(CIA_VERSION_MICRO) \
+		"-DAPP_ROMFS=$(TOPDIR)/romfs" -o "$@"
 
 -include $(DEPSDIR)/*.d
 

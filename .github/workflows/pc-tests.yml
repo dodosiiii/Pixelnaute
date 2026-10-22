@@ -1,0 +1,13 @@
+name: PC regression tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run portable browser tests
+        run: bash tests/pc/run-linux.sh

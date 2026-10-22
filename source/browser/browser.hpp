@@ -39,6 +39,7 @@ public:
 		JSRuntime* jsRuntime = nullptr;
 		JSContext* jsContext = nullptr;
 		std::shared_ptr<JSPageBinding> jsBinding = std::make_shared<JSPageBinding>();
+		std::unique_ptr<Document> readerOriginal;
 	};
 
 	Browser(NetworkManager& net, WebSettings& settings);
@@ -54,6 +55,7 @@ public:
 	void stop();
 	void goHome();
 	void openBookmark(const std::string& url);
+	bool downloadUrl(const std::string& url);
 
 	// --- onglets ---
 	void newTab(const std::string& url = "");
@@ -85,6 +87,9 @@ public:
 	void endEditField();
 	bool setFieldValue(int fieldIndex, const std::string& v);
 	void submitFormByNode(int submitNode);
+	float pageScale() const;
+	int pageXFromView(int x) const;
+	int pageYFromView(int y) const;
 	bool enqueuePageFetch(JSPageBinding* binding, int tabIndex, uint32_t promiseId, bool xhr,
 		const std::string& url, const std::string& method, const std::string& body);
 	void scroll(int dy);
@@ -94,6 +99,7 @@ public:
 	int  scrollY() const;
 	// Place le defilement a une position absolue, bornee a la page.
 	void scrollTo(int y);
+	void toggleReaderMode();
 	// Vrai si la page peut encore defiler dans cette direction.
 	bool canScrollBy(int dy) const;
 
@@ -127,6 +133,8 @@ private:
 	ImageStore images_;
 	PageSegmentCache pageSegmentCache_;
 	std::vector<Tab> tabs_;
+	std::vector<std::string> tlsSessionExceptions_; // autorisations HTTPS explicites, perdues a la fermeture
+	std::string pendingTlsHost_; // hote de l'erreur SSL affichee a l'utilisateur
 	int current_ = 0;
 	History history_;
 	Bookmarks bookmarks_;
@@ -145,6 +153,7 @@ private:
 	int cssQueueTab_ = -1;
 	int cssRequestTab_ = -1;
 	int cssRequestOrder_ = -1;
+	std::string cssRequestUrl_;
 	std::string cssPageUrl_;
 	uint64_t cssStartMs_ = 0;
 	bool styleRedrawPending_ = false;
@@ -188,6 +197,10 @@ private:
 	void onScriptResponse(NetResponse& resp);
 	void queueScripts(int tabIdx, const Document& doc, const std::string& pageUrl);
 	void clearScriptQueue();
+	int layoutWidth() const { return set_.largePage ? 640 : NW_PAGE_WIDTH; }
+	void trimInactiveTabs();
+	bool verifyTlsFor(const std::string& url) const;
+	size_t safePageBodyLimit() const;
 	void onResponse(NetResponse& resp);
 	void renderInto(int tabIdx, Document&& doc);
 	void rerenderTab(int tabIdx);

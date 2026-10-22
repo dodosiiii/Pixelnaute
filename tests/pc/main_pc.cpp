@@ -451,7 +451,8 @@ static void testPageSegments()
 		next.bmp.h == NW_PAGE_SEGMENT_HEIGHT + NW_PAGE_SEGMENT_OVERLAP &&
 		next.bmp.originY == NW_PAGE_SEGMENT_HEIGHT - NW_PAGE_SEGMENT_OVERLAP &&
 		next.segmentIndex == 1 && next.truncated &&
-		next.height == NW_MAX_PAGE_CONTENT_HEIGHT;
+		next.height >= NW_PAGE_SEGMENT_HEIGHT * 2 &&
+		next.height <= NW_PAGE_SEGMENT_HEIGHT * 2 + 32;
 	PageModel beyondLimit;
 	const bool beyondLimitRejected = !layout.renderSegment(beyondLimit,
 		"https://test/", NW_MAX_PAGE_SEGMENTS, NW_PAGE_SEGMENT_HEIGHT);
@@ -482,17 +483,19 @@ static void testPageSegments()
 		shortLayout.renderSegment(shortPage, "https://test/", 0, NW_PAGE_SEGMENT_HEIGHT);
 	const bool shortOk = shortRendered && !shortPage.truncated &&
 		shortPage.height < NW_PAGE_SEGMENT_HEIGHT;
-	if (!firstOk || !nextOk || !sharedLinkAtOverlap || !beyondLimitRejected || !shortOk)
+	if (!firstOk || !nextOk || !sharedLinkAtOverlap ||
+		!beyondLimitRejected || !shortOk)
 		printf("  segments: parsed=%d, first=(%d,h=%d,origin=%d,index=%d,truncated=%d), "
 			"next=(%d,h=%d,origin=%d,index=%d,truncated=%d,height=%d), "
 			"sharedLink=%d, beyondLimitRejected=%d, short=(%d,h=%d,truncated=%d)\n",
 			parsed, first.bmp.h, first.height, first.bmp.originY, first.segmentIndex,
 			first.truncated, nextRendered, next.bmp.h, next.bmp.originY,
 			next.segmentIndex, next.truncated, next.height, sharedLinkAtOverlap,
-			beyondLimitRejected, shortRendered,
-			shortPage.height, shortPage.truncated);
-	check(firstOk && nextOk && sharedLinkAtOverlap && beyondLimitRejected && shortOk,
-		"segments de 2 000 px limites a 4 000 px, raccord et page courte");
+			beyondLimitRejected, shortRendered, shortPage.height,
+			shortPage.truncated);
+	check(firstOk && nextOk && sharedLinkAtOverlap &&
+		beyondLimitRejected && shortOk,
+		"petits segments progresifs, raccord et page courte");
 }
 
 static void testGridLayout()

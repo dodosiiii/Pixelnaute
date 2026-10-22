@@ -300,10 +300,23 @@ int main(int argc, char** argv)
 	sIrrstOk = R_SUCCEEDED(irrstInit());
 	diagBoot(4, sIrrstOk ? "irrstInit OK" : "irrstInit NON DISPO");
 
-	C3D_Init(C3D_DEFAULT_CMDBUF_SIZE);
+	if (!C3D_Init(C3D_DEFAULT_CMDBUF_SIZE))
+	{
+		diagBoot(5, "C3D_Init ECHEC");
+		if (sIrrstOk) irrstExit();
+		romfsExit(); fsExit(); gfxExit();
+		return 1;
+	}
 	diagBoot(5, "C3D_Init");
 
-	C2D_Init(C2D_DEFAULT_MAX_OBJECTS);
+	if (!C2D_Init(C2D_DEFAULT_MAX_OBJECTS))
+	{
+		diagBoot(6, "C2D_Init ECHEC");
+		C3D_Fini();
+		if (sIrrstOk) irrstExit();
+		romfsExit(); fsExit(); gfxExit();
+		return 1;
+	}
 	diagBoot(6, "C2D_Init");
 
 	C2D_Prepare();
@@ -312,6 +325,14 @@ int main(int argc, char** argv)
 	C3D_RenderTarget* topTarget = C2D_CreateScreenTarget(GFX_TOP, GFX_LEFT);
 	C3D_RenderTarget* bottomTarget = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
 	diagBoot(8, "C2D_CreateScreenTarget");
+	if (!topTarget || !bottomTarget)
+	{
+		diagBoot(8, "C2D_CreateScreenTarget ECHEC");
+		C2D_Fini(); C3D_Fini();
+		if (sIrrstOk) irrstExit();
+		romfsExit(); fsExit(); gfxExit();
+		return 1;
+	}
 
 	//--- verification du modele avant toute allocation lourde ---
 	ModelCheck model = detectModel();
@@ -362,7 +383,12 @@ int main(int argc, char** argv)
 	presentBootProgress(topTarget, renderer, loadingPage, te,
 		"Initialisation du reseau", 48);
 	ReleaseUpdater updater;
-	updater.configure(argc > 0 && argv ? argv[0] : "");
+	u64 runningTitleId = 0;
+	const bool ciaTitle = R_SUCCEEDED(APT_GetProgramID(&runningTitleId)) &&
+		runningTitleId == 0x000400000FF6A600ULL;
+	diagBootNote("running_title_id_low", (long)(runningTitleId & 0xFFFFFFFFULL));
+	diagBootNote("cia_updater_mode", ciaTitle ? 1 : 0);
+	updater.configure(argc > 0 && argv ? argv[0] : "", ciaTitle);
 
 	Browser browser(net, settings);
 	presentBootProgress(topTarget, renderer, loadingPage, te,
@@ -390,6 +416,7 @@ int main(int argc, char** argv)
 	// prise apres la premiere image rendue, plus bas.
 	writeDiag(te, browser);
 	diagBoot(16, "instantane de demarrage ecrit");
+	diagBootMemory("fin_demarrage");
 	bool diagRequested = false;
 
 	int lastTab = -1;
@@ -408,6 +435,12 @@ int main(int argc, char** argv)
 
 	while (aptMainLoop())
 	{
+		if (updater.restartRequired())
+		{
+			// APT relancera le titre CIA courant apres sa fermeture propre.
+			aptSetChainloaderToSelf();
+			break;
+		}
 		InputState in;
 		inputPoll(in);
 
@@ -595,7 +628,8 @@ int main(int argc, char** argv)
 				if (-dx > gesture.moveX) gesture.moveX = -dx;
 				if (dy > gesture.moveY) gesture.moveY = dy;
 				if (-dy > gesture.moveY) gesture.moveY = -dy;
-				browser.scrollTo(gesture.startPageY - dy);
+				browser.scrollTo(gesture.startPageY -
+					(int)((float)dy * browser.pageScale() + (dy >= 0 ? 0.5f : -0.5f)));
 			}
 
 			if (in.touchUp && gesture.active)
@@ -705,8 +739,8 @@ int main(int argc, char** argv)
 			const Browser::Tab& ct = browser.currentTab();
 			if (ct.pageReady)
 			{
-				const int pageY = browser.scrollY() + (int)my;
-				const int imx = (int)mx;
+				const int pageY = browser.scrollY() + browser.pageYFromView((int)my);
+				const int imx = browser.pageXFromView((int)mx);
 
 				// 1. Survol d'un champ de formulaire
 				for (const FormField& f : ct.page.fields)

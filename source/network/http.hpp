@@ -14,6 +14,7 @@ enum class NetRequestType : uint8_t
 	Image,
 	Script,
 	Fetch,
+	Download,
 };
 
 struct NetResponse
@@ -26,8 +27,13 @@ struct NetResponse
 	std::string contentType;
 	std::string error;       // message utilisateur (francais)
 	bool sslError = false;
+	bool certError = false;
 	bool tooBig = false;
 	bool cancelled = false;
+	std::string downloadPath;
+	std::string etag;
+	std::string lastModified;
+	bool notModified = false;
 };
 
 #define NW_DEFAULT_USER_AGENT "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1 Pixelnaute/" NW_VERSION_STRING
@@ -44,6 +50,10 @@ struct HttpOptions
 	int timeoutMs = 30000;
 	bool verifyTls = true; // false seulement si l'utilisateur le desactive dans les reglages
 	bool convertTextEncoding = true; // desactiver pour les corps binaires (images)
+	FILE* outputFile = nullptr; // optionnel : ecriture en flux du corps HTTP
+	uint64_t resumeFrom = 0; // reprise d'un fichier deja ecrit sur la SD
+	std::string ifNoneMatch;
+	std::string ifModifiedSince;
 };
 
 
@@ -52,11 +62,11 @@ struct HttpOptions
 // 'cancelFlag' (non nul) : si pointe vers une valeur non nulle, la requete
 // s'arrete proprement au prochain bloc.
 bool httpGet(const std::string& url, const HttpOptions& opt, NetResponse& out,
-	const volatile int* cancelFlag, std::atomic<float>* progressOut,
+	const std::atomic<int>* cancelFlag, std::atomic<float>* progressOut,
 	std::atomic<size_t>* bytesOut = nullptr);
 
 bool httpGetCurl(const std::string& url, const HttpOptions& opt, NetResponse& out,
-	const volatile int* cancelFlag, std::atomic<float>* progressOut,
+	const std::atomic<int>* cancelFlag, std::atomic<float>* progressOut,
 	std::atomic<size_t>* bytesOut = nullptr);
 
 // Accès au cookie-jar partagé pour document.cookie.

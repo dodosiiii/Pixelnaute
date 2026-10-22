@@ -19,7 +19,8 @@ static std::string resolveRedirect(const std::string& base, const std::string& r
 // Boucle complete d'une requete (avec redirections) selon la politique TLS.
 //--------------------------------------------------------------------------
 [[maybe_unused]] static bool httpGetInternal(const std::string& url0, const HttpOptions& opt,
-	const volatile int* cancelFlag, float* progressOut, NetResponse& out)
+	const std::atomic<int>* cancelFlag, float* progressOut, NetResponse& out,
+	std::atomic<size_t>* bytesOut = nullptr)
 {
 	std::string url = url0;
 	httpcContext ctx;
@@ -149,6 +150,7 @@ static std::string resolveRedirect(const std::string& base, const std::string& r
 		char buf[NW_HTTP_CHUNK];
 		u32 read = 0;
 		std::string body;
+		size_t received = 0;
 		if (total > 0 && total <= 8 * 1024 * 1024) body.reserve(total);
 
 		Result r2 = 0;
@@ -157,8 +159,15 @@ static std::string resolveRedirect(const std::string& base, const std::string& r
 			r2 = httpcDownloadData(&ctx, (u8*)buf, sizeof(buf), &read);
 			if (read > 0)
 			{
-				if (opt.maxBytes && body.size() + read > opt.maxBytes)
+				if (opt.maxBytes && received + read > opt.maxBytes)
 				{
+					if (opt.outputFile)
+					{
+						httpcCloseContext(&ctx);
+						out.tooBig = true;
+						out.error = "Fichier trop volumineux";
+						return false;
+					}
 					if (body.size() < opt.maxBytes)
 					{
 						size_t take = opt.maxBytes - body.size();
@@ -171,7 +180,18 @@ static std::string resolveRedirect(const std::string& base, const std::string& r
 					if (progressOut) *progressOut = 1.0f;
 					return true;
 				}
-				body.append(buf, read);
+				if (opt.outputFile)
+				{
+					if (fwrite(buf, 1, read, opt.outputFile) != read)
+					{
+						httpcCloseContext(&ctx);
+						out.error = "Erreur pendant l'ecriture du telechargement";
+						return false;
+					}
+				}
+				else body.append(buf, read);
+				received += read;
+				if (bytesOut) bytesOut->store(received, std::memory_order_relaxed);
 			}
 			httpcGetDownloadSizeState(&ctx, &done, &total);
 			if (progressOut)
@@ -217,14 +237,25 @@ static std::string resolveRedirect(const std::string& base, const std::string& r
 }
 
 //--------------------------------------------------------------------------
+static CURLSH* g_curlShare = nullptr;
+static LightLock g_curlInitLock;
+static LightLock g_curlShareLock;
+static LightLock g_curlEasyLock;
+static CURL* g_curlEasy = nullptr;
+static bool g_curlShareInit = false;
+static bool g_curlLocksReady = false;
+
 bool httpServiceInit()
 {
+	if (!g_curlLocksReady)
+	{
+		LightLock_Init(&g_curlInitLock);
+		LightLock_Init(&g_curlShareLock);
+		LightLock_Init(&g_curlEasyLock);
+		g_curlLocksReady = true;
+	}
 	return R_SUCCEEDED(httpcInit(0));
 }
-
-static CURLSH* g_curlShare = nullptr;
-static LightLock g_curlShareLock;
-static bool g_curlShareInit = false;
 
 static void curlShareLockCallback(CURL*, curl_lock_data, curl_lock_access, void*)
 {
@@ -238,9 +269,9 @@ static void curlShareUnlockCallback(CURL*, curl_lock_data, void*)
 
 static void ensureCurlShare()
 {
+	if (g_curlLocksReady) LightLock_Lock(&g_curlInitLock);
 	if (!g_curlShareInit)
 	{
-		LightLock_Init(&g_curlShareLock);
 		g_curlShare = curl_share_init();
 		if (g_curlShare)
 		{
@@ -252,10 +283,17 @@ static void ensureCurlShare()
 		}
 		g_curlShareInit = true;
 	}
+	if (g_curlLocksReady) LightLock_Unlock(&g_curlInitLock);
 }
 
 static void cleanupCurlShare()
 {
+	if (g_curlLocksReady) LightLock_Lock(&g_curlInitLock);
+	if (g_curlEasy)
+	{
+		curl_easy_cleanup(g_curlEasy);
+		g_curlEasy = nullptr;
+	}
 	if (g_curlShareInit)
 	{
 		if (g_curlShare)
@@ -265,6 +303,7 @@ static void cleanupCurlShare()
 		}
 		g_curlShareInit = false;
 	}
+	if (g_curlLocksReady) LightLock_Unlock(&g_curlInitLock);
 }
 
 static bool cookieMatchesUrl(const std::string& domainField, const std::string& pathField,
@@ -341,31 +380,63 @@ struct CurlCtx
 {
 	NetResponse* out;
 	size_t maxBytes;
-	const volatile int* cancel;
+	const std::atomic<int>* cancel;
 	std::atomic<float>* progress;
 	std::atomic<size_t>* bytes;
+	FILE* outputFile;
+	size_t received;
 	bool tooBig;
+	std::string* etag;
+	std::string* lastModified;
 };
+
+static size_t onHeader(char* data, size_t size, size_t count, void* userData)
+{
+	const size_t length = size * count;
+	CurlCtx* ctx = static_cast<CurlCtx*>(userData);
+	std::string line(data, length);
+	while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+	if (strStartsWith(line, "HTTP/"))
+	{
+		if (ctx->etag) ctx->etag->clear();
+		if (ctx->lastModified) ctx->lastModified->clear();
+		return length;
+	}
+	const size_t colon = line.find(':');
+	if (colon == std::string::npos) return length;
+	std::string name = toLower(strTrim(line.substr(0, colon)));
+	std::string value = strTrim(line.substr(colon + 1));
+	if (name == "etag" && ctx->etag) *ctx->etag = value;
+	else if (name == "last-modified" && ctx->lastModified) *ctx->lastModified = value;
+	return length;
+}
 
 static size_t onBody(char* p, size_t sz, size_t n, void* ud)
 {
 	CurlCtx* c = (CurlCtx*)ud;
 	const size_t len = sz * n;
-	if (c->maxBytes && c->out->body.size() + len > c->maxBytes)
+	if (c->maxBytes && c->received + len > c->maxBytes)
 	{
 		c->tooBig = true;
-		if (c->out->body.size() < c->maxBytes)
+		if (c->received < c->maxBytes)
 		{
-			size_t take = c->maxBytes - c->out->body.size();
-			c->out->body.append(p, take);
+			size_t take = c->maxBytes - c->received;
+			if (c->outputFile) fwrite(p, 1, take, c->outputFile);
+			else c->out->body.append(p, take);
+			c->received += take;
 			if (c->bytes)
-				c->bytes->store(c->out->body.size(), std::memory_order_relaxed);
+				c->bytes->store(c->received, std::memory_order_relaxed);
 		}
 		return 0; // stoppe le telechargement pour eviter le debordement memoire
 	}
-	c->out->body.append(p, len);
+	if (c->outputFile)
+	{
+		if (fwrite(p, 1, len, c->outputFile) != len) return 0;
+	}
+	else c->out->body.append(p, len);
+	c->received += len;
 	if (c->bytes)
-		c->bytes->store(c->out->body.size(), std::memory_order_relaxed);
+		c->bytes->store(c->received, std::memory_order_relaxed);
 	return len;
 }
 
@@ -379,20 +450,32 @@ static int onProgress(void* ud, curl_off_t total, curl_off_t now, curl_off_t, cu
 }
 
 bool httpGetCurl(const std::string& url, const HttpOptions& opt, NetResponse& out,
-	const volatile int* cancelFlag, std::atomic<float>* progressOut,
+	const std::atomic<int>* cancelFlag, std::atomic<float>* progressOut,
 	std::atomic<size_t>* bytesOut)
 {
-	CURL* h = curl_easy_init();
+	ensureCurlShare();
+	LightLock_Lock(&g_curlEasyLock);
+	if (!g_curlEasy) g_curlEasy = curl_easy_init();
+	CURL* h = g_curlEasy;
 	if (!h)
 	{
+		LightLock_Unlock(&g_curlEasyLock);
 		out.error = "curl indisponible";
 		return false;
 	}
+	// reset oublie les options de la requete precedente mais conserve le pool
+	// de connexions TCP du handle pour les visites suivantes.
+	curl_easy_reset(h);
 
-	CurlCtx ctx{ &out, opt.maxBytes, cancelFlag, progressOut, bytesOut, false };
+	CurlCtx ctx{ &out, opt.maxBytes, cancelFlag, progressOut, bytesOut,
+		opt.outputFile, (size_t)opt.resumeFrom, false, &out.etag, &out.lastModified };
 
 	curl_slist* hdr = curl_slist_append(nullptr, ("Accept: " + opt.accept).c_str());
 	hdr = curl_slist_append(hdr, "Accept-Language: fr,en;q=0.8");
+	if (!opt.ifNoneMatch.empty())
+		hdr = curl_slist_append(hdr, ("If-None-Match: " + opt.ifNoneMatch).c_str());
+	if (!opt.ifModifiedSince.empty())
+		hdr = curl_slist_append(hdr, ("If-Modified-Since: " + opt.ifModifiedSince).c_str());
 
 	std::string ref = opt.referer;
 	if (ref.empty() && opt.method == "POST")
@@ -432,12 +515,13 @@ bool httpGetCurl(const std::string& url, const HttpOptions& opt, NetResponse& ou
 	}
 
 	curl_easy_setopt(h, CURLOPT_URL, url.c_str());
+	if (opt.resumeFrom > 0)
+		curl_easy_setopt(h, CURLOPT_RESUME_FROM_LARGE, (curl_off_t)opt.resumeFrom);
 	curl_easy_setopt(h, CURLOPT_HTTPHEADER, hdr);
 	curl_easy_setopt(h, CURLOPT_USERAGENT, opt.userAgent.c_str());
 	if (!ref.empty())
 		curl_easy_setopt(h, CURLOPT_REFERER, ref.c_str());
 
-	ensureCurlShare();
 	if (g_curlShare)
 		curl_easy_setopt(h, CURLOPT_SHARE, g_curlShare);
 
@@ -453,6 +537,8 @@ bool httpGetCurl(const std::string& url, const HttpOptions& opt, NetResponse& ou
 	curl_easy_setopt(h, CURLOPT_ACCEPT_ENCODING, "");
 	curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, onBody);
 	curl_easy_setopt(h, CURLOPT_WRITEDATA, &ctx);
+	curl_easy_setopt(h, CURLOPT_HEADERFUNCTION, onHeader);
+	curl_easy_setopt(h, CURLOPT_HEADERDATA, &ctx);
 	curl_easy_setopt(h, CURLOPT_NOPROGRESS, 0L);
 	curl_easy_setopt(h, CURLOPT_XFERINFOFUNCTION, onProgress);
 	curl_easy_setopt(h, CURLOPT_XFERINFODATA, &ctx);
@@ -474,11 +560,13 @@ bool httpGetCurl(const std::string& url, const HttpOptions& opt, NetResponse& ou
 	curl_easy_getinfo(h, CURLINFO_EFFECTIVE_URL, &eff);
 
 	out.status = (int)status;
+	out.notModified = status == 304;
 	out.contentType = ct ? ct : "";
 	out.url = eff ? eff : url; // <- l'URL finale, enfin renseignee
+	curl_easy_setopt(h, CURLOPT_COOKIELIST, "FLUSH");
 
 	curl_slist_free_all(hdr);
-	curl_easy_cleanup(h);
+	LightLock_Unlock(&g_curlEasyLock);
 
 	if (opt.convertTextEncoding && !out.body.empty())
 		out.body = convertEncodingToUtf8(out.body, out.contentType, opt.convertTextEncoding);
@@ -486,7 +574,7 @@ bool httpGetCurl(const std::string& url, const HttpOptions& opt, NetResponse& ou
 	if (ctx.tooBig)
 	{
 		out.tooBig = true;
-		if (!out.body.empty())
+		if (!out.body.empty() || ctx.received > 0)
 		{
 			out.ok = true;
 			if (progressOut) progressOut->store(1.0f, std::memory_order_relaxed);
@@ -506,6 +594,7 @@ bool httpGetCurl(const std::string& url, const HttpOptions& opt, NetResponse& ou
 	if (rc == CURLE_SSL_CONNECT_ERROR || rc == CURLE_PEER_FAILED_VERIFICATION || rc == CURLE_SSL_CACERT_BADFILE)
 	{
 		out.sslError = true;
+		out.certError = rc == CURLE_PEER_FAILED_VERIFICATION;
 		out.error = curl_easy_strerror(rc);
 		return false;
 	}
@@ -519,7 +608,7 @@ bool httpGetCurl(const std::string& url, const HttpOptions& opt, NetResponse& ou
 	if (status >= 400)
 	{
 		out.error = "Erreur HTTP " + itos(status);
-		if (!out.body.empty())
+		if (!out.body.empty() || ctx.received > 0)
 		{
 			out.ok = true;
 			if (progressOut) progressOut->store(1.0f, std::memory_order_relaxed);
@@ -537,7 +626,7 @@ bool httpGetCurl(const std::string& url, const HttpOptions& opt, NetResponse& ou
 // API publique
 //--------------------------------------------------------------------------
 bool httpGet(const std::string& url0, const HttpOptions& opt, NetResponse& out,
-	const volatile int* cancelFlag, std::atomic<float>* progressOut,
+	const std::atomic<int>* cancelFlag, std::atomic<float>* progressOut,
 	std::atomic<size_t>* bytesOut)
 {
 	out = NetResponse();

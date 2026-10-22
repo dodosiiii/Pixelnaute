@@ -9,14 +9,72 @@
 #include <3ds/allocator/linear.h>
 #include <algorithm>
 #include <functional>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <malloc.h>
+#include <time.h>
+#include <math.h>
 
 static CssEngine g_emptyCss;
+static std::string extractReaderHtml(const Document& doc, const std::string& title, bool dark, bool images);
+
+static std::string normalizedHost(const std::string& url)
+{
+	const size_t scheme = url.find("://");
+	if (scheme == std::string::npos) return std::string();
+	const size_t end = url.find_first_of("/:?#", scheme + 3);
+	std::string host = toLower(url.substr(scheme + 3, end - (scheme + 3)));
+	const size_t port = host.find(':');
+	if (port != std::string::npos) host.resize(port);
+	return host;
+}
+
+static bool trackerUrl(const std::string& url)
+{
+	static const char* domains[] = { "doubleclick.net", "googletagmanager.com",
+		"google-analytics.com", "facebook.net", "connect.facebook.net",
+		"pixel.facebook.com", "ads-twitter.com", "adservice.google.com",
+		"analytics.twitter.com", "hotjar.com", "scorecardresearch.com",
+		"quantserve.com", "advertising.com", "adnxs.com", "criteo.com",
+		"taboola.com", "outbrain.com" };
+	const std::string host = normalizedHost(url);
+	for (const char* domain : domains)
+	{
+		const size_t length = strlen(domain);
+		if (host == domain || (host.size() > length &&
+			host.compare(host.size() - length, length, domain) == 0 &&
+			host[host.size() - length - 1] == '.')) return true;
+	}
+	return false;
+}
+
+static std::string rewriteLightUrl(const std::string& url)
+{
+	const std::string host = normalizedHost(url);
+	std::string rewritten = url;
+	const size_t hostStart = url.find("://") + 3;
+	const size_t hostEnd = url.find_first_of("/:?#", hostStart);
+	if (host == "reddit.com" || host == "www.reddit.com")
+		rewritten.replace(hostStart, hostEnd == std::string::npos ? std::string::npos : hostEnd - hostStart, "old.reddit.com");
+	else if (host == "wikipedia.org" || (host.size() > 14 && host.compare(host.size() - 14, 14, ".wikipedia.org") == 0))
+	{
+		const std::string lang = host == "wikipedia.org" ? "en" : host.substr(0, host.size() - 14);
+		rewritten.replace(hostStart, hostEnd == std::string::npos ? std::string::npos : hostEnd - hostStart, lang + ".m.wikipedia.org");
+	}
+	return rewritten;
+}
+
+static int pageViewHeight(const PageModel& page)
+{
+	const int width = page.bmp.w > 0 ? page.bmp.w : NW_PAGE_WIDTH;
+	return std::max(1, (NW_TOP_HEIGHT * width + NW_PAGE_WIDTH - 1) / NW_PAGE_WIDTH);
+}
 
 static int maxPageScroll(const PageModel& page)
 {
 	const int contentHeight = std::min(page.height,
 		(int)NW_MAX_PAGE_CONTENT_HEIGHT);
-	return std::max(0, contentHeight - NW_TOP_HEIGHT);
+	return std::max(0, contentHeight - pageViewHeight(page));
 }
 
 static void fingerprintBytes(uint64_t& hash, const void* data, size_t size)
@@ -36,9 +94,160 @@ static void fingerprintString(uint64_t& hash, const std::string& value)
 	fingerprintBytes(hash, &separator, sizeof(separator));
 }
 
-static uint64_t pageFingerprint(const Browser::Tab& tab)
+struct ResourceCacheEntry
+{
+	std::string dataPath;
+	std::string metaPath;
+	std::string etag;
+	std::string modified;
+};
+
+static ResourceCacheEntry resourceCacheEntry(const std::string& url)
 {
 	uint64_t hash = 1469598103934665603ULL;
+	fingerprintString(hash, url);
+	char name[32];
+	snprintf(name, sizeof(name), "%08lx%08lx", (unsigned long)(hash >> 32), (unsigned long)hash);
+	const std::string dir = std::string(NW_SD_CACHE) + "/resources";
+	::mkdir(NW_SD_CACHE, 0777);
+	::mkdir(dir.c_str(), 0777);
+	ResourceCacheEntry entry;
+	entry.dataPath = dir + "/" + name + ".bin";
+	entry.metaPath = dir + "/" + name + ".meta";
+	FILE* meta = fopen(entry.metaPath.c_str(), "rb");
+	if (meta)
+	{
+		char line[1024];
+		if (fgets(line, sizeof(line), meta)) entry.etag = strTrim(line);
+		if (fgets(line, sizeof(line), meta)) entry.modified = strTrim(line);
+		fclose(meta);
+	}
+	FILE* data = fopen(entry.dataPath.c_str(), "rb");
+	if (!data)
+	{
+		entry.etag.clear();
+		entry.modified.clear();
+	}
+	else fclose(data);
+	for (char& c : entry.etag) if ((unsigned char)c < 32 || c == 127) c = ' ';
+	for (char& c : entry.modified) if ((unsigned char)c < 32 || c == 127) c = ' ';
+	return entry;
+}
+
+static bool readCachedResource(const ResourceCacheEntry& entry, std::string& body, size_t limit)
+{
+	FILE* file = fopen(entry.dataPath.c_str(), "rb");
+	if (!file) return false;
+	body.clear();
+	char buf[4096];
+	size_t got = 0;
+	while ((got = fread(buf, 1, sizeof(buf), file)) > 0)
+	{
+		if (body.size() + got > limit) { fclose(file); body.clear(); return false; }
+		body.append(buf, got);
+	}
+	const bool ok = !ferror(file);
+	fclose(file);
+	return ok;
+}
+
+static bool makeResourceCacheRoom(size_t required, const std::string& replacing)
+{
+	const size_t maxBytes = 16u * 1024u * 1024u;
+	if (required > maxBytes) return false;
+	const std::string dirPath = std::string(NW_SD_CACHE) + "/resources";
+	DIR* dir = opendir(dirPath.c_str());
+	if (!dir) return true;
+	struct FileEntry { std::string path; std::string meta; size_t bytes; time_t modified; };
+	std::vector<FileEntry> files;
+	size_t total = 0;
+	struct dirent* item = nullptr;
+	while ((item = readdir(dir)) != nullptr)
+	{
+		const std::string name = item->d_name;
+		if (!strEndsWith(name, ".bin")) continue;
+		const std::string path = dirPath + "/" + name;
+		if (path == replacing) continue;
+		struct stat info;
+		if (stat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode) || info.st_size < 0) continue;
+		FileEntry entry;
+		entry.path = path;
+		entry.meta = path.substr(0, path.size() - 4) + ".meta";
+		entry.bytes = (size_t)info.st_size;
+		entry.modified = info.st_mtime;
+		total = entry.bytes > SIZE_MAX - total ? SIZE_MAX : total + entry.bytes;
+		if (files.size() < 1024) files.push_back(std::move(entry));
+	}
+	closedir(dir);
+	const auto fitsBudget = [&]() {
+		return total <= maxBytes && required <= maxBytes - total;
+	};
+	if (fitsBudget()) return true;
+	std::sort(files.begin(), files.end(), [](const FileEntry& a, const FileEntry& b) {
+		return a.modified < b.modified;
+	});
+	for (const FileEntry& file : files)
+	{
+		if (remove(file.path.c_str()) != 0) continue;
+		remove(file.meta.c_str());
+		total = total > file.bytes ? total - file.bytes : 0;
+		if (fitsBudget()) return true;
+	}
+	return fitsBudget();
+}
+
+static void saveCachedResource(const std::string& url, const NetResponse& response)
+{
+	ResourceCacheEntry entry = resourceCacheEntry(url);
+	if (response.etag.empty() && response.lastModified.empty())
+	{
+		remove(entry.dataPath.c_str());
+		remove(entry.metaPath.c_str());
+		return;
+	}
+	if (response.body.empty()) return;
+	if (!makeResourceCacheRoom(response.body.size(), entry.dataPath)) return;
+	const std::string temp = entry.dataPath + ".tmp";
+	FILE* file = fopen(temp.c_str(), "wb");
+	if (!file) return;
+	const bool saved = fwrite(response.body.data(), 1, response.body.size(), file) == response.body.size() &&
+		fflush(file) == 0;
+	const bool closed = fclose(file) == 0;
+	if (!saved || !closed)
+	{
+		remove(temp.c_str());
+		return;
+	}
+	remove(entry.dataPath.c_str());
+	if (rename(temp.c_str(), entry.dataPath.c_str()) != 0)
+	{
+		remove(temp.c_str());
+		return;
+	}
+	FILE* meta = fopen(entry.metaPath.c_str(), "wb");
+	if (!meta) return;
+	fprintf(meta, "%s\n%s\n", response.etag.empty() ? entry.etag.c_str() : response.etag.c_str(),
+		response.lastModified.empty() ? entry.modified.c_str() : response.lastModified.c_str());
+	fclose(meta);
+}
+
+static void restoreCachedResource(const std::string& url, NetResponse& response, size_t limit)
+{
+	if (!response.notModified) return;
+	ResourceCacheEntry entry = resourceCacheEntry(url);
+	if (readCachedResource(entry, response.body, limit))
+	{
+		response.ok = true;
+		if (response.etag.empty()) response.etag = entry.etag;
+		if (response.lastModified.empty()) response.lastModified = entry.modified;
+	}
+	else { response.ok = false; response.error = "Ressource modifiee mais cache absent."; }
+}
+
+static uint64_t pageFingerprint(const Browser::Tab& tab, int viewportWidth)
+{
+	uint64_t hash = 1469598103934665603ULL;
+	fingerprintBytes(hash, &viewportWidth, sizeof(viewportWidth));
 	fingerprintString(hash, tab.url);
 	fingerprintBytes(hash, &tab.doc.hoveredNode, sizeof(tab.doc.hoveredNode));
 	fingerprintBytes(hash, &tab.doc.focusedNode, sizeof(tab.doc.focusedNode));
@@ -47,7 +256,7 @@ static uint64_t pageFingerprint(const Browser::Tab& tab)
 		const uint8_t type = (uint8_t)node.type;
 		fingerprintBytes(hash, &type, sizeof(type));
 		fingerprintString(hash, node.tag.c_str());
-		fingerprintString(hash, node.text);
+		fingerprintString(hash, tab.doc.nodeText((int)(&node - tab.doc.nodes.data())));
 		for (const Attribute& attr : node.attrs)
 		{
 			fingerprintString(hash, attr.name);
@@ -274,6 +483,122 @@ static bool isHtmlBody(const std::string& contentType, const std::string& body)
 	return false;
 }
 
+static std::string xmlField(const std::string& xml, const char* tag)
+{
+	const std::string open = std::string("<") + tag;
+	const std::string close = std::string("</") + tag + ">";
+	const std::string lower = toLower(xml);
+	size_t start = lower.find(toLower(open));
+	if (start == std::string::npos) return std::string();
+	size_t content = xml.find('>', start);
+	if (content == std::string::npos) return std::string();
+	++content;
+	size_t end = lower.find(toLower(close), content);
+	if (end == std::string::npos) return std::string();
+	std::string value = xml.substr(content, end - content);
+	const std::string cdataStart = "<![CDATA[";
+	const size_t cdata = value.find(cdataStart);
+	if (cdata != std::string::npos)
+	{
+		const size_t cdataEnd = value.find("]]>", cdata + cdataStart.size());
+		if (cdataEnd != std::string::npos)
+			value = value.substr(cdata + cdataStart.size(),
+				cdataEnd - cdata - cdataStart.size());
+	}
+	std::string plain;
+	bool inTag = false;
+	for (char c : value)
+	{
+		if (c == '<') inTag = true;
+		else if (c == '>') inTag = false;
+		else if (!inTag) plain += c;
+	}
+	const std::pair<const char*, const char*> entities[] = {
+		{ "&amp;", "&" }, { "&lt;", "<" }, { "&gt;", ">" },
+		{ "&quot;", "\"" }, { "&apos;", "'" }
+	};
+	for (const auto& entity : entities)
+	{
+		size_t at = 0;
+		while ((at = plain.find(entity.first, at)) != std::string::npos)
+		{
+			plain.replace(at, strlen(entity.first), entity.second);
+			at += strlen(entity.second);
+		}
+	}
+	return strTrim(plain);
+}
+
+static std::string rssFeedHtml(const std::string& xml, const std::string& feedUrl)
+{
+	const std::string lower = toLower(xml);
+	const bool rss = lower.find("<rss") != std::string::npos ||
+		lower.find("<rdf:rdf") != std::string::npos;
+	const bool atom = lower.find("<feed") != std::string::npos;
+	if (!rss && !atom) return std::string();
+	std::string title = xmlField(xml, "title");
+	if (title.empty()) title = "Flux RSS / Atom";
+	std::string html = "<html><body style=\"padding:8px;background:#17131A;color:#ECE8E8\"><h2>" +
+		htmlEscape(title) + "</h2>";
+	const char* itemTag = rss ? "item" : "entry";
+	const std::string open = std::string("<") + itemTag;
+	const std::string close = std::string("</") + itemTag + ">";
+	size_t cursor = 0;
+	int count = 0;
+	while (count < 40)
+	{
+		const size_t begin = lower.find(toLower(open), cursor);
+		if (begin == std::string::npos) break;
+		const size_t body = xml.find('>', begin);
+		if (body == std::string::npos) break;
+		const size_t end = lower.find(toLower(close), body + 1);
+		if (end == std::string::npos) break;
+		const std::string item = xml.substr(body + 1, end - body - 1);
+		std::string itemTitle = xmlField(item, "title");
+		std::string link = xmlField(item, "link");
+		if (atom && link.empty())
+		{
+			const std::string itemLower = toLower(item);
+			const size_t linkAt = itemLower.find("<link");
+			if (linkAt != std::string::npos)
+			{
+				size_t href = itemLower.find("href=", linkAt);
+				if (href != std::string::npos && href + 5 < item.size())
+				{
+					size_t quote = href + 5;
+					while (quote < item.size() && (item[quote] == ' ' || item[quote] == '\t')) ++quote;
+					if (quote < item.size() && (item[quote] == '\"' || item[quote] == '\''))
+					{
+						const char delimiter = item[quote++];
+						const size_t linkEnd = item.find(delimiter, quote);
+						if (linkEnd != std::string::npos) link = item.substr(quote, linkEnd - quote);
+					}
+				}
+			}
+		}
+		std::string description = xmlField(item, rss ? "description" : "summary");
+		if (description.empty()) description = xmlField(item, "content");
+		if (!itemTitle.empty() || !description.empty())
+		{
+			html += "<section style=\"padding:6px;margin:5px 0;border:1px solid #59434C\"><h3>";
+			if (!link.empty())
+				html += "<a href=\"" + htmlEscape(urlJoin(feedUrl, link)) + "\">";
+			html += htmlEscape(itemTitle.empty() ? "(sans titre)" : itemTitle);
+			if (!link.empty()) html += "</a>";
+			html += "</h3>";
+			if (description.size() > 900) description.resize(900);
+			if (!description.empty()) html += "<p>" + htmlEscape(description) + "</p>";
+			html += "</section>";
+			++count;
+		}
+		cursor = end + close.size();
+		if (html.size() > 48000) break;
+	}
+	if (count == 0) return std::string();
+	html += "</body></html>";
+	return html;
+}
+
 // -------------------------------------------------------------------------
 Browser::Browser(NetworkManager& net, WebSettings& settings)
 	: net_(net), set_(settings)
@@ -287,9 +612,26 @@ Browser::~Browser()
 		releaseJavaScript(tab);
 }
 
+bool Browser::verifyTlsFor(const std::string& url) const
+{
+	if (!set_.verifyTLS) return false;
+	const std::string host = normalizedHost(url);
+	for (const std::string& exception : tlsSessionExceptions_)
+		if (!host.empty() && host == exception) return false;
+	return true;
+}
+
 bool Browser::initializeJavaScript(Tab& tab)
 {
 	if (!set_.enableJS || tab.jsContext) return true;
+	// QuickJS est plafonne a 4 Mio par page. Garder au moins 8 Mio libres
+	// avant de creer un nouveau runtime afin de laisser de la marge au DOM et
+	// aux allocations transitoires du parseur.
+	if (diagApplicationHeapFree() < 8u * 1024u * 1024u)
+	{
+		diagBootNote("js_skipped_low_heap", (long)diagApplicationHeapFree());
+		return false;
+	}
 	if (!jsPageContextCreate(tab.jsRuntime, tab.jsContext)) return false;
 	if (tab.jsBinding) ++tab.jsBinding->contextGeneration;
 	return true;
@@ -318,6 +660,7 @@ bool Browser::enqueuePageFetch(JSPageBinding* binding, int tabIndex, uint32_t pr
 	std::string origin = url.substr(0, end);
 	for (char& ch : origin) ch = (char)tolower((unsigned char)ch);
 	if (origin != binding->origin) return false; // CORS n'est pas encore implémenté.
+	if (set_.blockTrackers && trackerUrl(url)) return false;
 	FetchJob job;
 	job.tabIndex = tabIndex; job.promiseId = promiseId; job.generation = binding->contextGeneration; job.xhr = xhr;
 	job.binding = tabs_[(size_t)tabIndex].jsBinding; job.url = url; job.method = method; job.body = body; job.referer = binding->url;
@@ -346,7 +689,7 @@ void Browser::serviceFetchQueue()
 	if (fetchActive_ || fetchQueue_.empty() || net_.busy() || net_.state() != NetState::Idle ||
 		requestTab_ >= 0 || cssRequestTab_ >= 0 || scriptRequestTab_ >= 0 || imageRequestTab_ >= 0) return;
 	FetchJob& job = fetchQueue_.front();
-	if (!net_.start(job.url, 256 * 1024, set_.verifyTLS, job.method, job.body,
+	if (!net_.start(job.url, 256 * 1024, verifyTlsFor(job.url), job.method, job.body,
 		NetRequestType::Fetch, 10000, job.referer))
 	{
 		NetResponse failed;
@@ -427,10 +770,12 @@ bool Browser::syncJavaScriptContexts()
 void Browser::resetTab(Tab& t)
 {
 	releaseJavaScript(t);
+	t.readerOriginal.reset();
 	t.jsRequired = false;
-	t.doc.clear();
-	t.css.clear();
-	t.page.clear();
+	t.doc = Document();
+	t.css = CssEngine();
+	t.css.setViewportWidth(layoutWidth());
+	t.page = PageModel();
 	t.pageReady = false;
 	t.title.clear();
 	t.scrollY = 0;
@@ -460,12 +805,54 @@ void Browser::openSearch(const std::string& query)
 	loadUrlInto(current_, searchUrl(query, searchEngineName()), true);
 }
 
+void Browser::toggleReaderMode()
+{
+	if (current_ < 0 || current_ >= (int)tabs_.size()) return;
+	Tab& tab = tabs_[(size_t)current_];
+	if (tab.readerOriginal)
+	{
+		tab.doc = std::move(*tab.readerOriginal);
+		tab.readerOriginal.reset();
+		releaseJavaScript(tab);
+		tab.jsRequired = false;
+		rerenderTab(current_);
+		scrollTo(0);
+		return;
+	}
+	if (!tab.pageReady || strStartsWith(toLower(tab.url), "nw://")) return;
+	std::string readerHtml = extractReaderHtml(tab.doc, tab.title, set_.darkPages, set_.loadImages);
+	Document reader;
+	if (!htmlParse(readerHtml, reader)) return;
+	tab.readerOriginal.reset(new Document(std::move(tab.doc)));
+	tab.doc = std::move(reader);
+	releaseJavaScript(tab);
+	tab.jsRequired = false;
+	rerenderTab(current_);
+	scrollTo(0);
+}
+
 void Browser::openUrl(const std::string& url, bool record)
 {
 	clearStyleQueue();
 	clearImageQueue();
-	const std::string targetUrl = url;
+	std::string targetUrl = url;
 	if (targetUrl.empty()) return;
+	// Fragment-only/same-document links scroll locally without refetching.
+	const size_t fragment = targetUrl.find('#');
+	if (fragment != std::string::npos && current_ >= 0 && current_ < (int)tabs_.size())
+	{
+		const std::string currentBase = tabs_[current_].url.substr(0, tabs_[current_].url.find('#'));
+		const std::string targetBase = targetUrl.substr(0, fragment);
+		if ((targetBase.empty() || targetBase == currentBase) && tabs_[current_].pageReady)
+		{
+			const std::string id = targetUrl.substr(fragment + 1);
+			if (id.empty()) { scrollTo(0); return; }
+			for (const AnchorBox& anchor : tabs_[current_].page.anchors)
+				if (anchor.name == id) { scrollTo(anchor.y); return; }
+			return;
+		}
+	}
+	if (set_.lightUrls && strStartsWith(toLower(targetUrl), "http")) targetUrl = rewriteLightUrl(targetUrl);
 	cancelTabRequest(current_);
 	if (strStartsWith(toLower(targetUrl), "nw://"))
 	{
@@ -473,6 +860,7 @@ void Browser::openUrl(const std::string& url, bool record)
 		showInternal(targetUrl);
 		return;
 	}
+	pendingTlsHost_.clear();
 	Tab& t = currentTab();
 	std::string prevUrl = t.url;
 	resetTab(t);
@@ -510,6 +898,7 @@ void Browser::loadUrlInto(int tabIdx, const std::string& url, bool record, const
 	}
 	t.url = url;
 	t.pageReady = false;
+	trimInactiveTabs();
 	if (record)
 	{
 		if (t.back.empty() || t.back.back() != url)
@@ -517,7 +906,18 @@ void Browser::loadUrlInto(int tabIdx, const std::string& url, bool record, const
 		t.fwd.clear();
 	}
 	requestTab_ = tabIdx;
-	if (!net_.start(url, (size_t)set_.maxHtmlBytes, set_.verifyTLS, method, postData, NetRequestType::Page, 30000, referer, csrfToken))
+	const size_t bodyLimit = safePageBodyLimit();
+	diagBootMemory("budget_requete");
+	diagBootNote("page_body_budget", (long)bodyLimit);
+	if (bodyLimit == 0)
+	{
+		pendingResponse_.url = url;
+		pendingResponse_.error = "Memoire disponible insuffisante pour charger une nouvelle page. Fermez un onglet puis reessayez.";
+		responsePending_ = true;
+		layoutPending_ = true;
+		return;
+	}
+	if (!net_.start(url, bodyLimit, verifyTlsFor(url), method, postData, NetRequestType::Page, 30000, referer, csrfToken))
 	{
 		pendingResponse_.url = url;
 		pendingResponse_.error = "Impossible de demarrer la requete reseau.";
@@ -541,7 +941,18 @@ void Browser::reload()
 	diagStage("fetch");
 	cancelTabRequest(current_);
 	requestTab_ = current_;
-	if (!net_.start(t.url, (size_t)set_.maxHtmlBytes, set_.verifyTLS))
+	const size_t bodyLimit = safePageBodyLimit();
+	diagBootMemory("budget_rechargement");
+	diagBootNote("page_body_budget", (long)bodyLimit);
+	if (bodyLimit == 0)
+	{
+		pendingResponse_.url = t.url;
+		pendingResponse_.error = "Memoire disponible insuffisante pour recharger cette page.";
+		responsePending_ = true;
+		layoutPending_ = true;
+		return;
+	}
+	if (!net_.start(t.url, bodyLimit, verifyTlsFor(t.url)))
 	{
 		pendingResponse_.url = t.url;
 		pendingResponse_.error = "Impossible de demarrer la requete reseau.";
@@ -654,51 +1065,51 @@ std::string Browser::internalHomeHtml(const std::string& engine)
 
 	std::string h;
 	h = "<html><head><title>Pixelnaute</title></head><body "
-		"style=\"background: #17131A; color: #ECE8E8\">";
+		"style=\"background: #10182D; color: #F4F0EF\">";
 
 	// --- en-tete ---
-	h += "<div style=\"text-align: center; margin-top: 26px; margin-bottom: 4px\">"
-	     "<span style=\"font-size: 40px; font-weight: bold; color: #F2A25C\">Pixelnaute</span></div>";
-	h += "<div style=\"text-align: center; font-size: 13px; color: #9A8A8A; "
-	     "margin-bottom: 18px\">Navigateur autonome &middot; New Nintendo 3DS</div>";
+	h += "<div style=\"text-align: center; margin-top: 22px; margin-bottom: 3px\">"
+	     "<span style=\"font-size: 36px; font-weight: bold; color: #F4F0EF\">PIXELNAUTE</span></div>";
+	h += "<div style=\"text-align: center; font-size: 13px; color: #A9BCD8; "
+	     "margin-bottom: 18px\">Navigateur web pour New Nintendo 3DS</div>";
 
 
 	// --- barre de recherche ---
 	h += "<form action=\"nw://search\">";
-	h += "<div style=\"background: #2A2230; margin-left: 10px; margin-right: 10px; "
-	     "padding: 8px\">";
+	h += "<div style=\"background: #1B2B4B; margin-left: 10px; margin-right: 10px; "
+	     "padding: 10px\">";
 	h += "<input type=\"search\" name=\"q\" size=\"40\" value=\"\" "
-	     "style=\"font-size: 19px\">";
+	     "style=\"font-size: 19px; color: #10182D\">";
 	h += "</div>";
 	h += "<div style=\"text-align: center; margin-top: 10px\">"
-	     "<button type=\"submit\" value=\"Rechercher\">Rechercher</button></div>";
+	     "<button type=\"submit\" value=\"Rechercher\">Rechercher sur le Web</button></div>";
 	h += "</form>";
 
-	h += "<div style=\"text-align: center; font-size: 12px; color: #7A6E70; "
+	h += "<div style=\"text-align: center; font-size: 12px; color: #A9BCD8; "
 	     "margin-top: 6px; margin-bottom: 16px\">"
 	     "Moteur : " + std::string(searchEngineDisplayName(engine)) +
 	     " &middot; touchez le champ pour taper</div>";
 
 	// --- raccourcis ---
-	h += "<div style=\"background: #241D28; padding: 8px; margin-left: 6px; "
+	h += "<div style=\"background: #172544; padding: 10px; margin-left: 6px; "
 	     "margin-right: 6px\">";
-	h += "<div style=\"font-size: 13px; font-weight: bold; color: #F2A25C; "
-	     "margin-bottom: 4px\">RACCOURCIS</div>";
+	h += "<div style=\"font-size: 14px; font-weight: bold; color: #F2A25C; "
+	     "margin-bottom: 7px\">RACCOURCIS</div>";
 	for (const auto& s : kShortcuts)
 	{
 		h += "<a href=\"" + htmlEscape(s.url) + "\" style=\"display: block; "
-		     "background: #322839; padding: 9px; margin-bottom: 5px; "
-		     "font-size: 17px; color: #ECE8E8\">" +
+		     "background: #22365C; padding: 9px; margin-bottom: 5px; "
+		     "font-size: 17px; color: #F4F0EF\">" +
 		     htmlEscape(s.label) + "</a>";
 	}
 	h += "</div>";
 
 	// --- favoris ---
-	h += "<div style=\"background: #241D28; padding: 8px; margin: 10px 6px 6px 6px\">";
-	h += "<div style=\"font-size: 13px; font-weight: bold; color: #F2A25C; "
-	     "margin-bottom: 4px\">FAVORIS</div>";
+	h += "<div style=\"background: #172544; padding: 10px; margin: 10px 6px 6px 6px\">";
+	h += "<div style=\"font-size: 14px; font-weight: bold; color: #F2A25C; "
+	     "margin-bottom: 7px\">FAVORIS</div>";
 	if (bookmarks_.entries.empty())
-		h += "<div style=\"font-size: 14px; color: #9A8A8A\">"
+		h += "<div style=\"font-size: 14px; color: #A9BCD8\">"
 		     "Aucun favori. Dans le menu (START), choisissez "
 		     "&laquo; Ajouter aux favoris &raquo;.</div>";
 	else
@@ -709,9 +1120,27 @@ std::string Browser::internalHomeHtml(const std::string& engine)
 			if (shown++ >= 12) break;
 			const std::string label = e.title.empty() ? e.url : e.title;
 			h += "<a href=\"" + htmlEscape(e.url) + "\" style=\"display: block; "
-			     "background: #322839; padding: 8px; margin-bottom: 5px; "
-			     "font-size: 16px; color: #ECE8E8\">" +
+			     "background: #22365C; padding: 8px; margin-bottom: 5px; "
+			     "font-size: 16px; color: #F4F0EF\">" +
 			     htmlEscape(label) + "</a>";
+		}
+	}
+	h += "</div>";
+
+	// --- visites recentes ---
+	h += "<div style=\"background: #172544; padding: 10px; margin: 10px 6px 6px 6px\">";
+	h += "<div style=\"font-size: 14px; font-weight: bold; color: #F2A25C; margin-bottom: 7px\">RECENTS</div>";
+	if (history_.entries.empty())
+		h += "<div style=\"font-size: 14px; color: #A9BCD8\">Aucune page recente.</div>";
+	else
+	{
+		for (size_t i = history_.entries.size(); i > 0 && i + 5 > history_.entries.size(); --i)
+		{
+			const auto& entry = history_.entries[i - 1];
+			if (entry.url.empty() || strStartsWith(toLower(entry.url), "nw://")) continue;
+			const std::string label = entry.title.empty() ? entry.url : entry.title;
+			h += "<a href=\"" + htmlEscape(entry.url) + "\" style=\"display:block; background:#22365C; padding:7px; margin-bottom:4px; font-size:14px; color:#F4F0EF\">" +
+				htmlEscape(label) + "</a>";
 		}
 	}
 	h += "</div>";
@@ -719,11 +1148,11 @@ std::string Browser::internalHomeHtml(const std::string& engine)
 	// --- outils internes ---
 	h += "<div style=\"text-align: center; margin: 14px 6px 24px 6px\">";
 	h += "<a href=\"nw://bookmarks\" style=\"color: #F2A25C; font-size: 15px\">Favoris</a>";
-	h += "<span style=\"color: #4A4048\"> &middot; </span>";
+	h += "<span style=\"color: #A9BCD8\"> &middot; </span>";
 	h += "<a href=\"nw://history\" style=\"color: #F2A25C; font-size: 15px\">Historique</a>";
-	h += "<span style=\"color: #4A4048\"> &middot; </span>";
+	h += "<span style=\"color: #A9BCD8\"> &middot; </span>";
 	h += "<a href=\"nw://settings\" style=\"color: #F2A25C; font-size: 15px\">Reglages</a>";
-	h += "<span style=\"color: #4A4048\"> &middot; </span>";
+	h += "<span style=\"color: #A9BCD8\"> &middot; </span>";
 	h += "<a href=\"nw://about\" style=\"color: #F2A25C; font-size: 15px\">A propos</a>";
 	h += "</div>";
 
@@ -742,7 +1171,8 @@ void Browser::renderInternal(int tabIdx, const std::string& html)
 		return;
 	}
 	if (d.nodes.empty() && tab.doc.empty()) { tab.pageReady = false; return; }
-	tab.css.clear();
+	tab.css = CssEngine();
+	tab.css.setViewportWidth(layoutWidth());
 	collectStyleBlocks(d, tab.css);
 	renderInto(tabIdx, std::move(d));
 }
@@ -751,6 +1181,24 @@ void Browser::renderInternal(int tabIdx, const std::string& html)
 bool Browser::showInternal(const std::string& url)
 {
 	std::string u = toLower(url);
+	if (u.rfind("nw://tls-allow", 0) == 0)
+	{
+		const size_t query = url.find("url=");
+		if (query == std::string::npos || pendingTlsHost_.empty()) return false;
+		const std::string target = urlDecode(url.substr(query + 4));
+		const std::string host = normalizedHost(target);
+		if (!strStartsWith(toLower(target), "https://") || host.empty() ||
+			host != pendingTlsHost_) return false;
+		if (std::find(tlsSessionExceptions_.begin(), tlsSessionExceptions_.end(), host) ==
+			tlsSessionExceptions_.end())
+		{
+			if (tlsSessionExceptions_.size() >= 16) tlsSessionExceptions_.erase(tlsSessionExceptions_.begin());
+			tlsSessionExceptions_.push_back(host);
+		}
+		pendingTlsHost_.clear();
+		openUrl(target);
+		return true;
+	}
 	if (u.rfind("nw://search", 0) == 0)
 	{
 		// nw://search?q=requete  (le formulaire de la page d'accueil)
@@ -785,12 +1233,37 @@ void Browser::openBookmark(const std::string& url)
 	openUrl(url);
 }
 
+bool Browser::downloadUrl(const std::string& url)
+{
+	if (net_.state() != NetState::Idle || url.empty() ||
+		!(strStartsWith(toLower(url), "http://") ||
+		  strStartsWith(toLower(url), "https://")))
+		return false;
+	const std::string cleanUrl = url.substr(0, url.find_first_of("?#"));
+	const size_t slash = cleanUrl.find_last_of('/');
+	std::string filename = slash == std::string::npos
+		? std::string() : cleanUrl.substr(slash + 1);
+	if (filename.empty()) filename = "download.bin";
+	const std::string path = storageUniqueDownloadName(filename);
+	requestTab_ = current_;
+	progressStatus_ = "Telechargement du fichier...";
+	if (!net_.start(url, 32 * 1024 * 1024, verifyTlsFor(url), "GET", "",
+		NetRequestType::Download, 120000, currentTab().url, "", path))
+	{
+		requestTab_ = -1;
+		progressStatus_ = "Impossible de demarrer le telechargement.";
+		return false;
+	}
+	return true;
+}
+
 // -------------------------------------------------------------------------
 void Browser::newTab(const std::string& url)
 {
 	if ((int)tabs_.size() >= NW_MAX_TABS) return;
 	tabs_.push_back(Tab());
 	current_ = (int)tabs_.size() - 1;
+	trimInactiveTabs();
 	if (!url.empty())
 		openInput(url);
 	else goHome();
@@ -801,6 +1274,16 @@ void Browser::closeTab(int index)
 	if (index < 0 || index >= (int)tabs_.size()) return;
 	if ((int)tabs_.size() <= 1) return;
 	clearStyleQueue();
+	clearScriptQueue();
+	if (segmentTab_ == index)
+	{
+		segmentPending_ = false;
+		segmentTab_ = -1;
+		segmentIndexPending_ = -1;
+		pendingScrollY_ = -1;
+		layoutPending_ = false;
+	}
+	else if (segmentTab_ > index) --segmentTab_;
 	if (imageRequestTab_ == index || pendingImagesTab_ == index) clearImageQueue();
 	else
 	{
@@ -827,8 +1310,13 @@ void Browser::closeTab(int index)
 		}
 		else { if (fetchQueue_[i].tabIndex > index) --fetchQueue_[i].tabIndex; ++i; }
 	}
+	const bool closingCurrent = current_ == index;
 	tabs_.erase(tabs_.begin() + index);
-	if (current_ >= (int)tabs_.size()) current_ = (int)tabs_.size() - 1;
+	if (current_ > index) --current_;
+	else if (closingCurrent) current_ = std::min(index, (int)tabs_.size() - 1);
+	if (!tabs_[(size_t)current_].pageReady && !tabs_[(size_t)current_].doc.empty())
+		rerenderTab(current_);
+	trimInactiveTabs();
 }
 
 void Browser::selectTab(int index)
@@ -839,6 +1327,9 @@ void Browser::selectTab(int index)
 		clearImageQueue();
 		clearScriptQueue();
 		current_ = index;
+		if (!tabs_[(size_t)current_].pageReady && !tabs_[(size_t)current_].doc.empty())
+			rerenderTab(current_);
+		trimInactiveTabs();
 	}
 }
 
@@ -849,6 +1340,9 @@ void Browser::nextTab()
 	clearImageQueue();
 	clearScriptQueue();
 	current_ = (current_ + 1) % (int)tabs_.size();
+	if (!tabs_[(size_t)current_].pageReady && !tabs_[(size_t)current_].doc.empty())
+		rerenderTab(current_);
+	trimInactiveTabs();
 }
 
 void Browser::prevTab()
@@ -858,6 +1352,9 @@ void Browser::prevTab()
 	clearImageQueue();
 	clearScriptQueue();
 	current_ = (current_ == 0) ? (int)tabs_.size() - 1 : current_ - 1;
+	if (!tabs_[(size_t)current_].pageReady && !tabs_[(size_t)current_].doc.empty())
+		rerenderTab(current_);
+	trimInactiveTabs();
 }
 
 Browser::Tab& Browser::currentTab()
@@ -891,7 +1388,56 @@ bool Browser::clearCachedSite(const std::vector<uint64_t>& pageKeys)
 
 bool Browser::clearPageCache()
 {
-	return pageSegmentCache_.clear();
+	bool ok = pageSegmentCache_.clear();
+	const std::string dirPath = std::string(NW_SD_CACHE) + "/resources";
+	DIR* dir = opendir(dirPath.c_str());
+	if (dir)
+	{
+		struct dirent* item = nullptr;
+		while ((item = readdir(dir)) != nullptr)
+		{
+			if (item->d_name[0] == '.') continue;
+			const std::string path = dirPath + "/" + item->d_name;
+			struct stat info;
+			if (stat(path.c_str(), &info) == 0 && S_ISREG(info.st_mode) &&
+				remove(path.c_str()) != 0) ok = false;
+		}
+		closedir(dir);
+		if (rmdir(dirPath.c_str()) != 0) ok = false;
+	}
+	return ok;
+}
+
+size_t Browser::safePageBodyLimit() const
+{
+	// Le corps HTTP reste en RAM pendant que le parseur construit le DOM et le
+	// layout alloue son bitmap. Garder une marge pour ces copies et les buffers
+	// de libctru/curl au lieu d'accepter une page qui ferait echouer newlib.
+	const size_t reserve = 10u * 1024u * 1024u;
+	const size_t freeBytes = diagApplicationHeapFree();
+	if (freeBytes <= reserve + 64u * 1024u) return 0;
+	const size_t budget = freeBytes - reserve;
+	return std::min((size_t)std::max(0, set_.maxHtmlBytes), budget);
+}
+
+void Browser::trimInactiveTabs()
+{
+	for (int i = 0; i < (int)tabs_.size(); ++i)
+	{
+		if (i == current_) continue;
+		Tab& tab = tabs_[(size_t)i];
+		// Le mode lecteur garde l'original pour un retour immediat; une fois
+		// l'onglet en arriere-plan, liberer cette seconde copie du DOM.
+		tab.readerOriginal.reset();
+		if (!tab.pageReady && !tab.page.bmp.px) continue;
+		// Les onglets de fond gardent leur DOM et leur URL, mais leur bitmap et
+		// leurs hitboxes seront reconstruits au retour. Chaque bitmap peut
+		// consommer jusqu'a 1,8 Mio sur le tas application.
+		tab.page = PageModel();
+		tab.pageReady = false;
+		tab.renderedDomVersion = 0;
+		tab.failedSegmentIndex = -1;
+	}
 }
 
 // -------------------------------------------------------------------------
@@ -911,12 +1457,17 @@ void Browser::pollNetwork()
 			}
 			if (pendingResponse_.requestType == NetRequestType::Stylesheet)
 			{
+				restoreCachedResource(cssRequestUrl_, pendingResponse_, 64 * 1024);
+				if (pendingResponse_.ok) saveCachedResource(cssRequestUrl_, pendingResponse_);
 				onStylesheetResponse(pendingResponse_);
+				cssRequestUrl_.clear();
 				pendingResponse_ = NetResponse();
 				return;
 			}
 			if (pendingResponse_.requestType == NetRequestType::Script)
 			{
+				restoreCachedResource(scriptRequestUrl_, pendingResponse_, 256 * 1024);
+				if (pendingResponse_.ok) saveCachedResource(scriptRequestUrl_, pendingResponse_);
 				onScriptResponse(pendingResponse_);
 				pendingResponse_ = NetResponse();
 				return;
@@ -924,15 +1475,24 @@ void Browser::pollNetwork()
 			if (pendingResponse_.requestType == NetRequestType::Image)
 			{
 				const int tabIdx = imageRequestTab_;
+				bool imageStored = false;
 				if (tabIdx >= 0 && tabIdx == current_ && tabIdx < (int)tabs_.size() &&
 					tabs_[tabIdx].url == imageRequestReferer_ && pendingResponse_.ok)
 				{
+					restoreCachedResource(imageRequestUrl_, pendingResponse_, 512 * 1024);
+					if (pendingResponse_.ok) saveCachedResource(imageRequestUrl_, pendingResponse_);
 					if (images_.storeDownloaded(imageRequestUrl_, pendingResponse_.body))
+					{
+						imageStored = true;
 						imageRedrawPending_ = true;
+					}
 				}
 				imageRequestTab_ = -1;
 				imageRequestUrl_.clear();
 				imageRequestReferer_.clear();
+				if (imageStored && tabIdx == current_ && tabIdx >= 0 && tabIdx < (int)tabs_.size() &&
+					tabs_[tabIdx].pageReady && set_.loadImages)
+					queueImages(tabIdx, 6);
 				pendingResponse_ = NetResponse();
 				return;
 			}
@@ -1019,8 +1579,10 @@ bool Browser::tickScripts()
 			if (net_.busy() || net_.state() != NetState::Idle) return redraw;
 			ScriptRequest request = std::move(next);
 			scriptQueue_.erase(scriptQueue_.begin());
-			if (!net_.start(request.url, 256 * 1024, set_.verifyTLS, "GET", "",
-				NetRequestType::Script, 8000, request.referer))
+			const ResourceCacheEntry cache = resourceCacheEntry(request.url);
+			if (!net_.start(request.url, 256 * 1024, verifyTlsFor(request.url), "GET", "",
+				NetRequestType::Script, 8000, request.referer, "", "",
+				cache.etag, cache.modified))
 				continue;
 			scriptRequestTab_ = current_;
 			scriptRequestUrl_ = request.url;
@@ -1092,6 +1654,8 @@ void Browser::queueScripts(int tabIdx, const Document& doc, const std::string& p
 		{
 			const std::string url = urlJoin(pageUrl, src);
 			if (!strStartsWith(url, "http://") && !strStartsWith(url, "https://")) continue;
+			if (url.size() > 2048) continue;
+			if (set_.blockTrackers && trackerUrl(url)) continue;
 			if (scriptQueue_.size() >= 12) break;
 			scriptQueue_.push_back({ url, pageUrl, std::string(), true });
 		}
@@ -1129,6 +1693,26 @@ bool Browser::tickStyles()
 {
 	const bool redraw = styleRedrawPending_;
 	styleRedrawPending_ = false;
+	// Le premier rendu est deja visible : ne pas laisser une feuille CSS lente
+	// retarder indéfiniment les scripts, les images et la navigation.
+	if (cssQueueTab_ == current_ && cssStartMs_ &&
+		timeMs() - cssStartMs_ >= 2000 &&
+		(cssRequestTab_ >= 0 || !cssQueue_.empty()))
+	{
+		const int tabIdx = cssQueueTab_;
+		const std::string pageUrl = cssPageUrl_;
+		const bool needsLayout = cssLayoutPending_;
+		clearStyleQueue();
+		if (needsLayout && tabIdx >= 0 && tabIdx == current_ &&
+			tabIdx < (int)tabs_.size() && tabs_[(size_t)tabIdx].url == pageUrl)
+		{
+			const int savedScrollY = tabs_[(size_t)tabIdx].scrollY;
+			rerenderTab(tabIdx);
+			tabs_[(size_t)tabIdx].scrollY = savedScrollY;
+			styleRedrawPending_ = true;
+		}
+		return redraw || needsLayout;
+	}
 	// Attendre la fin de la file : refaire le layout entre les feuilles
 	// applique la CSS en plusieurs etapes et peut bloquer l'interface plusieurs
 	// fois pour une meme page. Un seul rendu final incorpore toutes les regles.
@@ -1154,14 +1738,17 @@ bool Browser::tickStyles()
 
 	CssRequest request = std::move(cssQueue_.front());
 	cssQueue_.erase(cssQueue_.begin());
-	if (!net_.start(request.url, 64 * 1024, set_.verifyTLS, "GET", "",
-		NetRequestType::Stylesheet, 5000, request.referer))
+	const ResourceCacheEntry cache = resourceCacheEntry(request.url);
+	if (!net_.start(request.url, 64 * 1024, verifyTlsFor(request.url), "GET", "",
+		NetRequestType::Stylesheet, 5000, request.referer, "", "",
+		cache.etag, cache.modified))
 	{
 		if (cssQueue_.empty()) cssQueueTab_ = -1;
 		return redraw;
 	}
 	cssRequestOrder_ = request.sourceOrder;
 	cssRequestTab_ = current_;
+	cssRequestUrl_ = request.url;
 	return redraw;
 }
 
@@ -1202,6 +1789,8 @@ void Browser::queueStyles(int tabIdx, const Document& doc, const std::string& pa
 		}
 		std::string url = urlJoin(pageUrl, href);
 		if (!strStartsWith(url, "http://") && !strStartsWith(url, "https://")) continue;
+		if (url.size() > 2048 || cssQueue_.size() >= 24) continue;
+		if (set_.blockTrackers && trackerUrl(url)) continue;
 		CssRequest request;
 		request.url = std::move(url);
 		request.referer = pageUrl;
@@ -1247,8 +1836,10 @@ bool Browser::tickImages()
 		net_.state() != NetState::Idle) return redraw;
 	const std::string url = pendingImages_.back();
 	pendingImages_.pop_back();
-	if (net_.start(url, 512 * 1024, set_.verifyTLS, "GET", "",
-		NetRequestType::Image, 6000, pendingImagesReferer_))
+	const ResourceCacheEntry cache = resourceCacheEntry(url);
+	if (net_.start(url, 512 * 1024, verifyTlsFor(url), "GET", "",
+		NetRequestType::Image, 6000, pendingImagesReferer_, "", "",
+		cache.etag, cache.modified))
 	{
 		imageRequestTab_ = current_;
 		imageRequestUrl_ = url;
@@ -1280,13 +1871,65 @@ void Browser::onResponse(NetResponse& resp)
 	diagBootNote("page_response_bytes", (long)resp.body.size());
 	diagBootNote("heap_size", (long)envGetHeapSize());
 	diagBootNote("linear_heap_size", (long)envGetLinearHeapSize());
-	diagBootNote("app_mem_free_response",
-		(long)osGetMemRegionFree(MEMREGION_APPLICATION));
+	diagBootNote("app_heap_free_response", (long)diagApplicationHeapFree());
 	diagBootNote("linear_mem_free_response", (long)linearSpaceFree());
+	diagBootMemory("reponse");
 	const int tabIdx = requestTab_;
 	requestTab_ = -1;
 	if (tabIdx < 0 || tabIdx >= (int)tabs_.size()) return;
 	Tab& t = tabs_[tabIdx];
+	if (resp.requestType == NetRequestType::Download)
+	{
+		Document d;
+		std::string html = "<html><body style=\"padding:12px;background:#17131A;color:#ECE8E8\"><h2>";
+		if (resp.ok && !resp.downloadPath.empty())
+			html += "Telechargement termine</h2><p>Fichier enregistre sur la carte SD :</p><p>" +
+				htmlEscape(resp.downloadPath) + "</p>";
+		else
+			html += "Echec du telechargement</h2><p>" + htmlEscape(resp.error.empty()
+				? "Le fichier n'a pas pu etre enregistre." : resp.error) + "</p>";
+		html += "</body></html>";
+		if (htmlParse(html, d)) renderInto(tabIdx, std::move(d));
+		return;
+	}
+	// Ne pas conserver le DOM precedent pendant le parsing de sa replacement.
+	if (resp.ok) resetTab(t);
+
+	// Les images decodes peuvent etre evincees avant un gros parse. Si le tas
+	// application reste trop serre, abandonner proprement le document au lieu
+	// de laisser l'allocateur newlib appeler le gestionnaire fatal.
+	if (resp.ok && diagApplicationHeapFree() < 8u * 1024u * 1024u)
+	{
+		images_.clear();
+		trimInactiveTabs();
+		for (int i = 0; i < (int)tabs_.size(); ++i)
+			if (i != tabIdx) releaseJavaScript(tabs_[(size_t)i]);
+		diagBootNote("page_heap_after_pressure_cleanup",
+			(long)diagApplicationHeapFree());
+		diagBootMemory("nettoyage_memoire");
+		if (diagApplicationHeapFree() < 6u * 1024u * 1024u)
+		{
+			diagBootNote("page_rejected_body_bytes", (long)resp.body.size());
+			diagBootNote("page_rejected_heap_free",
+				(long)diagApplicationHeapFree());
+			std::string().swap(resp.body);
+			resetTab(t);
+			Document lowMemory;
+			const std::string html = "<html><body><h2>Memoire faible</h2><p>Cette page est trop lourde pour la memoire disponible. Fermez un onglet ou desactivez les images puis reessayez.</p></body></html>";
+			if (htmlParse(html, lowMemory)) renderInto(tabIdx, std::move(lowMemory));
+			else
+			{
+				t.page = PageModel();
+				t.page.bmp.create(layoutWidth(), NW_TOP_HEIGHT * layoutWidth() / NW_PAGE_WIDTH);
+				if (t.page.bmp.px) t.page.bmp.clear(C_BG);
+				t.page.height = pageViewHeight(t.page);
+				t.pageReady = t.page.bmp.px != nullptr;
+			}
+			progressStatus_ = "Memoire faible : page non chargee";
+			diagBootNote("page_rejected_low_heap", 1);
+			return;
+		}
+	}
 
 	const bool isChallengeCandidate = (resp.status == 202 || resp.status == 403 || resp.status == 429 || resp.status == 503 || resp.body.size() < 30 * 1024);
 	if (resp.ok && isChallengeCandidate && searchPageIsVerificationChallenge(resp.body))
@@ -1306,11 +1949,16 @@ void Browser::onResponse(NetResponse& resp)
 
 		if (resp.sslError)
 		{
+			pendingTlsHost_ = resp.certError ? normalizedHost(resp.url) : std::string();
 			h += "<p style=\"margin-bottom: 6px\">Connexion securisee impossible.</p>"
 			     "<p style=\"color: #B0A4A6; margin-bottom: 16px\">Ce site utilise un certificat ou une version TLS "
 			     "incompatible avec le composant reseau de la New 3DS. La verification du certificat n'a pas "
 			     "ete contournee automatiquement. Verifiez la date de la console ou modifiez le reglage TLS "
 			     "dans les parametres, en connaissance des risques.</p>";
+			if (resp.certError && !pendingTlsHost_.empty())
+				h += "<p><a href=\"nw://tls-allow?url=" + urlEncode(resp.url) +
+					"\" style=\"color:#F2A25C\">Continuer pour cet hote pendant cette session : " +
+					htmlEscape(pendingTlsHost_) + " (risque de securite)</a></p>";
 		}
 		else if (resp.tooBig)
 		{
@@ -1328,6 +1976,26 @@ void Browser::onResponse(NetResponse& resp)
 		htmlParse(h, d);
 		renderInto(tabIdx, std::move(d));
 		return;
+	}
+
+	if (toLower(resp.contentType).find("xml") != std::string::npos)
+	{
+		const std::string feedHtml = rssFeedHtml(resp.body, resp.url);
+		if (!feedHtml.empty())
+		{
+			Document feedDoc;
+			if (htmlParse(feedHtml, feedDoc))
+			{
+				t.url = resp.url;
+				t.scrollY = 0;
+				t.css = CssEngine();
+				t.css.setViewportWidth(layoutWidth());
+				collectStyleBlocks(feedDoc, t.css);
+				renderInto(tabIdx, std::move(feedDoc));
+				history().add(t.url, t.title);
+				return;
+			}
+		}
 	}
 
 	if (!isHtmlBody(resp.contentType, resp.body))
@@ -1396,17 +2064,23 @@ void Browser::onResponse(NetResponse& resp)
 	// on affiche cette version a la place.
 	std::string rewritten;
 	diagStage("parse html");
+	diagBootMemory("avant_parse_recherche");
 	if (searchPageRewrite(resp.body, rewritten, t.url))
 	{
 		Document dr;
+		diagBootMemory("avant_parse_resultats");
 		if (htmlParse(rewritten, dr))
 		{
+			diagBootMemory("apres_parse_resultats");
 			std::string().swap(resp.body);
 			t.url = resp.url;
 			t.scrollY = 0;
-			t.css.clear();
+			t.css = CssEngine();
+			t.css.setViewportWidth(layoutWidth());
 			diagStage("css parse");
+			diagBootMemory("avant_css_resultats");
 			collectStyleBlocks(dr, t.css);
+			diagBootMemory("apres_css_resultats");
 			diagStage("css ready");
 			renderInto(tabIdx, std::move(dr));
 			history().add(t.url, t.title);
@@ -1417,14 +2091,14 @@ void Browser::onResponse(NetResponse& resp)
 
 	Document d;
 	diagStage("html parse start");
-	diagBootNote("app_mem_free_before_parse",
-		(long)osGetMemRegionFree(MEMREGION_APPLICATION));
+	diagBootMemory("avant_parse_html");
+	diagBootNote("app_heap_free_before_parse", (long)diagApplicationHeapFree());
 	diagBootNote("linear_mem_free_before_parse", (long)linearSpaceFree());
 	const bool parsed = htmlParse(resp.body, d);
+	diagBootMemory("apres_parse_html");
 	diagBootNote("page_parse_ok", parsed ? 1 : 0);
 	diagBootNote("page_dom_nodes", (long)d.nodes.size());
-	diagBootNote("app_mem_free_after_parse",
-		(long)osGetMemRegionFree(MEMREGION_APPLICATION));
+	diagBootNote("app_heap_free_after_parse", (long)diagApplicationHeapFree());
 	diagBootNote("linear_mem_free_after_parse", (long)linearSpaceFree());
 	std::string().swap(resp.body);
 	if (!parsed)
@@ -1470,8 +2144,8 @@ void Browser::onResponse(NetResponse& resp)
 
 	// feuilles de style : blocs <style>
 	diagStage("css parse");
-	diagBootNote("app_mem_free_before_css",
-		(long)osGetMemRegionFree(MEMREGION_APPLICATION));
+	diagBootMemory("avant_css");
+	diagBootNote("app_heap_free_before_css", (long)diagApplicationHeapFree());
 	size_t cssBlockCount = 0;
 	size_t cssInputBytes = 0;
 	for (const Node& node : d.nodes)
@@ -1483,12 +2157,13 @@ void Browser::onResponse(NetResponse& resp)
 			if (child < 0 || (size_t)child >= d.nodes.size()) continue;
 			const Node& text = d.nodes[child];
 			if (text.type == NodeType::RawText || text.type == NodeType::Text)
-				cssInputBytes += text.text.size();
+				cssInputBytes += text.textLength;
 		}
 	}
 	diagBootNote("page_css_blocks", (long)cssBlockCount);
 	diagBootNote("page_css_input_bytes", (long)cssInputBytes);
-	t.css.clear();
+	t.css = CssEngine();
+	t.css.setViewportWidth(layoutWidth());
 	collectStyleBlocks(d, t.css);
 
 	// Les feuilles externes sont chargees en arriere-plan apres le premier rendu.
@@ -1496,18 +2171,26 @@ void Browser::onResponse(NetResponse& resp)
 
 	diagBootNote("page_css_bytes", (long)t.css.stylesheetBytes());
 	diagBootNote("page_css_rules", (long)t.css.rules().size());
-	diagBootNote("app_mem_free_after_css",
-		(long)osGetMemRegionFree(MEMREGION_APPLICATION));
+	diagBootMemory("apres_css");
+	diagBootNote("app_heap_free_after_css", (long)diagApplicationHeapFree());
 	diagStage("css ready");
 
 	renderInto(tabIdx, std::move(d));
 	history().add(t.url, t.title);
 }
 
-static std::string extractReaderHtml(const Document& doc, const std::string& title)
+static std::string extractReaderHtml(const Document& doc, const std::string& title, bool dark, bool images)
 {
+	const char* background = dark ? "#242126" : "#FFFFFF";
+	const char* foreground = dark ? "#EEEEF0" : "#202020";
 	std::string h = "<html><head><title>" + htmlEscape(title) + "</title></head>"
 	                "<body style=\"background: #FFFFFF; color: #202020; padding: 10px;\">";
+	const std::string bodyStyle = "<style>body{background:" + std::string(background) +
+		"!important;color:" + foreground + "!important}pre{background:" +
+		(dark ? "#38343A" : "#EEEEEE") + "!important;color:" + foreground +
+		"!important}h1,h2,h3,h4,h5,h6{color:" + (dark ? "#FFB878" : "#B05010") +
+		"!important}</style>";
+	h.insert(h.find(">", h.find("<body")) + 1, bodyStyle);
 	if (!title.empty())
 		h += "<h2 style=\"color: #C06010; margin-bottom: 12px;\">" + htmlEscape(title) + "</h2>";
 
@@ -1516,9 +2199,29 @@ static std::string extractReaderHtml(const Document& doc, const std::string& tit
 		const Node& n = doc.nodes[i];
 		if (!n.isElement()) continue;
 		const std::string& t = n.tag;
+		if (t == "img" && images)
+		{
+			const char* src = n.getAttr("src");
+			const char* alt = n.getAttr("alt");
+			if (src && *src)
+				h += "<p><img src=\"" + htmlEscape(src) + "\" alt=\"" +
+					htmlEscape(alt ? alt : "") + "\"></p>";
+			continue;
+		}
 		if (t == "p" || t == "h1" || t == "h2" || t == "h3" || t == "h4" ||
 		    t == "h5" || t == "h6" || t == "li" || t == "pre" || t == "blockquote")
 		{
+			if (t == "p")
+			{
+				int parent = n.parent;
+				while (parent >= 0 && (size_t)parent < doc.nodes.size())
+				{
+					const Node& ancestor = doc.nodes[(size_t)parent];
+					if (ancestor.tag == "li" || ancestor.tag == "blockquote") break;
+					parent = ancestor.parent;
+				}
+				if (parent >= 0 && (size_t)parent < doc.nodes.size()) continue;
+			}
 			std::string text = strTrim(doc.textOf((int)i));
 			if (!text.empty())
 			{
@@ -1559,7 +2262,7 @@ void Browser::rerenderTab(int tabIdx)
 	diagStage("layout");
 	pendingImages_.clear();
 	Tab& tab = tabs_[tabIdx];
-	tab.pageCacheKey = pageFingerprint(tab);
+	tab.pageCacheKey = pageFingerprint(tab, layoutWidth());
 	tab.failedSegmentIndex = -1;
 	int focusedDomNode = -1;
 	if (tab.focusNode >= 0 && tab.focusNode < (int)tab.page.fields.size())
@@ -1567,13 +2270,13 @@ void Browser::rerenderTab(int tabIdx)
 	tab.title = tab.doc.title();
 	tab.pageReady = false;
 
-	PageLayout lay(tab.doc, tab.css, set_);
+	PageLayout lay(tab.doc, tab.css, set_, layoutWidth());
 	diagStage("layout start");
 	diagBootNote("page_layout_cap", set_.maxPageHeight);
-	diagBootNote("app_mem_free_before_layout",
-		(long)osGetMemRegionFree(MEMREGION_APPLICATION));
+	diagBootMemory("avant_mise_en_page");
+	diagBootNote("app_heap_free_before_layout", (long)diagApplicationHeapFree());
 	diagBootNote("linear_mem_free_before_layout", (long)linearSpaceFree());
-	const int segmentIndex = clamp((tab.scrollY + NW_TOP_HEIGHT - 1) /
+	const int segmentIndex = clamp((tab.scrollY + pageViewHeight(tab.page) - 1) /
 		NW_PAGE_SEGMENT_HEIGHT, 0, NW_MAX_PAGE_SEGMENTS - 1);
 	const int segmentHeight = segmentIndex == 0
 		? NW_PAGE_SEGMENT_HEIGHT
@@ -1581,12 +2284,14 @@ void Browser::rerenderTab(int tabIdx)
 	if (!lay.renderSegment(tab.page, tab.url, segmentIndex, segmentHeight))
 	{
 		diagStage("layout failed; rendering fallback");
-		tab.page.clear();
-		std::string rHtml = extractReaderHtml(tab.doc, tab.title);
+		diagBootNote("page_segment_render_failed_heap",
+			(long)diagApplicationHeapFree());
+		tab.page = PageModel();
+		std::string rHtml = extractReaderHtml(tab.doc, tab.title, set_.darkPages, set_.loadImages);
 		Document rDoc;
 		if (htmlParse(rHtml, rDoc))
 		{
-			PageLayout lay2(rDoc, g_emptyCss, set_);
+			PageLayout lay2(rDoc, g_emptyCss, set_, layoutWidth());
 			lay2.renderSegment(tab.page, tab.url, 0, NW_PAGE_SEGMENT_HEIGHT);
 		}
 		else
@@ -1595,7 +2300,7 @@ void Browser::rerenderTab(int tabIdx)
 			std::string h = "<html><body><h3>Memoire insuffisante</h3><p>"
 				"La page est trop lourde pour la New 3DS.</p></body></html>";
 			htmlParse(h, errDoc);
-			PageLayout lay2(errDoc, g_emptyCss, set_);
+			PageLayout lay2(errDoc, g_emptyCss, set_, layoutWidth());
 			lay2.renderSegment(tab.page, tab.url, 0, NW_PAGE_SEGMENT_HEIGHT);
 		}
 		diagStage("layout fallback complete");
@@ -1605,18 +2310,18 @@ void Browser::rerenderTab(int tabIdx)
 		const bool isInternal = strStartsWith(toLower(tab.url), "nw://") || strStartsWith(toLower(tab.url), "nw:/");
 		if (!isInternal && tab.page.height < 60 && tab.doc.nodes.size() > 25)
 		{
-			std::string rHtml = extractReaderHtml(tab.doc, tab.title);
+			std::string rHtml = extractReaderHtml(tab.doc, tab.title, set_.darkPages, set_.loadImages);
 			Document rDoc;
 			if (htmlParse(rHtml, rDoc))
 			{
-				tab.page.clear();
-				PageLayout layReader(rDoc, g_emptyCss, set_);
+				tab.page = PageModel();
+				PageLayout layReader(rDoc, g_emptyCss, set_, layoutWidth());
 				layReader.render(tab.page, tab.url);
 			}
 		}
 		diagBootNote("page_render_height", tab.page.height);
-		diagBootNote("app_mem_free_after_layout",
-			(long)osGetMemRegionFree(MEMREGION_APPLICATION));
+		diagBootMemory("apres_mise_en_page");
+		diagBootNote("app_heap_free_after_layout", (long)diagApplicationHeapFree());
 		diagBootNote("linear_mem_free_after_layout", (long)linearSpaceFree());
 		diagStage("layout complete");
 	}
@@ -1624,7 +2329,7 @@ void Browser::rerenderTab(int tabIdx)
 	tab.pageReady = true;
 	layoutPending_ = false;
 	progressStatus_ = tab.page.truncated
-		? "Page longue — rendu par étapes, limite 4 000 px"
+		? "Page longue — defilez pour continuer"
 		: std::string();
 	if (tab.page.bmp.px &&
 		!pageSegmentCache_.store(tab.pageCacheKey, tab.page.segmentIndex,
@@ -1632,14 +2337,14 @@ void Browser::rerenderTab(int tabIdx)
 		diagBootNote("segment_cache_write_failed", 1);
 	if (!tab.page.bmp.px)
 	{
-		tab.page.clear();
-		if (tab.page.bmp.create(NW_PAGE_WIDTH, NW_TOP_HEIGHT))
+		tab.page = PageModel();
+		if (tab.page.bmp.create(layoutWidth(), NW_TOP_HEIGHT * layoutWidth() / NW_PAGE_WIDTH))
 		{
 			tab.page.bmp.clear(0xFF17131A);
 			TextEngine::instance().drawLine(tab.page.bmp,
 				"Mémoire insuffisante pour afficher cette page",
 				16, 96, 0.58f, 0xFFF2A25C, true, false);
-			tab.page.height = NW_TOP_HEIGHT;
+			tab.page.height = pageViewHeight(tab.page);
 			tab.page.errorCode = 2;
 			tab.page.errorText = "Memoire insuffisante pour le rendu";
 			progressStatus_ = "Memoire insuffisante pour afficher la page";
@@ -1665,17 +2370,37 @@ void Browser::queueImages(int tabIdx, int maximum)
 {
 	pendingImages_.clear();
 	pendingImagesTab_ = tabIdx;
-	if (maximum <= 0) return;
+	if (maximum <= 0 || tabIdx < 0 || tabIdx >= (int)tabs_.size()) return;
 
 	const Tab& tab = tabs_[tabIdx];
 	pendingImagesReferer_ = tab.url;
-	for (const auto& image : tab.page.images)
+	// Ne charger que les images proches de la zone visible. La meme fonction
+	// est rappelee apres un defilement, ce qui permet d'atteindre les images
+	// plus loin dans une longue page sans garder toutes les reponses en RAM.
+	const int viewHeight = pageViewHeight(tab.page);
+	const int viewTop = std::max(0, tab.scrollY - viewHeight / 2);
+	const int viewBottom = tab.scrollY + viewHeight * 2;
+	std::vector<bool> selected(tab.page.images.size(), false);
+	for (int slot = 0; slot < maximum; ++slot)
 	{
-		if ((int)pendingImages_.size() >= maximum) break;
-		if (image.src.empty() || images_.find(image.src)) continue;
-		if (std::find(pendingImages_.begin(), pendingImages_.end(), image.src) ==
-			pendingImages_.end())
-			pendingImages_.push_back(image.src);
+		int best = -1;
+		int bestDistance = 0x7fffffff;
+		for (size_t i = 0; i < tab.page.images.size(); ++i)
+		{
+			if (selected[i]) continue;
+			const auto& image = tab.page.images[i];
+			if (image.src.empty() || images_.contains(image.src) ||
+				(set_.blockTrackers && trackerUrl(image.src)) ||
+				std::find(pendingImages_.begin(), pendingImages_.end(), image.src) != pendingImages_.end())
+				continue;
+			const int imageBottom = image.y + std::max(1, image.h);
+			int distance = image.y > viewBottom ? image.y - viewBottom :
+				(imageBottom < viewTop ? viewTop - imageBottom : 0);
+			if (distance < bestDistance) { best = (int)i; bestDistance = distance; }
+		}
+		if (best < 0) break;
+		selected[(size_t)best] = true;
+		pendingImages_.push_back(tab.page.images[(size_t)best].src);
 	}
 }
 
@@ -1687,6 +2412,9 @@ int Browser::hitLink(int x, int y) const
 	const Tab& t = tabs_[current_];
 	if (!t.pageReady) return -1;
 	int sy = t.scrollY;
+	const float scale = pageScale();
+	x = (int)((float)x * scale);
+	y = (int)((float)y * scale);
 	for (size_t i = 0; i < t.page.links.size(); i++)
 	{
 		const LinkBox& lb = t.page.links[i];
@@ -1711,6 +2439,8 @@ void Browser::tap(int x, int y)
 {
 	Tab& tab = currentTab();
 	if (!tab.pageReady) return;
+	const int logicalX = pageXFromView(x);
+	const int pageY = tab.scrollY + pageYFromView(y);
 
 	// Le champ en cours d'edition est oublie a chaque appui : il n'est
 	// renseigne que si l'appui tombe sur un champ. Sans cette remise a zero,
@@ -1728,8 +2458,8 @@ void Browser::tap(int x, int y)
 		{
 			tab.doc.hoveredNode = link.node; ++tab.doc.mutationVersion; refreshComputedStyles(tab);
 			const std::string target = "node:" + std::to_string(link.node);
-			const bool pointerAllowed = jsPageDispatchEvent(tab.jsContext, "pointerdown", target.c_str(), nullptr, x, y + tab.scrollY);
-			jsPageDispatchEvent(tab.jsContext, "pointerup", target.c_str(), nullptr, x, y + tab.scrollY);
+			const bool pointerAllowed = jsPageDispatchEvent(tab.jsContext, "pointerdown", target.c_str(), nullptr, logicalX, pageY);
+			jsPageDispatchEvent(tab.jsContext, "pointerup", target.c_str(), nullptr, logicalX, pageY);
 			const bool clickAllowed = pointerAllowed && jsPageDispatchEvent(tab.jsContext, "click", target.c_str());
 			tab.doc.hoveredNode = -1; ++tab.doc.mutationVersion;
 			if (!clickAllowed) return;
@@ -1742,19 +2472,18 @@ void Browser::tap(int x, int y)
 	}
 
 	// champ de formulaire (coordonnees de page : on ajoute le defilement)
-	const int pageY = y + tab.scrollY;
 	for (size_t i = 0; i < tab.page.fields.size(); i++)
 	{
 		FormField& f = tab.page.fields[i];
-		if (x >= f.x && x < f.x + f.w && pageY >= f.y && pageY < f.y + f.h)
+		if (logicalX >= f.x && logicalX < f.x + f.w && pageY >= f.y && pageY < f.y + f.h)
 		{
 			if (f.node >= 0 && tab.doc.nodes[(size_t)f.node].hasAttr("disabled")) return;
 			const std::string target = "node:" + std::to_string(f.node);
 			if (tab.jsContext && f.node >= 0)
 			{
 				tab.doc.hoveredNode = f.node; ++tab.doc.mutationVersion; refreshComputedStyles(tab);
-				const bool pointerAllowed = jsPageDispatchEvent(tab.jsContext, "pointerdown", target.c_str(), nullptr, x, pageY);
-				jsPageDispatchEvent(tab.jsContext, "pointerup", target.c_str(), nullptr, x, pageY);
+				const bool pointerAllowed = jsPageDispatchEvent(tab.jsContext, "pointerdown", target.c_str(), nullptr, logicalX, pageY);
+				jsPageDispatchEvent(tab.jsContext, "pointerup", target.c_str(), nullptr, logicalX, pageY);
 				const bool clickAllowed = pointerAllowed && jsPageDispatchEvent(tab.jsContext, "click", target.c_str());
 				tab.doc.hoveredNode = -1; ++tab.doc.mutationVersion;
 				if (!clickAllowed) return;
@@ -1816,7 +2545,7 @@ void Browser::tap(int x, int y)
 	for (size_t i = 0; i < tab.page.submits.size(); i++)
 	{
 		const FormSubmit& fs = tab.page.submits[i];
-		if (x >= fs.x && x < fs.x + fs.w &&
+		if (logicalX >= fs.x && logicalX < fs.x + fs.w &&
 			pageY >= fs.y && pageY < fs.y + fs.h)
 		{
 			if (fs.node >= 0 && tab.doc.nodes[(size_t)fs.node].hasAttr("disabled")) return;
@@ -1824,8 +2553,8 @@ void Browser::tap(int x, int y)
 			{
 				tab.doc.hoveredNode = fs.node; ++tab.doc.mutationVersion; refreshComputedStyles(tab);
 				const std::string target = "node:" + std::to_string(fs.node);
-				const bool pointerAllowed = jsPageDispatchEvent(tab.jsContext, "pointerdown", target.c_str(), nullptr, x, pageY);
-				jsPageDispatchEvent(tab.jsContext, "pointerup", target.c_str(), nullptr, x, pageY);
+				const bool pointerAllowed = jsPageDispatchEvent(tab.jsContext, "pointerdown", target.c_str(), nullptr, logicalX, pageY);
+				jsPageDispatchEvent(tab.jsContext, "pointerup", target.c_str(), nullptr, logicalX, pageY);
 				const bool clickAllowed = pointerAllowed && jsPageDispatchEvent(tab.jsContext, "click", target.c_str());
 				tab.doc.hoveredNode = -1; ++tab.doc.mutationVersion;
 				if (!clickAllowed) return;
@@ -2093,20 +2822,25 @@ void Browser::submitFormByPage(int submitIndex)
 void Browser::scroll(int dy)
 {
 	Tab& tab = currentTab();
-	if (!tab.pageReady || tab.page.height <= NW_TOP_HEIGHT) return;
-	const int desired = std::max(0, tab.scrollY + dy);
+	if (!tab.pageReady || tab.page.height <= pageViewHeight(tab.page)) return;
+	const int logicalDy = (int)floorf((float)dy * pageScale() + (dy >= 0 ? 0.5f : -0.5f));
+	const int desired = std::max(0, tab.scrollY + logicalDy);
 	const int max = maxPageScroll(tab.page);
 	if (desired > max && tab.page.truncated)
 	{
-		const int requestedSegment = (desired + NW_TOP_HEIGHT - 1) /
+		const int viewHeight = pageViewHeight(tab.page);
+		const int requestedSegment = (desired + viewHeight - 1) /
 			NW_PAGE_SEGMENT_HEIGHT;
 		const int index = std::min(requestedSegment, tab.page.segmentIndex + 1);
 		requestSegment(current_, index, desired);
 		tab.scrollY = max;
 		return;
 	}
+	const int oldScrollY = tab.scrollY;
 	tab.scrollY = std::min(desired, max);
-	const int visibleSegment = (tab.scrollY + NW_TOP_HEIGHT - 1) /
+	if (tab.scrollY != oldScrollY && set_.loadImages && imageRequestTab_ < 0)
+		queueImages(current_, 6);
+	const int visibleSegment = (tab.scrollY + pageViewHeight(tab.page) - 1) /
 		NW_PAGE_SEGMENT_HEIGHT;
 	if (visibleSegment != tab.page.segmentIndex)
 		requestSegment(current_, visibleSegment, tab.scrollY);
@@ -2118,6 +2852,22 @@ int Browser::scrollY() const
 	return tabs_[current_].scrollY;
 }
 
+float Browser::pageScale() const
+{
+	if (tabs_.empty() || tabs_[(size_t)current_].page.bmp.w <= 0) return 1.0f;
+	return (float)tabs_[(size_t)current_].page.bmp.w / (float)NW_PAGE_WIDTH;
+}
+
+int Browser::pageXFromView(int x) const
+{
+	return (int)floorf((float)x * pageScale() + 0.5f);
+}
+
+int Browser::pageYFromView(int y) const
+{
+	return (int)floorf((float)y * pageScale() + 0.5f);
+}
+
 void Browser::scrollTo(int y)
 {
 	Tab& tab = currentTab();
@@ -2126,15 +2876,18 @@ void Browser::scrollTo(int y)
 	const int max = maxPageScroll(tab.page);
 	if (desired > max && tab.page.truncated)
 	{
-		const int requestedSegment = (desired + NW_TOP_HEIGHT - 1) /
+		const int requestedSegment = (desired + pageViewHeight(tab.page) - 1) /
 			NW_PAGE_SEGMENT_HEIGHT;
 		const int index = std::min(requestedSegment, tab.page.segmentIndex + 1);
 		requestSegment(current_, index, desired);
 		tab.scrollY = max;
 		return;
 	}
+	const int oldScrollY = tab.scrollY;
 	tab.scrollY = std::min(desired, max);
-	const int visibleSegment = (tab.scrollY + NW_TOP_HEIGHT - 1) /
+	if (tab.scrollY != oldScrollY && set_.loadImages && imageRequestTab_ < 0)
+		queueImages(current_, 6);
+	const int visibleSegment = (tab.scrollY + pageViewHeight(tab.page) - 1) /
 		NW_PAGE_SEGMENT_HEIGHT;
 	if (visibleSegment != tab.page.segmentIndex)
 		requestSegment(current_, visibleSegment, tab.scrollY);
@@ -2145,7 +2898,8 @@ void Browser::requestSegment(int tabIdx, int segmentIndex, int desiredScrollY)
 	if (tabIdx < 0 || tabIdx >= (int)tabs_.size() || segmentIndex < 0) return;
 	if (segmentIndex >= NW_MAX_PAGE_SEGMENTS)
 	{
-		progressStatus_ = "Limite de longueur atteinte (4 000 px)";
+		progressStatus_ = "Limite de longueur atteinte (" +
+			itos(NW_MAX_PAGE_CONTENT_HEIGHT) + " px)";
 		return;
 	}
 	Tab& tab = tabs_[(size_t)tabIdx];
@@ -2196,7 +2950,7 @@ bool Browser::tickProgressiveLayout()
 			? NW_PAGE_SEGMENT_HEIGHT
 			: NW_PAGE_SEGMENT_HEIGHT + NW_PAGE_SEGMENT_OVERLAP;
 		PageModel rendered;
-		PageLayout layout(tab.doc, tab.css, set_);
+		PageLayout layout(tab.doc, tab.css, set_, layoutWidth());
 		if (!layout.renderSegment(rendered, tab.url, segmentIndex, segmentHeight))
 		{
 			layoutPending_ = false;
@@ -2230,12 +2984,12 @@ bool Browser::tickProgressiveLayout()
 	pendingScrollY_ = -1;
 	layoutPending_ = false;
 	progressStatus_ = tab.page.truncated
-		? "Page longue — rendu par étapes, limite 4 000 px"
+		? "Page longue — defilez pour continuer"
 		: std::string();
 
 	if (tab.page.truncated && desiredScroll > max)
 	{
-		const int nextIndex = (desiredScroll + NW_TOP_HEIGHT - 1) /
+		const int nextIndex = (desiredScroll + pageViewHeight(tab.page) - 1) /
 			NW_PAGE_SEGMENT_HEIGHT;
 		requestSegment(tabIdx, nextIndex, desiredScroll);
 	}
@@ -2248,7 +3002,7 @@ bool Browser::canScrollBy(int dy) const
 {
 	if (tabs_.empty()) return false;
 	const Tab& tab = tabs_[current_];
-	if (!tab.pageReady || tab.page.height <= NW_TOP_HEIGHT) return false;
+	if (!tab.pageReady || tab.page.height <= pageViewHeight(tab.page)) return false;
 	const int max = maxPageScroll(tab.page);
 	if (dy < 0) return tab.scrollY > 0;
 	if (dy > 0)

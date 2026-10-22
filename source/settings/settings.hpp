@@ -8,10 +8,14 @@
 struct WebSettings
 {
 	bool    loadImages   = false;    // charger les images (desactive par defaut, en developpement)
+	bool    blockTrackers = true;
+	bool    lightUrls = true;
+	bool    darkPages = false;
+	bool    largePage = false;    // mise en page 640 px reduite sur l'ecran 400 px
 	bool    enableJS     = true;     // runtime QuickJS experimental (execution des pages non integree)
 	bool    verifyTLS    = true;     // verification TLS activee par defaut
 	int     textScalePercent = 100;
-	int     uiTheme = 0;
+	int     uiTheme = 1;
 	std::string language = "en";
 	std::string searchEngine = "duckduckgo-lite";
 	std::string homePage     = "";   // page d'accueil (vide = page N3DS Web)

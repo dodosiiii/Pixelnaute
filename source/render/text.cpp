@@ -195,10 +195,16 @@ const CachedGlyph& TextEngine::getGlyph(uint32_t cp, int sizePx, bool bold) cons
 		stbtt_FreeBitmap(bmp, nullptr);
 	}
 
-	if (glyphCache_.size() > 2048)
+	const size_t glyphBytes = g.alpha.size();
+	if (glyphCache_.size() >= 2048 ||
+		glyphCacheBytes_ + glyphBytes > 2u * 1024u * 1024u)
+	{
 		glyphCache_.clear();
+		glyphCacheBytes_ = 0;
+	}
 
 	auto ins = glyphCache_.emplace(key, std::move(g));
+	if (ins.second) glyphCacheBytes_ += ins.first->second.alpha.size();
 	return ins.first->second;
 }
 

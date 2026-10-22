@@ -1,7 +1,9 @@
 #include "ui.hpp"
+#include "qr_code.hpp"
 #include "../render/text.hpp"
 #include "../render/morton.hpp"
 #include "../search/search.hpp"
+#include "../diag/diag.hpp"
 #include "localization.hpp"
 #include <string.h>
 #include <malloc.h>
@@ -11,6 +13,12 @@
 #define TEX_H 256
 
 static constexpr uint32_t C_FOCUS_BLUE = 0xFFFF8A30;
+static constexpr int MENU_ITEM_COUNT = 14;
+static constexpr int MENU_ROW_COUNT = MENU_ITEM_COUNT / 2;
+static constexpr int MENU_VISIBLE_ROWS = 6;
+static constexpr int MENU_FIRST_Y = 92;
+static constexpr int MENU_ROW_HEIGHT = 20;
+static constexpr int MENU_ROW_STEP = 21;
 
 //--------------------------------------------------------------------------
 // Petits helpers
@@ -251,11 +259,13 @@ void BottomUi::handleAnalog(Browser&, NetworkManager&, WebSettings&,
 	const InputState& in)
 {
 	const bool keyboardMode =
-		mode_ == UiMode::Address || mode_ == UiMode::FieldEdit;
+		mode_ == UiMode::Address || mode_ == UiMode::FieldEdit ||
+		mode_ == UiMode::PageFind;
 	const int stickX = (int)in.circleX;
 	const int stickY = (int)in.circleY;
 	int direction = -1;
-	if (abs(stickX) > 48 || abs(stickY) > 48)
+	const int stickThreshold = mode_ == UiMode::Menu ? 96 : 48;
+	if (abs(stickX) > stickThreshold || abs(stickY) > stickThreshold)
 	{
 		if (abs(stickX) > abs(stickY))
 			direction = stickX < 0 ? 0 : 1;
@@ -271,18 +281,22 @@ void BottomUi::handleAnalog(Browser&, NetworkManager&, WebSettings&,
 	{
 		const bool first = direction != analogDirection_;
 		analogDirection_ = direction;
-		analogRepeatAt_ = timeMs() + (first ? 280 : 125);
+		analogRepeatAt_ = timeMs() + (first ? 280 :
+			(mode_ == UiMode::Menu ? 200 : 125));
 		if (keyboardMode)
 			moveKeyboardFocus(direction == 0 ? -1 : direction == 1 ? 1 : 0,
 				direction == 2 ? -1 : direction == 3 ? 1 : 0);
 		else if (mode_ == UiMode::Menu)
 		{
-			const int col = menuSel_ & 1;
-			const int row = menuSel_ / 2;
-			if (direction == 0 && col > 0) --menuSel_;
-			else if (direction == 1 && col < 1) ++menuSel_;
-			else if (direction == 2 && row > 0) menuSel_ -= 2;
-			else if (direction == 3 && row < 3) menuSel_ += 2;
+			if (direction == 0) moveMenuSelection(-1);
+			else if (direction == 1) moveMenuSelection(1);
+			else if (direction == 2) moveMenuSelection(-2);
+			else if (direction == 3) moveMenuSelection(2);
+		}
+		else if (mode_ == UiMode::UpdateNotes && (direction == 2 || direction == 3))
+		{
+			releaseNotesOffset_ = std::max(0,
+				releaseNotesOffset_ + (direction == 2 ? -1 : 1));
 			dirty_ = true;
 		}
 	}
@@ -401,7 +415,7 @@ void BottomUi::drawTabs(Browser& b)
 
 void BottomUi::drawAddressBar(Browser& b, NetworkManager& net)
 {
-	const bool editing = (mode_ == UiMode::Address || mode_ == UiMode::FieldEdit);
+	const bool editing = (mode_ == UiMode::Address || mode_ == UiMode::FieldEdit || mode_ == UiMode::PageFind);
 
 	// Champ arrondi facon barre d'adresse de telephone.
 	roundRect(bmp_, 6, 31, 308, 25, 12, C_SURFACE);
@@ -594,7 +608,7 @@ void BottomUi::drawStatusRow(Browser& b, NetworkManager& net)
 	{
 		if (t.pageReady && t.page.truncated)
 		{
-			text(bmp_, fitStr("Page tronquee (limite 4 000 px)", maxStatusW, 0.52f), statusX, 223, 0.52f, C_ACCENT);
+			text(bmp_, fitStr("Page longue : defilez pour continuer", maxStatusW, 0.52f), statusX, 223, 0.52f, C_ACCENT);
 		}
 		else if (!net.busy() && !b.progressStatus().empty())
 		{
@@ -827,34 +841,44 @@ void BottomUi::drawKeyboard(Bitmap& b)
 void BottomUi::drawMenu(Browser& b)
 {
 	(void)b;
-	static const char* items[8] =
+	static const char* items[14] =
 	{
 		"Nouvel onglet", "Fermer l'onglet",
 		"Ajouter aux favoris", "Favoris",
 		"Historique", "Reglages",
-		"A propos", "Recharger"
+		"A propos", "Mode lecteur", "Diagnostics", "Liens (D-pad)",
+		"Mini-carte", "Chercher page", "Recharger", "QR de la page"
 	};
-	const int colW = 152;
-	const int rowH = 29;
-	const int xLeft = 6;
-	const int xRight = 162;
-	for (int i = 0; i < 8; i++)
+	const int maxOffset = MENU_ROW_COUNT - MENU_VISIBLE_ROWS;
+	menuOffset_ = std::max(0, std::min(menuOffset_, maxOffset));
+	for (int row = 0; row < MENU_VISIBLE_ROWS; row++)
 	{
-		const int col = i % 2;
-		const int row = i / 2;
-		const int x = (col == 0) ? xLeft : xRight;
-		const int y = 92 + row * 31;
-		const bool selected = i == menuSel_;
-		roundRect(bmp_, x, y, colW, rowH, 6,
-			selected ? C_SURFACE2 : ((row & 1) ? C_SURFACE : C_BG_2));
-		if (i == menuSel_)
-			bmp_.shadowRoundedRect(x, y, colW, rowH, 6,
-				0, 0, 5, 1, 0x80FF8A30);
-		textCentered(bmp_, items[i], x, colW, y + 6, 0.72f, C_TEXT);
-		if (selected)
-			bmp_.addRoundedRect(x - 2, y - 2, colW + 4, rowH + 4,
-				8, C_FOCUS_BLUE, 3);
+		const int itemRow = menuOffset_ + row;
+		const int y = MENU_FIRST_Y + row * MENU_ROW_STEP;
+		for (int col = 0; col < 2; col++)
+		{
+			const int i = itemRow * 2 + col;
+			const int x = col == 0 ? 6 : 160;
+			const bool selected = i == menuSel_;
+			roundRect(bmp_, x, y, 150, MENU_ROW_HEIGHT, 6,
+				selected ? C_SURFACE2 : ((itemRow & 1) ? C_SURFACE : C_BG_2));
+			if (selected)
+				bmp_.shadowRoundedRect(x, y, 150, MENU_ROW_HEIGHT, 6,
+					0, 0, 5, 1, 0x80FF8A30);
+			textCentered(bmp_, items[i], x, 150, y + 4, 0.70f, C_TEXT);
+			if (selected)
+				bmp_.addRoundedRect(x - 2, y - 2, 154, MENU_ROW_HEIGHT + 4,
+					8, C_FOCUS_BLUE, 2);
+		}
 	}
+
+	const int trackY = MENU_FIRST_Y;
+	const int trackH = MENU_ROW_STEP * MENU_VISIBLE_ROWS;
+	const int thumbH = trackH * MENU_VISIBLE_ROWS / MENU_ROW_COUNT;
+	const int thumbY = trackY +
+		(maxOffset ? menuOffset_ * (trackH - thumbH) / maxOffset : 0);
+	roundRect(bmp_, 316, trackY, 4, trackH, 2, C_BG_2);
+	roundRect(bmp_, 316, thumbY, 4, thumbH, 2, C_SURFACE2);
 }
 
 void BottomUi::drawHistoryList(Browser& b)
@@ -918,6 +942,11 @@ void BottomUi::drawSettingsList(Browser& b, WebSettings& set,
 	const std::string tls = set.verifyTLS ? "Oui" : "Non (risque)";
 	const std::string img = set.loadImages ? "Oui" : "Non";
 	const std::string js = set.enableJS ? "Oui" : "Non";
+	const std::string blockers = set.blockTrackers ? "Oui" : "Non";
+	const std::string lightUrls = set.lightUrls ? "Oui" : "Non";
+	const std::string darkPages = set.darkPages ? "Oui" : "Non";
+	const char* updateLabel = updater.ciaMode()
+		? "Installer mise a jour CIA" : "Mise a jour CIA uniquement";
 	const std::string textScale = itos((long)set.textScalePercent) + " %";
 	const std::string theme = set.uiTheme == 1 ? "Ocean" :
 		(set.uiTheme == 2 ? "Foret" : "Violet");
@@ -926,11 +955,13 @@ void BottomUi::drawSettingsList(Browser& b, WebSettings& set,
 	std::string update = updater.message();
 	if (updater.state() == UpdateState::Downloading)
 		update = "Telechargement " + itos((long)(updater.progress() * 100.0f)) + "%";
+	else if (updater.state() == UpdateState::Installing)
+		update = "Installation CIA " + itos((long)(updater.progress() * 100.0f)) + "%";
 	else if (updater.state() == UpdateState::Checking)
 		update = "Recherche...";
 
 	struct Row { const char* label; std::string value; bool accent; const char* badge; uint32_t badgeColor; };
-	const Row rows[11] =
+	const Row rows[15] =
 	{
 		{ "Moteur de recherche", engine, true, nullptr, 0 },
 		{ "Page d'accueil", fitStr(set.homePage.empty() ? "(par defaut)" : set.homePage, 110, 0.7f), false, nullptr, 0 },
@@ -942,10 +973,14 @@ void BottomUi::drawSettingsList(Browser& b, WebSettings& set,
 		{ "Charger les images", img, false, "Dev", C_ORANGE },
 		{ "JavaScript", js, false, "Beta", C_ORANGE },
 		{ "Effacer l'historique", "", false, nullptr, 0 },
-		{ "Mises a jour", update, true, nullptr, 0 },
+		{ updateLabel, update, true, nullptr, 0 },
+		{ "Bloquer pubs et pisteurs", blockers, false, nullptr, 0 },
+		{ "Versions legeres des sites", lightUrls, false, nullptr, 0 },
+		{ "Mode sombre des pages", darkPages, false, nullptr, 0 },
+		{ "Grande page (640 px)", set.largePage ? "Oui" : "Non", false, nullptr, 0 },
 	};
 
-	const int totalRows = 11;
+	const int totalRows = 15;
 	const int visible = 5;
 	const int maxOff = totalRows - visible;
 	if (listOffset_ < 0) listOffset_ = 0;
@@ -1041,12 +1076,182 @@ void BottomUi::drawAbout()
 	text(bmp_, fitStr("github.com/dodosiiii/Pixelnaute", 296, 0.58f), 12, 211, 0.58f, C_TEXT_DD);
 }
 
+void BottomUi::drawDiagnostics(Browser& b, NetworkManager& net)
+{
+	const Browser::Tab& tab = b.currentTab();
+	const struct mallinfo memory = mallinfo();
+	const size_t heapUsed = memory.uordblks > 0 ? (size_t)memory.uordblks : 0;
+	text(bmp_, "Diagnostic de la page", 10, 91, 0.76f, C_TEXT_D);
+	const std::string rows[] = {
+		"URL : " + fitStr(tab.url, 280, 0.52f),
+		"Noeuds DOM : " + itos((long)tab.doc.nodes.size()),
+		"Liens : " + itos((long)tab.page.links.size()) + "  Images : " + itos((long)tab.page.images.size()),
+		"Regles CSS : " + itos((long)tab.css.rules().size()),
+		"Hauteur : " + itos((long)tab.page.height) + " px  Defilement : " + itos((long)tab.scrollY),
+		std::string("Reseau : ") + (net.busy() ? "actif" : "inactif") + "  Octets : " + itos((long)net.bytesReceived()),
+		"Tas utilise/total : " + formatBytes(heapUsed) + " / " + formatBytes(envGetHeapSize()),
+		"Tas application libre : " + formatBytes(diagApplicationHeapFree()),
+		"Pic tas observe : " + formatBytes(diagHeapPeakUsed()),
+		"Memoire images : " + formatBytes(b.images().bytesUsed()),
+		"Memoire lineaire libre : " + formatBytes(linearSpaceFree()),
+		std::string("JavaScript : ") + (tab.jsRequired ? "present" : "absent") + "  Rendu : " + (tab.pageReady ? "pret" : "en cours")
+	};
+	for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); ++i)
+	{
+		const int y = 108 + (int)i * 10;
+		if (y > 220) break;
+		text(bmp_, rows[i], 8, y, 0.52f, i == 0 ? C_ACCENT : C_TEXT);
+	}
+	text(bmp_, "B ou touchez pour revenir", 10, 224, 0.5f, C_TEXT_D);
+}
+
+void BottomUi::drawLinksList(Browser& b)
+{
+	const auto& links = b.currentTab().page.links;
+	text(bmp_, "Liens (A ouvrir, X telecharger, B retour)", 8, 92,
+		0.62f, C_TEXT_D);
+	if (links.empty())
+	{
+		text(bmp_, "Aucun lien visible dans la mise en page", 10, 122,
+			0.7f, C_TEXT_D);
+		return;
+	}
+	const int visible = 5;
+	const int maxOffset = std::max(0, (int)links.size() - visible);
+	listSel_ = std::max(0, std::min(listSel_, (int)links.size() - 1));
+	listOffset_ = std::max(0, std::min(listOffset_, maxOffset));
+	if (listSel_ < listOffset_) listOffset_ = listSel_;
+	if (listSel_ >= listOffset_ + visible) listOffset_ = listSel_ - visible + 1;
+	for (int row = 0; row < visible; ++row)
+	{
+		const int idx = listOffset_ + row;
+		if (idx >= (int)links.size()) break;
+		const int y = 110 + row * 21;
+		roundRect(bmp_, 4, y, 302, 18, 4,
+			idx == listSel_ ? C_SURFACE2 : ((row & 1) ? C_SURFACE : C_BG_2));
+		text(bmp_, itos(idx + 1), 9, y + 2, 0.6f,
+			idx == listSel_ ? C_ACCENT : C_TEXT_D, true);
+		text(bmp_, fitStr(links[(size_t)idx].url, 260, 0.62f),
+			32, y + 2, 0.62f, C_TEXT);
+	}
+}
+
+void BottomUi::drawMiniMap(Browser& b)
+{
+	const Browser::Tab& tab = b.currentTab();
+	text(bmp_, "Mini-carte : touchez pour sauter, B pour retour", 7, 92,
+		0.58f, C_TEXT_D);
+	const int x = 26, y = 112, w = 268, h = 102;
+	const int extent = std::max((int)NW_TOP_HEIGHT, tab.page.height);
+	bmp_.fillRect(x, y, w, h, C_BG_2);
+	const Bitmap& page = tab.page.bmp;
+	if (page.px && page.w > 0 && page.h > 0)
+	{
+		for (int my = 0; my < h; ++my)
+		{
+			const int pageY = (int)((int64_t)my * extent / h);
+			const int sourceY = pageY - page.originY;
+			if (sourceY < 0 || sourceY >= page.h) continue;
+
+			for (int mx = 0; mx < w; ++mx)
+			{
+				const int sourceX = (int)((int64_t)mx * page.w / w);
+				bmp_.setPixel(x + mx, y + my,
+					page.px[(size_t)sourceY * page.w + sourceX]);
+			}
+		}
+	}
+	bmp_.addRect(x, y, w, h, C_LINE, 1);
+	for (const LinkBox& link : tab.page.links)
+	{
+		const int py = y + (int)((int64_t)std::max(0, link.y) * h / extent);
+		const int pageWidth = std::max(1, tab.page.bmp.w);
+		const int px = x + std::max(0, std::min(w - 2, link.x * w / pageWidth));
+		bmp_.fillRect(px, std::min(y + h - 1, py), 2, 2, C_TEXT_D);
+	}
+	for (const AnchorBox& anchor : tab.page.anchors)
+	{
+		const int py = y + (int)((int64_t)std::max(0, anchor.y) * h / extent);
+		bmp_.fillRect(x, std::min(y + h - 1, py), w, 1, C_ACCENT);
+	}
+	const int viewY = y + (int)((int64_t)b.scrollY() * h / extent);
+	const int viewHeight = std::max(1, (int)((int64_t)NW_TOP_HEIGHT *
+	std::max(1, tab.page.bmp.w) / NW_PAGE_WIDTH));
+	const int viewH = std::max(4, std::min(h, (int)((int64_t)viewHeight * h / extent)));
+	bmp_.addRect(x, std::min(y + h - viewH, viewY), w, viewH, C_FOCUS_BLUE, 2);
+	text(bmp_, "Page chargee : " + itos(extent) + " px", 26, 220, 0.55f, C_TEXT_D);
+}
+
+void BottomUi::drawUpdateNotes(const ReleaseUpdater& updater)
+{
+	text(bmp_, "Mise a jour v" + updater.pendingVersion(), 10, 92, 0.78f, C_ACCENT, true);
+	text(bmp_, "Notes de version (haut/bas pour defiler)", 10, 104, 0.55f, C_TEXT_D);
+	const std::string notes = updater.releaseNotes().empty()
+		? "Aucune note fournie par la release." : updater.releaseNotes();
+	std::vector<std::string> lines;
+	std::string line;
+	size_t pos = 0;
+	while (pos < notes.size())
+	{
+		while (pos < notes.size() && (notes[pos] == '\r' || notes[pos] == '\n'))
+		{
+			if (!line.empty()) { lines.push_back(line); line.clear(); }
+			++pos;
+		}
+		while (pos < notes.size() && notes[pos] == ' ') ++pos;
+		const size_t end = notes.find_first_of(" \t\r\n", pos);
+		const std::string word = notes.substr(pos, (end == std::string::npos ? notes.size() : end) - pos);
+		if (word.empty()) { if (end == std::string::npos) break; pos = end + 1; continue; }
+		const std::string candidate = line.empty() ? word : line + " " + word;
+		if (!line.empty() && textW(candidate, 0.55f) > 300)
+		{
+			lines.push_back(line);
+			line = word;
+		}
+		else line = candidate;
+		pos = end == std::string::npos ? notes.size() : end + 1;
+	}
+	if (!line.empty()) lines.push_back(line);
+	const int visible = 8;
+	const int maxOffset = std::max(0, (int)lines.size() - visible);
+	releaseNotesOffset_ = clamp(releaseNotesOffset_, 0, maxOffset);
+	for (int row = 0; row < visible; ++row)
+	{
+		const int index = releaseNotesOffset_ + row;
+		if (index >= (int)lines.size()) break;
+		text(bmp_, fitStr(lines[(size_t)index], 302, 0.55f), 9, 118 + row * 10, 0.55f, C_TEXT);
+	}
+	text(bmp_, "A : installer", 22, 207, 0.62f, C_GREEN, true);
+	text(bmp_, "B : annuler", 214, 207, 0.62f, C_TEXT_D, true);
+}
+
+void BottomUi::drawQRCode()
+{
+	bmp_.clear(C_WHITE);
+	textCentered(bmp_, "Scanner pour ouvrir cette page", 8, 304, 7, 0.68f, C_BG, true);
+	const int module = 4;
+	const int quiet = 4;
+	const int total = (QrCodeV5::Size + quiet * 2) * module;
+	const int left = (320 - total) / 2;
+	const int top = 30;
+	bmp_.fillRect(left, top, total, total, C_WHITE);
+	for (int y = 0; y < QrCodeV5::Size; ++y)
+		for (int x = 0; x < QrCodeV5::Size; ++x)
+			if (qrModules_[y][x])
+				bmp_.fillRect(left + (x + quiet) * module,
+					top + (y + quiet) * module, module, module, C_BLACK);
+	textCentered(bmp_, fitStr(qrPayload_, 300, 0.48f), 10, 300, 214, 0.48f, C_BG);
+}
+
 //--------------------------------------------------------------------------
 // Frame principale de l'ecran bas
 //--------------------------------------------------------------------------
 void BottomUi::frame(Browser& b, NetworkManager& net, WebSettings& set,
 	ReleaseUpdater& updater)
 {
+	// Une erreur d'allocation pendant init() doit laisser le navigateur en
+	// mode degrade, pas dessiner dans une texture Citra/Citro2D non initialisee.
+	if (!bmp_.px || !texReady_ || !texData_) return;
 	if (language_ != set.language || uiTheme_ != set.uiTheme)
 	{
 		language_ = set.language;
@@ -1056,7 +1261,8 @@ void BottomUi::frame(Browser& b, NetworkManager& net, WebSettings& set,
 	const UpdateState updateState = updater.state();
 	const int updateProgress = (int)(updater.progress() * 100.0f);
 	if (updateState != lastUpdateState_ ||
-		(updateState == UpdateState::Downloading &&
+		((updateState == UpdateState::Downloading ||
+		  updateState == UpdateState::Installing) &&
 		 updateProgress != lastUpdateProgress_))
 		dirty_ = true;
 	lastUpdateState_ = updateState;
@@ -1071,7 +1277,7 @@ void BottomUi::frame(Browser& b, NetworkManager& net, WebSettings& set,
 	}
 
 	bmp_.clear(C_NAVY);
-	drawChrome(b, net, set);
+	if (mode_ != UiMode::QRCode) drawChrome(b, net, set);
 
 	switch (mode_)
 	{
@@ -1082,6 +1288,7 @@ void BottomUi::frame(Browser& b, NetworkManager& net, WebSettings& set,
 			break;
 		}
 		case UiMode::Address:
+		case UiMode::PageFind:
 		case UiMode::FieldEdit:
 			drawKeyboard(bmp_);
 			break;
@@ -1102,6 +1309,21 @@ void BottomUi::frame(Browser& b, NetworkManager& net, WebSettings& set,
 			break;
 		case UiMode::About:
 			drawAbout();
+			break;
+		case UiMode::Diagnostics:
+			drawDiagnostics(b, net);
+			break;
+		case UiMode::Links:
+			drawLinksList(b);
+			break;
+		case UiMode::MiniMap:
+		drawMiniMap(b);
+			break;
+		case UiMode::UpdateNotes:
+			drawUpdateNotes(updater);
+			break;
+		case UiMode::QRCode:
+			drawQRCode();
 			break;
 	}
 
@@ -1262,7 +1484,7 @@ void BottomUi::navAction(Browser& b, NetworkManager& net, WebSettings& set, int 
 			}
 			else if (b.count() >= NW_MAX_TABS)
 			{
-				toast("Maximum d'onglets atteint");
+				toast("2 onglets max : fermez-en un");
 			}
 			else
 			{
@@ -1272,7 +1494,7 @@ void BottomUi::navAction(Browser& b, NetworkManager& net, WebSettings& set, int 
 			break;
 		case 5: // menu
 			mode_ = (mode_ == UiMode::Menu) ? UiMode::Browsing : UiMode::Menu;
-				if (mode_ == UiMode::Menu) menuSel_ = 0;
+				if (mode_ == UiMode::Menu) { menuSel_ = 0; menuOffset_ = 0; }
 				dirty_ = true;
 				break;
 	}
@@ -1350,6 +1572,26 @@ void BottomUi::moveCaret(int direction)
 	dirty_ = true;
 }
 
+void BottomUi::moveMenuSelection(int delta)
+{
+	const int col = menuSel_ & 1;
+	const int row = menuSel_ / 2;
+	if (delta == -1 && col == 1)
+		--menuSel_;
+	else if (delta == 1 && col == 0)
+		++menuSel_;
+	else if (delta == -2 && row > 0)
+		menuSel_ -= 2;
+	else if (delta == 2 && row + 1 < MENU_ROW_COUNT)
+		menuSel_ += 2;
+	const int selectedRow = menuSel_ / 2;
+	if (selectedRow < menuOffset_)
+		menuOffset_ = selectedRow;
+	else if (selectedRow >= menuOffset_ + MENU_VISIBLE_ROWS)
+		menuOffset_ = selectedRow - MENU_VISIBLE_ROWS + 1;
+	dirty_ = true;
+}
+
 void BottomUi::moveKeyboardFocus(int dx, int dy)
 {
 	if (keys_.empty()) return;
@@ -1403,11 +1645,12 @@ void BottomUi::moveKeyboardFocus(int dx, int dy)
 
 void BottomUi::activateMenuItem(Browser& b, int index)
 {
-	if (index < 0 || index >= 8) return;
+	if (index < 0 || index >= 14) return;
 	switch (index)
 	{
 		case 0:
-			if (b.count() >= NW_MAX_TABS) toast("Maximum d'onglets atteint");
+			if (b.count() >= NW_MAX_TABS)
+				toast("2 onglets max : fermez-en un");
 			else b.newTab();
 			mode_ = UiMode::Browsing;
 			break;
@@ -1447,16 +1690,111 @@ void BottomUi::activateMenuItem(Browser& b, int index)
 			mode_ = UiMode::About;
 			break;
 		case 7:
+			b.toggleReaderMode();
+			mode_ = UiMode::Browsing;
+			break;
+		case 8:
+			mode_ = UiMode::Diagnostics;
+			break;
+		case 9:
+			if (b.currentTab().page.links.empty())
+			{
+				toast("Aucun lien sur cette page");
+				mode_ = UiMode::Browsing;
+			}
+			else
+			{
+				mode_ = UiMode::Links;
+				listOffset_ = 0;
+				listSel_ = 0;
+			}
+			break;
+		case 10:
+			mode_ = UiMode::MiniMap;
+			break;
+		case 11:
+			mode_ = UiMode::PageFind;
+			buf_ = findQuery_;
+			cursorPos_ = buf_.size();
+			kbdPage_ = 0;
+			keyboardFocus_ = 0;
+			buildKeys();
+			break;
+		case 12:
 			b.reload();
 			mode_ = UiMode::Browsing;
 			break;
+		case 13:
+		{
+			const std::string& url = b.currentTab().url;
+			if (url.empty() || strStartsWith(toLower(url), "nw://"))
+				toast("Cette page interne n'a pas d'adresse partageable");
+			else
+			{
+				// Les URL peuvent contenir du UTF-8 brut. Le QR contient une URI
+				// ASCII valide, avec les octets non ASCII percent-encodes.
+				static const char hex[] = "0123456789ABCDEF";
+				qrPayload_.clear();
+				for (unsigned char c : url)
+				{
+					if (c < 0x80) qrPayload_ += (char)c;
+					else
+					{
+						qrPayload_ += '%';
+						qrPayload_ += hex[c >> 4];
+						qrPayload_ += hex[c & 15];
+					}
+					if (qrPayload_.size() > 106) break;
+				}
+				if (qrPayload_.size() > 106 || !QrCodeV5::encode(qrPayload_, qrModules_))
+				{
+					qrPayload_.clear();
+					toast("URL trop longue pour le QR (106 octets maximum)");
+				}
+				else mode_ = UiMode::QRCode;
+			}
+			break;
+		}
 	}
 	dirty_ = true;
 }
 
 void BottomUi::commitBuf(Browser& b, WebSettings& set)
 {
-	if (homeTarget_)
+	if (mode_ == UiMode::PageFind)
+	{
+		const std::string query = strTrim(buf_);
+		if (!query.empty())
+		{
+			const bool sameQuery = toLower(query) == toLower(findQuery_);
+			if (!sameQuery) findLastY_ = -1;
+			findQuery_ = query;
+			const auto& runs = b.currentTab().page.textRuns;
+			const std::string needle = toLower(query);
+			int nextY = -1;
+			int wrappedY = -1;
+			const int threshold = sameQuery && findLastY_ >= 0
+				? findLastY_ : b.scrollY() - 1;
+			for (const TextRunBox& run : runs)
+			{
+				if (toLower(run.text).find(needle) == std::string::npos) continue;
+				if (wrappedY < 0 || run.y < wrappedY) wrappedY = run.y;
+				if (run.y > threshold && (nextY < 0 || run.y < nextY))
+					nextY = run.y;
+			}
+			const int foundY = nextY >= 0 ? nextY : wrappedY;
+			if (foundY >= 0)
+			{
+				findLastY_ = foundY;
+				b.scrollTo(std::max(0, foundY - NW_TOP_HEIGHT / 3));
+				toast("Resultat trouve dans la partie chargee");
+			}
+			else toast("Aucun resultat dans la partie chargee");
+		}
+		else toast("Entrez un mot a chercher");
+		mode_ = UiMode::Browsing;
+	}
+	else if (homeTarget_)
 	{
 		set.homePage = strTrim(buf_);
 		settingsSave(set);
@@ -1483,7 +1821,8 @@ void BottomUi::commitBuf(Browser& b, WebSettings& set)
 void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 	ReleaseUpdater& updater, const InputState& in)
 {
-	const bool keyboardMode = mode_ == UiMode::Address || mode_ == UiMode::FieldEdit;
+	const bool keyboardMode = mode_ == UiMode::Address ||
+		mode_ == UiMode::FieldEdit || mode_ == UiMode::PageFind;
 	if (keyboardMode && in.touch && !in.touchDown &&
 		repeatKey_ >= 0 && repeatKey_ < (int)keys_.size())
 	{
@@ -1504,10 +1843,29 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 		repeatKey_ = -1;
 	}
 
-	if ((mode_ == UiMode::Settings || mode_ == UiMode::Cache) &&
+	if (mode_ == UiMode::Menu && in.touch && !in.touchDown)
+	{
+		const int maxOffset = MENU_ROW_COUNT - MENU_VISIBLE_ROWS;
+		const int col = menuSel_ & 1;
+		if (in.dragY < -6 && menuOffset_ < maxOffset)
+		{
+			++menuOffset_;
+			const int selectedRow = std::max(menuSel_ / 2, menuOffset_);
+			menuSel_ = selectedRow * 2 + col;
+			dirty_ = true;
+		}
+		else if (in.dragY > 6 && menuOffset_ > 0)
+		{
+			--menuOffset_;
+			menuSel_ = std::min(menuSel_ / 2,
+				menuOffset_ + MENU_VISIBLE_ROWS - 1) * 2 + col;
+			dirty_ = true;
+		}
+	}
+	else if ((mode_ == UiMode::Settings || mode_ == UiMode::Cache) &&
 		in.touch && !in.touchDown)
 	{
-		const int maxOffset = mode_ == UiMode::Settings ? 6 :
+		const int maxOffset = mode_ == UiMode::Settings ? 10 :
 			std::max(0, (int)cachedSites_.size() - 3);
 		if (in.dragY < -6 && listOffset_ < maxOffset)
 		{
@@ -1568,16 +1926,19 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 	switch (mode_)
 	{
 		case UiMode::Address:
+		case UiMode::PageFind:
 		case UiMode::FieldEdit:
 			keyHit(b, set, x, y);
 			break;
 		case UiMode::Menu:
 		{
-			if (y < 92 || y >= 216) break;
-			int row = (y - 92) / 31;
-			if (row < 0 || row >= 4) break;
-			int col = (x < 160) ? 0 : 1;
-			menuSel_ = row * 2 + col;
+			if (y < MENU_FIRST_Y || x >= 316) break;
+			const int row = (y - MENU_FIRST_Y) / MENU_ROW_STEP;
+			if (row < 0 || row >= MENU_VISIBLE_ROWS ||
+				(y - MENU_FIRST_Y) % MENU_ROW_STEP >= MENU_ROW_HEIGHT)
+				break;
+			const int col = x < 160 ? 0 : 1;
+			menuSel_ = (menuOffset_ + row) * 2 + col;
 			activateMenuItem(b, menuSel_);
 			break;
 		}
@@ -1639,7 +2000,7 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 			else if (x >= 306 && y >= 110 && y < 215)
 			{
 				if (y < 162 && listOffset_ > 0) { listOffset_--; dirty_ = true; }
-				else if (y >= 162 && listOffset_ < 6) { listOffset_++; dirty_ = true; }
+				else if (y >= 162 && listOffset_ < 10) { listOffset_++; dirty_ = true; }
 			}
 			else if (y >= 110 && y < 215)
 			{
@@ -1746,7 +2107,12 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 						break;
 					case 9: b.history().clear(); toast("Historique efface"); dirty_ = true; break;
 					case 10:
-						if (updater.active())
+						if (updater.state() == UpdateState::AwaitingConfirmation)
+						{
+							releaseNotesOffset_ = 0;
+							mode_ = UiMode::UpdateNotes;
+						}
+						else if (updater.active())
 							toast("Mise a jour deja en cours");
 						else if (net.busy())
 							toast("Attendez la fin du chargement");
@@ -1754,6 +2120,36 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 							toast("Recherche de mise a jour...");
 						else
 							toast(updater.message());
+						dirty_ = true;
+						break;
+					case 11:
+						set.blockTrackers = !set.blockTrackers;
+						settingsSave(set);
+						toast(set.blockTrackers ? "Blocage pubs/pisteurs active" : "Blocage desactive");
+						dirty_ = true;
+						break;
+					case 12:
+						set.lightUrls = !set.lightUrls;
+						settingsSave(set);
+						toast(set.lightUrls ? "Versions legeres activees" : "Reecriture desactivee");
+						dirty_ = true;
+						break;
+					case 13:
+						set.darkPages = !set.darkPages;
+						settingsSave(set);
+						toast(set.darkPages ? "Mode sombre active (pages suivantes)" : "Mode sombre desactive");
+						dirty_ = true;
+						break;
+					case 14:
+						set.largePage = !set.largePage;
+						if (!settingsSave(set))
+						{
+							set.largePage = !set.largePage;
+							toast("Impossible d'enregistrer les reglages");
+						break;
+						}
+						toast(set.largePage ? "Page 640 px activee (pages suivantes)" :
+							"Page standard activee (pages suivantes)");
 						dirty_ = true;
 						break;
 				}
@@ -1826,6 +2222,65 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 			break;
 		}
 		case UiMode::About:
+		case UiMode::Diagnostics:
+			mode_ = UiMode::Browsing;
+			dirty_ = true;
+			break;
+		case UiMode::Links:
+		{
+			const auto& links = b.currentTab().page.links;
+			if (y >= 110 && y < 215)
+			{
+				const int row = (y - 110) / 21;
+				const int index = listOffset_ + row;
+				if (index >= 0 && index < (int)links.size())
+				{
+					listSel_ = index;
+					const std::string target = links[(size_t)index].url;
+					if (strStartsWith(target, "javascript:") ||
+						strStartsWith(target, "mailto:"))
+						toast("Ce type de lien n'est pas pris en charge");
+					else
+					{
+						b.openUrl(target);
+						mode_ = UiMode::Browsing;
+					}
+				}
+			}
+			dirty_ = true;
+			break;
+		}
+		case UiMode::MiniMap:
+			if (y >= 112 && y < 214 && x >= 26 && x < 294)
+			{
+				const int extent = std::max((int)NW_TOP_HEIGHT,
+					b.currentTab().page.height);
+				const int target = (int)((int64_t)(y - 112) * extent / 102);
+				b.scrollTo(target);
+			}
+			dirty_ = true;
+			break;
+		case UiMode::UpdateNotes:
+			if (y >= 202)
+			{
+				if (x < 160)
+				{
+					if (updater.approveInstall())
+					{
+						mode_ = UiMode::Settings;
+						toast("Telechargement de la mise a jour...");
+					}
+				}
+				else
+				{
+					updater.cancelPendingInstall();
+					mode_ = UiMode::Settings;
+				}
+			}
+			else releaseNotesOffset_ = std::max(0, releaseNotesOffset_ + (y < 150 ? -6 : 6));
+			dirty_ = true;
+			break;
+		case UiMode::QRCode:
 			mode_ = UiMode::Browsing;
 			dirty_ = true;
 			break;
@@ -1843,7 +2298,13 @@ void BottomUi::handleKeys(Browser& b, NetworkManager& net, WebSettings& set,
 	{
 		case UiMode::Browsing:
 			if (kDown & KEY_B) { b.back(); return; }
-			if (kDown & KEY_X) { b.newTab(); return; }
+			if (kDown & KEY_X)
+			{
+				if (b.count() >= NW_MAX_TABS)
+					toast("2 onglets max : fermez-en un");
+				else b.newTab();
+				return;
+			}
 			if (kDown & KEY_Y)
 			{
 				if (net.busy()) b.stop();
@@ -1854,6 +2315,7 @@ void BottomUi::handleKeys(Browser& b, NetworkManager& net, WebSettings& set,
 			{
 				mode_ = UiMode::Menu;
 				menuSel_ = 0;
+				menuOffset_ = 0;
 				dirty_ = true;
 				return;
 			}
@@ -1863,6 +2325,7 @@ void BottomUi::handleKeys(Browser& b, NetworkManager& net, WebSettings& set,
 			break;
 
 		case UiMode::Address:
+		case UiMode::PageFind:
 		case UiMode::FieldEdit:
 			// Le defilement doit rester disponible pendant la saisie.
 			//
@@ -1896,6 +2359,26 @@ void BottomUi::handleKeys(Browser& b, NetworkManager& net, WebSettings& set,
 			{
 				mode_ = UiMode::Browsing;
 				dirty_ = true;
+				return;
+			}
+			if (kDown & (KEY_DLEFT | KEY_CPAD_LEFT))
+			{
+				moveMenuSelection(-1);
+				return;
+			}
+			if (kDown & (KEY_DRIGHT | KEY_CPAD_RIGHT))
+			{
+				moveMenuSelection(1);
+				return;
+			}
+			if (kDown & (KEY_DUP | KEY_CPAD_UP))
+			{
+				moveMenuSelection(-2);
+				return;
+			}
+			if (kDown & (KEY_DDOWN | KEY_CPAD_DOWN))
+			{
+				moveMenuSelection(2);
 				return;
 			}
 			if (kDown & KEY_A)
@@ -1948,6 +2431,74 @@ void BottomUi::handleKeys(Browser& b, NetworkManager& net, WebSettings& set,
 			}
 			break;
 
+		case UiMode::Links:
+			if (kDown & KEY_B)
+			{
+				mode_ = UiMode::Browsing;
+				dirty_ = true;
+				return;
+			}
+			if (kDown & KEY_DUP)
+			{
+				if (listSel_ > 0) --listSel_;
+				if (listSel_ < listOffset_) listOffset_ = listSel_;
+				dirty_ = true;
+				return;
+			}
+			if (kDown & KEY_DDOWN)
+			{
+				const int count = (int)b.currentTab().page.links.size();
+				if (listSel_ + 1 < count) ++listSel_;
+				if (listSel_ >= listOffset_ + 5) listOffset_ = listSel_ - 4;
+				dirty_ = true;
+				return;
+			}
+			if (kDown & KEY_A)
+			{
+				const auto& links = b.currentTab().page.links;
+				if (listSel_ >= 0 && listSel_ < (int)links.size())
+				{
+					const std::string target = links[(size_t)listSel_].url;
+					if (strStartsWith(target, "javascript:") ||
+						strStartsWith(target, "mailto:"))
+						toast("Ce type de lien n'est pas pris en charge");
+					else
+					{
+						b.openUrl(target);
+						mode_ = UiMode::Browsing;
+					}
+				}
+				dirty_ = true;
+				return;
+			}
+			if (kDown & KEY_X)
+			{
+				const auto& links = b.currentTab().page.links;
+				if (listSel_ >= 0 && listSel_ < (int)links.size())
+				{
+					if (b.downloadUrl(links[(size_t)listSel_].url))
+					{
+						mode_ = UiMode::Browsing;
+						toast("Telechargement en cours...");
+					}
+					else toast("Lien non telechargeable ou reseau occupe");
+				}
+				dirty_ = true;
+				return;
+			}
+			break;
+
+		case UiMode::MiniMap:
+			if (kDown & KEY_B)
+			{
+				mode_ = UiMode::Browsing;
+				dirty_ = true;
+				return;
+			}
+			if (kDown & KEY_DUP) { b.scroll(-NW_TOP_HEIGHT / 2); dirty_ = true; return; }
+			if (kDown & KEY_DDOWN) { b.scroll(NW_TOP_HEIGHT / 2); dirty_ = true; return; }
+			break;
+
 		case UiMode::Settings:
 			if (kDown & KEY_B)
 			{
@@ -1968,11 +2519,52 @@ void BottomUi::handleKeys(Browser& b, NetworkManager& net, WebSettings& set,
 			}
 			if (kDown & (KEY_DDOWN | KEY_CPAD_DOWN))
 			{
-				if (listOffset_ < 6)
+				if (listOffset_ < 10)
 				{
 					listOffset_++;
 					dirty_ = true;
 				}
+				return;
+			}
+			break;
+
+		case UiMode::UpdateNotes:
+			if (kDown & KEY_B)
+			{
+				updater.cancelPendingInstall();
+				mode_ = UiMode::Settings;
+				dirty_ = true;
+				return;
+			}
+			if (kDown & (KEY_A | KEY_X))
+			{
+				if (updater.approveInstall())
+				{
+					mode_ = UiMode::Settings;
+					toast("Telechargement de la mise a jour...");
+				}
+				dirty_ = true;
+				return;
+			}
+			if (kDown & (KEY_DUP | KEY_CPAD_UP))
+			{
+				if (releaseNotesOffset_ > 0) --releaseNotesOffset_;
+				dirty_ = true;
+				return;
+			}
+			if (kDown & (KEY_DDOWN | KEY_CPAD_DOWN))
+			{
+				++releaseNotesOffset_;
+				dirty_ = true;
+				return;
+			}
+			break;
+
+		case UiMode::QRCode:
+			if (kDown & (KEY_B | KEY_A))
+			{
+				mode_ = UiMode::Browsing;
+				dirty_ = true;
 				return;
 			}
 			break;
@@ -2054,6 +2646,7 @@ void BottomUi::handleKeys(Browser& b, NetworkManager& net, WebSettings& set,
 			break;
 
 		case UiMode::About:
+		case UiMode::Diagnostics:
 			if (kDown & KEY_B)
 			{
 				mode_ = UiMode::Browsing;

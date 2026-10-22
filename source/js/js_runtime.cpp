@@ -858,18 +858,18 @@ static void serializeHtmlNode(const Document& doc, int index, std::string& out, 
 	const Node& node = doc.nodes[(size_t)index];
 	if (node.type == NodeType::Text)
 	{
-		appendEscapedHtml(out, node.text, false);
+		appendEscapedHtml(out, doc.nodeText(index), false);
 		return;
 	}
 	if (node.type == NodeType::RawText)
 	{
-		out += node.text.substr(0, 32768 - out.size());
+		out += doc.nodeText(index).substr(0, 32768 - out.size());
 		return;
 	}
 	if (node.type == NodeType::Comment)
 	{
 		out += "<!--";
-		out += node.text.substr(0, 32768 - out.size());
+		out += doc.nodeText(index).substr(0, 32768 - out.size());
 		if (out.size() < 32768) out += "-->";
 		return;
 	}
@@ -901,8 +901,16 @@ static int cloneDomNode(Document& dst, const Document& src, int srcIndex, int pa
 	copy.children.clear();
 	copy.parent = parent;
 	copy.layoutLine = -1;
+	copy.textOffset = 0;
+	copy.textLength = 0;
 	const int index = dst.addNode(std::move(copy));
 	if (parent >= 0) dst.nodes[(size_t)parent].children.push_back(index);
+	const NodeType sourceType = src.nodes[(size_t)srcIndex].type;
+	if (sourceType == NodeType::Text || sourceType == NodeType::RawText ||
+		sourceType == NodeType::Comment)
+	{
+		if (!dst.setNodeText(index, src.nodeText(srcIndex))) return -1;
+	}
 	for (int child : src.nodes[(size_t)srcIndex].children)
 		cloneDomNode(dst, src, child, index);
 	return index;
@@ -1257,8 +1265,8 @@ static JSValue domNodeSet(JSContext* ctx, JSValueConst thisVal, JSValueConst val
 	{
 		if (node.type == NodeType::Text && magic == 0)
 		{
-			node.text = std::move(s);
-			++doc->mutationVersion;
+			if (!doc->setNodeText(idx, s))
+				return JS_ThrowRangeError(ctx, "DOM text limit exceeded");
 			return JS_UNDEFINED;
 		}
 		if (node.type == NodeType::Text && magic == 1)
@@ -1269,8 +1277,8 @@ static JSValue domNodeSet(JSContext* ctx, JSValueConst thisVal, JSValueConst val
 			if (onlyChild >= 0 && (size_t)onlyChild < doc->nodes.size() &&
 				doc->nodes[(size_t)onlyChild].type == NodeType::Text)
 			{
-				doc->nodes[(size_t)onlyChild].text = std::move(s);
-				++doc->mutationVersion;
+				if (!doc->setNodeText(onlyChild, s))
+					return JS_ThrowRangeError(ctx, "DOM text limit exceeded");
 				return JS_UNDEFINED;
 			}
 		}
@@ -1289,7 +1297,7 @@ static JSValue domNodeSet(JSContext* ctx, JSValueConst thisVal, JSValueConst val
 			fragmentBody = fragment.firstByTag(fragment.root, "body");
 		}
 		doc->clearChildren(idx);
-		node.text.clear();
+		doc->clearNodeText(idx);
 		node.type = NodeType::Element;
 		if (magic == 1 && fragmentBody >= 0)
 		{
@@ -1451,6 +1459,51 @@ static bool executePendingJobs(JSRuntime* runtime, JSContext* fallbackContext)
 		if (result == 0) break;
 	}
 	return true;
+}
+
+static JSValue cryptoGetRandomValues(JSContext* ctx, JSValueConst, int argc,
+	JSValueConst* argv)
+{
+	if (argc < 1) return JS_ThrowTypeError(ctx, "Expected an integer typed array");
+	size_t offset = 0, byteLength = 0, bytesPerElement = 0;
+	JSValue buffer = JS_GetTypedArrayBuffer(ctx, argv[0], &offset,
+		&byteLength, &bytesPerElement);
+	if (JS_IsException(buffer)) return buffer;
+	JSValue constructor = JS_GetPropertyStr(ctx, argv[0], "constructor");
+	JSValue constructorName = JS_GetPropertyStr(ctx, constructor, "name");
+	const std::string typeName = jsString(ctx, constructorName);
+	JS_FreeValue(ctx, constructorName);
+	JS_FreeValue(ctx, constructor);
+	if (typeName != "Uint8Array" && typeName != "Uint8ClampedArray" &&
+		typeName != "Uint16Array" && typeName != "Uint32Array")
+	{
+		JS_FreeValue(ctx, buffer);
+		return JS_ThrowTypeError(ctx, "getRandomValues requires an unsigned integer typed array");
+	}
+	if (!bytesPerElement || byteLength > 65536)
+	{
+		JS_FreeValue(ctx, buffer);
+		return JS_ThrowRangeError(ctx, "getRandomValues accepts at most 65536 bytes");
+	}
+	size_t bufferLength = 0;
+	uint8_t* bytes = JS_GetArrayBuffer(ctx, &bufferLength, buffer);
+	if (!bytes || offset > bufferLength || byteLength > bufferLength - offset)
+	{
+		JS_FreeValue(ctx, buffer);
+		return JS_ThrowTypeError(ctx, "Expected an integer typed array");
+	}
+	if (byteLength == 0)
+	{
+		JS_FreeValue(ctx, buffer);
+		return JS_DupValue(ctx, argv[0]);
+	}
+	const Result initResult = psInit();
+	const Result randomResult = R_SUCCEEDED(initResult)
+		? PS_GenerateRandomBytes(bytes + offset, byteLength) : initResult;
+	if (R_SUCCEEDED(initResult)) psExit();
+	JS_FreeValue(ctx, buffer);
+	if (R_FAILED(randomResult)) return JS_ThrowInternalError(ctx, "System random service unavailable");
+	return JS_DupValue(ctx, argv[0]);
 }
 
 static bool eventOption(JSContext* ctx, JSValueConst options, const char* name,
@@ -2195,6 +2248,10 @@ void jsPageBindDocument(JSContext* context, Document* document, const char* page
 	JS_SetPropertyStr(context, history, "forward", JS_NewCFunction(context, historyForward, "forward", 0));
 	JS_SetPropertyStr(context, history, "state", JS_NULL);
 	JS_SetPropertyStr(context, global, "history", history);
+	JSValue crypto = JS_NewObject(context);
+	JS_SetPropertyStr(context, crypto, "getRandomValues",
+		JS_NewCFunction(context, cryptoGetRandomValues, "getRandomValues", 1));
+	JS_SetPropertyStr(context, global, "crypto", crypto);
 	JS_SetPropertyStr(context, global, "setTimeout",
 		JS_NewCFunctionMagic(context, scheduleCallback, "setTimeout", 2, JS_CFUNC_generic_magic, 0));
 	JS_SetPropertyStr(context, global, "setInterval",
@@ -2223,6 +2280,27 @@ void jsPageBindDocument(JSContext* context, Document* document, const char* page
 	JSCFunctionType paramsCtor; paramsCtor.constructor = urlSearchParamsConstructor;
 	JS_SetPropertyStr(context, global, "URLSearchParams",
 		JS_NewCFunction2(context, paramsCtor.generic, "URLSearchParams", 1, JS_CFUNC_constructor, 0));
+	static const char compatibilityBootstrap[] =
+		"if(typeof matchMedia==='undefined')window.matchMedia=function(q){return {matches:false,media:q,addListener:function(){},removeListener:function(){},addEventListener:function(){},removeEventListener:function(){},dispatchEvent:function(){return false}}};"
+		"function __PixelObserver(cb){this.cb=cb;this.targets=[]}__PixelObserver.prototype.observe=function(t){if(this.targets.indexOf(t)<0)this.targets.push(t)};__PixelObserver.prototype.unobserve=function(t){var i=this.targets.indexOf(t);if(i>=0)this.targets.splice(i,1)};__PixelObserver.prototype.disconnect=function(){this.targets.length=0};"
+		"if(typeof IntersectionObserver==='undefined')window.IntersectionObserver=__PixelObserver;"
+		"if(typeof MutationObserver==='undefined')window.MutationObserver=__PixelObserver;"
+		"if(typeof ResizeObserver==='undefined')window.ResizeObserver=__PixelObserver;"
+		"if(typeof queueMicrotask==='undefined')window.queueMicrotask=function(cb){setTimeout(cb,0)};"
+		"if(typeof structuredClone==='undefined')window.structuredClone=function(v){return JSON.parse(JSON.stringify(v))};"
+		"if(typeof TextEncoder==='undefined'){window.TextEncoder=function(){};TextEncoder.prototype.encode=function(s){var b=unescape(encodeURIComponent(String(s))),a=new Uint8Array(b.length);for(var i=0;i<b.length;i++)a[i]=b.charCodeAt(i);return a};}"
+		"if(typeof TextDecoder==='undefined'){window.TextDecoder=function(){this.encoding='utf-8'};TextDecoder.prototype.decode=function(a){var b='';if(a)for(var i=0;i<a.length;i++)b+=String.fromCharCode(a[i]);try{return decodeURIComponent(escape(b))}catch(e){return b}};}"
+		"if(typeof btoa==='undefined')window.btoa=function(s){var c='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=',o='',i=0;s=String(s);for(;i<s.length;){var a=s.charCodeAt(i++),b=s.charCodeAt(i++),d=s.charCodeAt(i++);if(a>255||b>255||d>255)throw new TypeError('Invalid character');var x=a>>2,y=((a&3)<<4)|(b>>4),z=((b&15)<<2)|(d>>6),w=d&63;if(isNaN(b))z=w=64;else if(isNaN(d))w=64;o+=c.charAt(x)+c.charAt(y)+c.charAt(z)+c.charAt(w)}return o};"
+		"if(typeof atob==='undefined')window.atob=function(s){var c='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=',o='',i=0;s=String(s).replace(/[\\t\\n\\f\\r ]/g,'');if(s.length%4!==0)throw new TypeError('Invalid character');for(;i<s.length;){var x=c.indexOf(s.charAt(i++)),y=c.indexOf(s.charAt(i++)),z=c.indexOf(s.charAt(i++)),w=c.indexOf(s.charAt(i++));if(x<0||x>=64||y<0||y>=64||z<0||w<0)throw new TypeError('Invalid character');o+=String.fromCharCode((x<<2)|(y>>4));if(z<64)o+=String.fromCharCode(((y&15)<<4)|(z>>2));if(w<64)o+=String.fromCharCode(((z&3)<<6)|w)}return o};"
+		"if(typeof Intl==='undefined')window.Intl={};if(!Intl.NumberFormat)Intl.NumberFormat=function(){return {format:function(v){return String(v)},resolvedOptions:function(){return {locale:'fr-FR'}}}};if(!Intl.DateTimeFormat)Intl.DateTimeFormat=function(){return {format:function(v){return String(v)},resolvedOptions:function(){return {locale:'fr-FR',timeZone:'UTC'}}}};";
+	JSValue compat = JS_Eval(context, compatibilityBootstrap,
+		sizeof(compatibilityBootstrap) - 1, "<compatibility>", JS_EVAL_TYPE_GLOBAL);
+	if (JS_IsException(compat))
+	{
+		JSValue exception = JS_GetException(context);
+		JS_FreeValue(context, exception);
+	}
+	JS_FreeValue(context, compat);
 	JS_FreeValue(context, global);
 }
 

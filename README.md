@@ -1,290 +1,253 @@
-# Pixelnaute — exclusivement pour New Nintendo 3DS / New Nintendo 2DS XL
+<div align="center">
 
-**Pixelnaute** est un navigateur web expérimental pour New Nintendo 3DS et
-New Nintendo 2DS XL. Il est conçu pour rester léger et afficher des pages web
-avec un moteur HTML/CSS natif simplifié.
+<img src="assets/icon.png" alt="Icône Pixelnaute : une loupe dans une fenêtre de navigateur" width="96">
 
-> **Version en développement : 0.5.0**
->
-> Pixelnaute est un projet en développement. Il peut ouvrir la plus pars des page pages,
-> mais ne remplace pas un navigateur moderne : les sites complexes, les
-> applications web et les pages protégées par des défis JavaScript ne
-> marche pas.
+# Pixelnaute
+
+### Un navigateur web expérimental pour New Nintendo 3DS
+
+Un moteur HTML/CSS natif, directement sur la console — sans navigateur distant ni proxy de rendu.
+
+<p>
+  <a href="https://github.com/dodosiiii/Pixelnaute/releases"><img src="https://img.shields.io/github/v/release/dodosiiii/Pixelnaute?display_name=tag&label=derni%C3%A8re%20version" alt="Dernière version"></a>
+  <a href="https://github.com/dodosiiii/Pixelnaute/actions/workflows/pc-tests.yml"><img src="https://github.com/dodosiiii/Pixelnaute/actions/workflows/pc-tests.yml/badge.svg" alt="Tests de régression PC"></a>
+  <a href="https://github.com/dodosiiii/Pixelnaute/actions/workflows/release.yml"><img src="https://github.com/dodosiiii/Pixelnaute/actions/workflows/release.yml/badge.svg" alt="Compilation des releases"></a>
+</p>
+
+<img src="assets/pixelnaute-banner-preview.svg" alt="Aperçu du mot PIXELNAUTE en lettres 3D, sans fond" width="680">
+
+**Version en développement : 0.6.0** · [Télécharger une version](https://github.com/dodosiiii/Pixelnaute/releases) · [Signaler un problème](https://github.com/dodosiiii/Pixelnaute/issues)
+
+</div>
+
+> [!WARNING]
+> Pixelnaute est un projet expérimental en développement, destiné aux
+> **New Nintendo 3DS**, **New Nintendo 3DS XL** et **New Nintendo 2DS XL**.
+> Les modèles 3DS/2DS d’origine ne sont pas pris en charge. Les sites complexes,
+> les applications web modernes et certaines pages protégées peuvent ne pas
+> fonctionner.
 
 ## Sommaire
 
+- [Installation](#installation)
 - [Fonctionnalités](#fonctionnalités)
-- [Installation sur la console](#installation-sur-la-console)
-- [Utilisation](#utilisation)
-- [Compilation depuis les sources](#compilation-depuis-les-sources)
-- [Tests hors console](#tests-hors-console)
-- [Mises à jour](#mises-à-jour)
-- [Architecture du projet](#architecture-du-projet)
-- [Limites connues](#limites-connues)
+- [Commandes](#commandes)
+- [Compiler depuis les sources](#compiler-depuis-les-sources)
+- [Tests](#tests)
+- [Limites et mémoire](#limites-et-mémoire)
+- [Structure du projet](#structure-du-projet)
 - [Contribuer](#contribuer)
-- [Licence](#licence)
+- [Licence et attribution](#licence-et-attribution)
+
+## Installation
+
+### Depuis une release
+
+1. Téléchargez **`N3DSWeb.3dsx`** depuis les [releases GitHub](https://github.com/dodosiiii/Pixelnaute/releases).
+2. Copiez-le sur la carte SD, par exemple dans `sd:/3ds/Pixelnaute/`.
+3. Lancez-le depuis le **Homebrew Launcher**.
+
+Une version **CIA** est également proposée dans les releases pour les
+New 3DS compatibles. Installez-la avec un gestionnaire de titres homebrew.
+Le CIA utilise une bannière animée et prend en charge la mise à jour intégrée ;
+cette fonction n’est pas disponible dans la version `.3dsx`.
 
 ## Fonctionnalités
 
-Pixelnaute récupère les pages directement sur la console et les rend avec son
-moteur HTML/CSS natif. Il ne s'appuie pas sur un navigateur PC distant ni sur
-un proxy de rendu.
+### Navigation
 
-- **HTML, CSS et JavaScript :**
-  - Analyse HTML tolérante, DOM manipulable par les scripts et styles externes.
-  - Moteur CSS partiel : sélecteurs courants, cascade, conditions `@media`
-    mobiles limitées, variables personnalisées `--nom`/`var()` avec repli,
-    pseudo-classes `:first-child`, `:last-child`, `:nth-child()` (entiers,
-    `odd`/`even` et formules `an+b`),
-    dimensions et `calc()` simple, couleurs hex/RGB/HSL avec alpha, gradients
-    linéaires et radiaux centrés, bordures, coins arrondis, ombres simples et
-    prise en charge limitée de Flexbox (rangées/colonnes, retour à la ligne,
-    `gap` horizontal et vertical, `justify-content`)
-    et CSS Grid (colonnes fixes ou fractionnaires, `repeat()` avec nombre fixe
-    ou `auto-fit`/`auto-fill`, `minmax()`, placement séquentiel et `grid-column`).
-    Les blocs préformatés (`<pre>`) conservent leurs retours à la ligne et
-    respectent notamment leurs couleurs, dimensions et espacements CSS.
-  - Moteur JavaScript QuickJS intégré, activé par défaut, avec des bindings DOM,
-    événements, temporisateurs, stockage, `fetch` et XMLHttpRequest partiels.
-    Son contexte mémoire n’est créé que pour les pages avec des scripts ; les
-    changements du DOM sont regroupés pour éviter de refaire toute la mise en
-    page après chaque script.
-  - Indicateur de chargement pendant le traitement des scripts.
+- Navigation HTTP/HTTPS, redirections, cookies de session, historique,
+  favoris et onglets.
+- DuckDuckGo Lite par défaut, avec Wikipedia et Mojeek comme moteurs alternatifs.
+- Mode lecteur, recherche dans la page actuellement chargée, mini-carte avec
+  repères de liens et d’ancres, et QR code pour partager une URL (jusqu’à
+  106 octets après encodage).
+- Flux RSS 2.0 et Atom affichés sous forme compacte.
+- Formulaires GET et POST `application/x-www-form-urlencoded`.
+- Téléchargement explicite de fichiers vers la carte SD, avec reprise si le
+  serveur accepte les requêtes `Range` et une limite de 32 Mio.
+- Cache SD pour les pages, feuilles de style, scripts et images, avec
+  revalidation HTTP et gestion depuis les réglages.
 
-- **Navigation et réseau :**
-  - Requêtes HTTP/HTTPS, redirections, cookies de session, historique, favoris
-    et onglets.
-  - Formulaires GET et POST encodés en URL (`application/x-www-form-urlencoded`).
-  - Moteurs de recherche DuckDuckGo Lite, Wikipedia et Mojeek.
-  - Chargement des images désactivé par défaut ; il peut être activé dans les
-    réglages, mais augmente la consommation mémoire et peut ralentir ou faire
-    échouer le rendu sur la console.
-  - Taille du texte réglable (85 %, 100 % ou 115 %) pour mieux s’adapter à
-    l’écran de la console ; le changement s’applique aux pages ouvertes ensuite.
-  - Interface disponible en anglais (langue par défaut), français, italien et
-    espagnol ; thèmes de couleur appliqués uniquement à l’écran inférieur.
-  - Gestion du cache des pages depuis les réglages : espace occupé, taille par
-    site, suppression d’un site ou vidage complet. Les anciennes entrées sans
-    métadonnées sont regroupées sous « site inconnu ».
+### Rendu et scripts
 
-Le moteur n'est pas un navigateur CSS complet : Grid, positionnement complexe,
-animations, transformations, images de fond, sélecteurs de frères et de
-nombreuses pseudo-classes restent absents ou incomplets. Le rendu et les API web restent volontairement
-limités par la mémoire et les capacités de la New 3DS. Une page visible dans un
-navigateur PC peut donc avoir une mise en page différente ou ne pas fonctionner
-ici.
+- Analyse HTML tolérante, styles externes et DOM modifiable par les scripts.
+- Moteur CSS partiel : cascade, sélecteurs courants, pseudo-classes enfants,
+  variables CSS, couleurs, dégradés, bordures, ombres, Flexbox et Grid partiel.
+- Moteur JavaScript QuickJS expérimental, avec prise en charge partielle du DOM,
+  des événements, des temporisateurs, du stockage, de `fetch` et de
+  XMLHttpRequest.
+- Chargement des images désactivé par défaut. Quand il est activé, les images
+  proches de l’écran sont traitées en priorité et adaptées au budget mémoire.
+- Mode sombre des pages et taille du texte réglable.
 
-## Objectifs de développement v0.6
+### Interface et diagnostic
 
-La v0.6 sera une mise à jour plus large, préparée après la publication de la
-v0.5. Les priorités proposées sont :
+- Interface disponible en anglais, français, italien et espagnol.
+- Réglages de navigation, de moteur de recherche, de certificats TLS et de
+  chargement des images.
+- Écran de diagnostic avec informations sur la page, le DOM, les ressources,
+  le réseau et la mémoire.
 
-1. **Rendre les régressions visibles et reproductibles** : conserver des pages
-   de référence compactes, ajouter des tests de rendu pixel par pixel pour les
-   cas importants et améliorer les diagnostics de chargement et de mise en page.
-2. **Fiabiliser le rendu statique** : consolider d'abord les couleurs,
-   l'héritage et les variables CSS, puis les dimensions, les blocs, les
-   bordures, Flexbox et Grid sur des exemples réels.
-3. **Combler les manques visuels les plus gênants** : évaluer les pseudo-
-   éléments, les icônes SVG et les images courantes, en privilégiant les pages
-   qui échouent réellement plutôt qu'une implémentation complète du standard.
-4. **Améliorer le chargement des pages** : rendre plus prévisibles les mises à
-   jour après CSS/JavaScript, les pages longues et le chargement optionnel des
-   images, tout en surveillant mémoire et réactivité sur console.
-5. **Étendre la compatibilité JavaScript de façon ciblée** : ajouter seulement
-   les API demandées par des sites de référence et couvertes par des tests.
+## Commandes
 
-Ces éléments sont des pistes, pas une promesse de compatibilité navigateur.
-Leur ordre pourra changer selon les résultats des essais sur console et les
-défauts rencontrés après la v0.5.
+| Action | Commande |
+| --- | --- |
+| Ouvrir le menu | `START` |
+| Parcourir les pages | Circle Pad |
+| Déplacer le pointeur (New 3DS) | C-Stick |
+| Activer un lien ou une option | `A` ou toucher l’écran |
+| Utiliser la barre d’adresse | Toucher l’écran inférieur |
+| Valider une adresse | `X` |
+| Faire défiler une page | Circle Pad ou glisser sur l’écran |
 
-## Installation sur la console
+Dans la barre d’adresse, pendant la saisie, le Circle Pad choisit une touche,
+`A` l’insère et le C-Stick déplace le curseur. Dans le menu, déplacez le
+contour de sélection avec le Circle Pad et validez avec `A`.
 
-### Utiliser une version publiée
+## Compiler depuis les sources
 
-1. Téléchargez `N3DSWeb.3dsx` depuis la page des [releases GitHub].
-2. Copiez le fichier dans le dossier `3ds` de la carte SD, par exemple :
-   `sd:/3ds/Pixelnaute/N3DSWeb.3dsx`.
-3. Insérez la carte dans la console et lancez le fichier depuis le
-   **Homebrew Launcher**.
+### Windows avec devkitPro
 
-Pixelnaute vise les modèles **New Nintendo 3DS**, **New Nintendo 3DS XL** et
-**New Nintendo 2DS XL**. Les modèles 3DS/2DS d’origine ne sont pas pris en
-charge.
-
-### Compiler le projet
-
-Prérequis :
-
-- un environnement **devkitPro/devkitARM** avec libctru, Citro2D, Citro3D,
-  libcurl, mbedTLS et zlib ;
-- Windows PowerShell pour utiliser le script fourni.
-
-Depuis la racine du dépôt, lancez :
+Installez devkitPro/devkitARM et les bibliothèques nécessaires : libctru,
+Citro2D, Citro3D, libcurl, mbedTLS et zlib. Depuis la racine du dépôt :
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-Le script compile l’application et produit `N3DSWeb.3dsx` et `N3DSWeb.elf`
-dans le dossier du projet. Il utilise les chemins devkitPro Windows indiqués
-dans `build.ps1`; adaptez ces chemins si votre installation est ailleurs.
+Le script produit `N3DSWeb.3dsx` et `N3DSWeb.elf`. Il utilise les chemins
+devkitPro définis dans `build.ps1` ; adaptez-les si votre installation est
+ailleurs.
 
-Sur un environnement devkitPro où `make` et `DEVKITARM` sont déjà configurés,
-la compilation peut aussi être lancée avec :
+Pour construire également le CIA, installez `bannertool` et `makerom`, puis
+lancez :
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -BuildCIA
+```
+
+### Linux ou environnement devkitPro déjà configuré
+
+Avec `make` et `DEVKITARM` configurés :
 
 ```sh
 make
+make cia
 ```
 
-## Utilisation
+Le CIA utilise l’identifiant de titre personnalisé `000400000FF6A600` et le
+mode mémoire étendu de 124 Mio. Il est réservé aux modèles New 3DS.
 
-- Touchez la barre d’adresse sur l’écran inférieur pour saisir une adresse ou
-  une recherche.
-- Pendant la saisie, le Circle Pad déplace le contour bleu entre les touches,
-  **A** insère la touche sélectionnée et **X** valide l’adresse. Le C-Stick
-  déplace le curseur dans l’adresse pour corriger une partie sans tout effacer.
-- Dans le menu ouvert avec les trois traits, le Circle Pad déplace également
-  le contour bleu et **A** ouvre l’option sélectionnée.
-- Touchez un lien pour l’ouvrir. Faites glisser le doigt sur la page pour la
-  faire défiler.
-- Utilisez les boutons de navigation à l’écran pour revenir en arrière,
-  avancer, revenir à l’accueil ou recharger.
-- Appuyez sur **START** pour ouvrir le menu : nouvel onglet, favoris,
-  historique, réglages et informations.
-- Le **Circle Pad** fait défiler la page. Sur New 3DS, le **C-Stick** déplace
-  le pointeur; appuyez sur **A** pour activer l’élément survolé.
-- Dans **Réglages**, touchez le moteur pour passer au suivant, activez ou
-  désactivez le chargement des images et choisissez si le navigateur vérifie
-  les certificats TLS.
+### Bannière animée
 
-### Réseau et recherche
+La bannière standard du CIA affiche le mot **PIXELNAUTE** en 3D, en rotation,
+sans panneau de fond. Le modèle CGFX reste sous la limite de 512 Kio et le
+script de build vérifie cette limite. Pour régénérer le modèle et son aperçu,
+sous Windows avec Python, Git et les dépendances indiquées dans
+`tools/banner/requirements.txt`, lancez :
 
-DuckDuckGo Lite est le moteur par défaut, car son HTML est reconnu par le
-parseur de résultats de Pixelnaute. Wikipedia et Mojeek sont proposés comme
-alternatives. Les anciens réglages de moteurs non pris en charge sont ramenés
-à DuckDuckGo Lite au chargement.
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\banner\build-banner.ps1
+```
 
-Une seule requête réseau est exécutée à la fois. Si vous ouvrez une autre page
-pendant un chargement, la nouvelle requête remplace l’ancienne. Les réponses
-restent associées à l’onglet qui les a demandées.
+Le build CIA utilise `assets/pixelnaute-banner.cgfx` lorsqu’il est disponible.
+La bannière animée doit encore être vérifiée sur une vraie console avant toute
+publication : un build réussi ne remplace pas ce test.
 
-Quand la vérification TLS est activée, Pixelnaute ne désactive pas
-automatiquement cette vérification en cas d’échec. Vous pouvez désactiver
-manuellement **Réglages > Vérifier les certificats**, mais ce choix s’applique
-à tous les sites et rend les connexions HTTPS vulnérables à l’interception.
-Laissez cette option activée sauf nécessité particulière.
+## Mises à jour intégrées
 
-Les formulaires GET et POST encodés en URL sont pris en charge. Les
-téléversements multiparties, par exemple l'envoi de fichiers, ne le sont pas.
-Le runtime JavaScript est expérimental : ses APIs et son comportement ne sont
-pas équivalents à ceux de Chrome, Firefox ou Safari.
+Dans la version CIA, **Réglages > Installer mise à jour CIA** recherche une
+release stable plus récente. Après confirmation, Pixelnaute télécharge le CIA,
+vérifie son empreinte SHA-256, puis demande au système de l’installer et de
+redémarrer le titre. La version `.3dsx` ne dispose pas de cette fonction.
 
-### Mises à jour
+## Tests
 
-Dans **Réglages > Mises à jour**, Pixelnaute vérifie la dernière release stable
-du dépôt `dodosiiii/Pixelnaute`. Si un tag de version plus récent et l’asset
-`N3DSWeb.3dsx` sont disponibles, l’application télécharge et installe la mise à
-jour. L’ancienne version est conservée dans un fichier `.bak`.
+### Tests PC sous Windows
 
-Cette installation intégrée est prévue pour la version **`.3dsx` lancée depuis
-le Homebrew Launcher**; elle ne met pas à jour une installation `.cia`. Après
-une mise à jour, fermez puis relancez l’application manuellement.
-
-Pour publier une version, poussez un tag correspondant, par exemple `v0.5.0`. Le
-workflow GitHub Actions compile l’application et joint `N3DSWeb.3dsx` à la
-release. La vérification intégrée nécessite qu’une release stable soit publiée
-et contienne cet asset.
-
-## Tests hors console
-
-Un test PC couvre les résolveurs de recherche, le parseur CSS et certaines
-fonctions du moteur de rendu. Il nécessite Visual Studio avec `cl.exe` et se
-lance depuis PowerShell :
+Avec Visual Studio et `cl.exe`, lancez :
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tests\pc\run.ps1
 ```
 
-Le script exécute les tests puis peut produire une image de contrôle. Cette
-conversion d’image est facultative et nécessite Python ainsi que Pillow.
+La génération de l’image de contrôle est facultative et nécessite Python et
+Pillow.
 
-Les tests PC ne remplacent pas un essai sur console : ils ne valident ni les
-connexions réelles en Wi-Fi, ni les services système, ni le comportement du
-rendu sur l’écran de la 3DS.
+### Tests PC sous Linux
 
-Avant la publication de la v0.5, vérifier sur New 3DS que le texte ne disparaît
-pas après le chargement CSS, y compris sur les pages longues et les blocs avec
-fond. Vérifier aussi navigation et formulaires, changement d'onglet pendant un
-`fetch`, navigation vers une autre page pendant une requête, cache SD et échec
-de certificat TLS. Dans ce dernier cas, le navigateur doit afficher une erreur
-sans réessayer silencieusement avec la vérification désactivée.
+```sh
+bash tests/pc/run-linux.sh
+```
 
-## Architecture du projet
+Les tests couvrent les résolveurs de recherche, le parseur CSS et certaines
+fonctions de rendu. GitHub Actions les exécute également sur chaque push et
+pull request. Ils ne remplacent pas les essais sur console : Wi-Fi, services
+système, installation CIA et rendu sur l’écran 3DS doivent être vérifiés sur
+le matériel.
 
-| Chemin | Rôle |
+## Limites et mémoire
+
+Pixelnaute n’est pas un navigateur de bureau complet. Les pages sont récupérées
+directement par la console ; aucun proxy distant n’est requis. Les ressources
+réseau sont traitées séquentiellement, ce qui peut ralentir les pages complexes.
+
+Les limites actuelles sont volontairement adaptées à la mémoire de la console :
+
+| Ressource | Limite actuelle |
 | --- | --- |
-| `source/browser/` | Navigation, onglets et traitement des pages |
-| `source/network/` | Requêtes HTTP/HTTPS et transport réseau |
-| `source/html/` | Analyse HTML et arbre DOM |
-| `source/css/` | Analyse des règles et résolution des styles |
-| `source/render/` | Mise en page, texte et dessin logiciel |
-| `source/search/` | Moteurs de recherche et réécriture des résultats |
-| `source/settings/` | Réglages persistants |
-| `source/storage/` | Historique, favoris et stockage |
-| `source/ui/` et `source/input/` | Interface et contrôles |
-| `source/updater/` | Vérification et installation des releases |
-| `tests/` | Sondes console et tests hors console |
-| `.github/workflows/` | Compilation et publication des releases GitHub |
+| Téléchargement HTML | 4 Mio maximum, ajusté si la mémoire disponible est insuffisante |
+| Nœuds DOM | 16 384 |
+| Règles CSS | 1 536 |
+| Feuilles de style | 128 Kio |
+| Texte DOM | Arène de 4 Mio |
+| Contenu de page | Jusqu’à 5 segments, avec rendu progressif |
+| Onglets | 2 pendant la phase de test mémoire |
+| Mémoire du runtime JavaScript | 4 Mio par page |
+| Cache des segments sur carte SD | 1 Gio ; entrées de plus d’une semaine supprimées |
 
-Les pages sont récupérées directement par la console. **Aucun proxy de rendu
-n’est requis ou utilisé par la version actuelle.**
+CSS Grid et Flexbox sont partiels. Les transformations, animations, images de
+fond, positionnements complexes et plusieurs sélecteurs ne sont pas pris en
+charge ou peuvent différer des navigateurs modernes. Les API JavaScript sont
+également partielles ; les SPA, les défis anti-bot et les sites qui exigent un
+navigateur officiellement pris en charge peuvent échouer.
 
-## Limites connues
+Les images sont désactivées par défaut. Leur décodage peut être ignoré si la
+mémoire disponible est insuffisante. Le navigateur limite également la durée
+d’exécution des scripts afin de préserver la réactivité. Les formulaires
+multiparties, comme l’envoi de fichiers, ne sont pas pris en charge.
 
-- QuickJS est intégré, mais ce n'est pas un moteur de navigateur complet. Les APIs DOM et Web disponibles sont partielles ; de nombreuses applications monopages (SPA), bibliothèques modernes et fonctions JavaScript peuvent échouer ou dépasser les budgets d'exécution et de mémoire.
-- Le moteur CSS ne prend pas en charge tout le standard : notamment CSS Grid et les mises en page complexes, ainsi que de nombreuses propriétés, unités et sélecteurs.
-- Les images sont désactivées par défaut pour limiter les risques de manque de mémoire. Lorsqu'elles sont activées, le navigateur limite le nombre d'images chargées et la taille de son cache.
-- Les défis anti-bot interactifs (Cloudflare Turnstile, reCAPTCHA complexe) et les connexions exigeant un navigateur officiellement pris en charge peuvent échouer. Modifier le User-Agent ne fournit pas les fonctions manquantes et ne garantit pas l'acceptation d'un site.
-- Le parseur DOM conserve jusqu'à 8 192 nœuds et le budget CSS autorise jusqu'à
-  1 536 règles et 128 Ko de feuilles de style.
-- Le rendu des pages longues est progressif : un premier segment de 2 000 px
-  est préparé, puis d'autres segments de 2 000 px sont ajoutés au défilement.
-  Un recouvrement de 240 px entre segments garantit que l'écran reste rempli
-  pendant le raccord. Le contenu logique est plafonné à 100 000 px ; si un
-  segment ne peut pas être alloué, l'application le signale et conserve la page
-  déjà visible.
-- Le cache des segments sur carte SD est limité à 1 Gio ; les fichiers âgés de
-  plus d'une semaine sont supprimés. C'est un cache de rendu, pas un budget de
-  mémoire vive supplémentaire ; une erreur de cache ne doit pas bloquer la page.
-- Chaque runtime JavaScript est limité à 4 Mio de tas. Les scripts de
-  chargement ont un budget de 100 ms chacun et de 300 ms cumulées par page ;
-  les callbacks ultérieurs sont interrompus par tranches de 100 ms. Ces limites
-  protègent la mémoire et la réactivité, mais peuvent empêcher certains scripts
-  complexes de terminer.
-- Les formulaires multiparties (notamment le téléversement de fichiers) ne sont pas pris en charge.
-- Les ressources réseau sont traitées séquentiellement ; le chargement de pages complexes peut donc prendre du temps.
+## Structure du projet
+
+| Dossier | Contenu |
+| --- | --- |
+| `source/browser/` | Navigation, onglets et chargement des pages |
+| `source/network/` | Transport HTTP/HTTPS |
+| `source/html/` et `source/css/` | Analyse HTML, DOM et styles |
+| `source/render/` | Mise en page et rendu |
+| `source/search/` | Moteurs de recherche |
+| `source/ui/` et `source/input/` | Interface et commandes |
+| `source/settings/` et `source/storage/` | Réglages et données persistantes |
+| `source/updater/` | Recherche et installation des mises à jour |
+| `tests/` | Tests PC et outils de diagnostic |
+| `tools/banner/` | Génération de la bannière 3D |
 
 ## Contribuer
 
-Les contributions et rapports de bogues sont les bienvenus. Pour aider au
-diagnostic, indiquez :
+Les rapports de bogues et les contributions sont les bienvenus. Pour aider à
+reproduire un problème, indiquez :
 
-1. le modèle de console et le mode de lancement (`.3dsx` ou autre) ;
-2. l’adresse du site et les étapes pour reproduire le problème ;
-3. si possible, les fichiers de diagnostic `boot.txt` et le dossier `diag`
-   de `sdmc:/N3DSWeb/` (vérifiez qu’ils ne contiennent pas d’informations
-   personnelles avant de les partager).
+1. Le modèle de console et le mode utilisé (`.3dsx` ou CIA).
+2. L’adresse du site et les étapes pour reproduire le problème.
+3. Si possible, les journaux `boot.txt` et le dossier `diag` de
+   `sdmc:/N3DSWeb/`. Vérifiez qu’ils ne contiennent aucune information
+   personnelle avant de les partager.
 
 ## Licence et attribution
 
 Le code et les éléments originaux de Pixelnaute sont distribués sous la
-[licence avec attribution Pixelnaute](./LICENSE). Toute redistribution, y
-compris d'une version modifiée ou binaire, doit conserver le crédit à
-**@dodosiiii** et ne doit pas présenter le projet original comme ayant été
-créé seul par la personne qui le redistribue.
-
-La licence du projet ne remplace pas celles des composants tiers. Leurs avis
-de copyright et licences respectifs restent applicables.
-
-[releases GitHub]: https://github.com/dodosiiii/Pixelnaute/releases
+[licence avec attribution Pixelnaute](./LICENSE). Toute redistribution,
+y compris d’une version modifiée ou binaire, doit inclure la licence et
+conserver le crédit à **@dodosiiii**. Les composants tiers restent soumis à
+leurs propres avis de copyright et licences.

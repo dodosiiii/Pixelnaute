@@ -1,7 +1,7 @@
 #include "https.hpp"
 
 bool httpsGet(const std::string& url, const HttpOptions& opt, NetResponse& out,
-	const volatile int* cancelFlag, std::atomic<float>* progressOut)
+	const std::atomic<int>* cancelFlag, std::atomic<float>* progressOut)
 {
 	std::string u = url;
 	if (strStartsWith(u, "http://"))

@@ -178,6 +178,7 @@ struct CssRule
 class CssEngine
 {
 public:
+	void setViewportWidth(int width);
 	void clear() { rules_.clear(); stylesheetBytes_ = 0; sourceOrder_ = -1; sourceRuleOrder_ = 0; }
 
 	// Analyse une feuille CSS entiere.
@@ -193,6 +194,7 @@ public:
 	Style resolve(const Document& doc, int nodeIdx, const Style& parent) const;
 
 private:
+	int viewportWidth_ = NW_PAGE_WIDTH;
 	std::vector<CssRule> rules_;
 	size_t stylesheetBytes_ = 0;
 	int sourceOrder_ = -1;

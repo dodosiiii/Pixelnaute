@@ -13,6 +13,55 @@ static int attrInt(const Node& n, const char* name, int def)
 	return atoi(v);
 }
 
+// Choisit la variante srcset la plus petite qui remplit la largeur affichee.
+// Le moteur ne gere pas les data-URL ni les descripteurs complexes : dans ces
+// cas, il retombe proprement sur src.
+static std::string imageSource(const Node& node, int displayWidth)
+{
+	const char* raw = node.getAttr("srcset");
+	if (!raw || !*raw || strlen(raw) > 8192)
+		return node.getAttr("src") ? node.getAttr("src") : "";
+	const std::string candidates(raw);
+	std::string bestAtOrAbove, bestBelow;
+	int bestAboveWidth = 0x7fffffff, bestBelowWidth = 0;
+	size_t start = 0;
+	while (start < candidates.size())
+	{
+		const size_t comma = candidates.find(',', start);
+		const size_t end = comma == std::string::npos ? candidates.size() : comma;
+		std::string item = strTrim(candidates.substr(start, end - start));
+		const size_t space = item.find_first_of(" \t\r\n");
+		if (space != std::string::npos)
+		{
+			const std::string url = item.substr(0, space);
+			const std::string descriptor = strTrim(item.substr(space + 1));
+			char* parsedEnd = nullptr;
+			const double value = strtod(descriptor.c_str(), &parsedEnd);
+			if (!url.empty() && url.size() <= 2048 && !strStartsWith(url, "data:") &&
+				parsedEnd != descriptor.c_str() && value > 0.0 && value <= 100000.0 &&
+				(parsedEnd[0] == 'w' || parsedEnd[0] == 'x'))
+			{
+				const double effective = parsedEnd[0] == 'x' ? value * displayWidth : value;
+				if (effective <= 100000.0 && effective >= displayWidth && effective < bestAboveWidth)
+				{
+					bestAboveWidth = (int)effective;
+					bestAtOrAbove = url;
+				}
+				else if (effective < displayWidth && effective > bestBelowWidth)
+				{
+					bestBelowWidth = (int)effective;
+					bestBelow = url;
+				}
+			}
+		}
+		if (comma == std::string::npos) break;
+		start = comma + 1;
+	}
+	if (!bestAtOrAbove.empty()) return bestAtOrAbove;
+	if (!bestBelow.empty()) return bestBelow;
+	return node.getAttr("src") ? node.getAttr("src") : "";
+}
+
 static int uaMarginBottom(const std::string& tag)
 {
 	if (tag == "p" || tag == "div" || tag == "ul" || tag == "ol" || tag == "blockquote" ||
@@ -34,6 +83,24 @@ static uint32_t compositeColor(uint32_t foreground, uint32_t background)
 	const unsigned b = ((((foreground >> 16) & 0xFF) * alpha) +
 		(((background >> 16) & 0xFF) * inverse)) / 255;
 	return 0xFF000000u | (b << 16) | (g << 8) | r;
+}
+
+static uint32_t forceDarkBackground(uint32_t c)
+{
+	const unsigned r = c & 0xFF, g = (c >> 8) & 0xFF, b = (c >> 16) & 0xFF;
+	const unsigned lum = (r * 299 + g * 587 + b * 114) / 1000;
+	return lum > 135 ? 0xFF302C32u : c;
+}
+
+static uint32_t forceDarkForeground(uint32_t c)
+{
+	const unsigned r = c & 0xFF, g = (c >> 8) & 0xFF, b = (c >> 16) & 0xFF;
+	const unsigned lum = (r * 299 + g * 587 + b * 114) / 1000;
+	if (lum >= 150) return c;
+	const unsigned rr = r + (255 - r) * 3 / 4;
+	const unsigned gg = g + (255 - g) * 3 / 4;
+	const unsigned bb = b + (255 - b) * 3 / 4;
+	return 0xFF000000u | (bb << 16) | (gg << 8) | rr;
 }
 
 static bool isBlockTag(const std::string& t)
@@ -64,9 +131,12 @@ static inline std::string joinUrl(const std::string& base, const std::string& re
 
 
 //--------------------------------------------------------------------------
-PageLayout::PageLayout(const Document& doc, const CssEngine& css, const WebSettings& settings)
+PageLayout::PageLayout(const Document& doc, const CssEngine& css,
+	const WebSettings& settings, int viewportWidth)
 	: doc_(&doc), css_(&css), set_(&settings)
 {
+	W_ = viewportWidth >= NW_PAGE_WIDTH && viewportWidth <= 640
+		? viewportWidth : NW_PAGE_WIDTH;
 	const int textScale = settings.textScalePercent >= 85 &&
 		settings.textScalePercent <= 115 ? settings.textScalePercent : 100;
 	baseScale_ *= textScale / 100.0f;
@@ -93,7 +163,12 @@ void PageLayout::addLinkBox(int x0, int y0, int x1, int y1, const std::string& u
 {
 	if (x1 <= x0 || y1 <= y0) return;
 	if ((int)out_->links.size() >= NW_MAX_LINKS) return;
+	// Un seul href peut produire une hitbox par ligne. Borner les copies pour
+	// eviter qu'un href enorme repete sur une page fasse exploser le tas.
+	if (url.empty() || url.size() > 2048 ||
+		linkStorageBytes_ + url.size() > 256u * 1024u) return;
 	out_->links.push_back({ x0, y0, x1 - x0, y1 - y0, url, node });
+	linkStorageBytes_ += url.size();
 }
 
 //--------------------------------------------------------------------------
@@ -128,12 +203,15 @@ void PageLayout::drawTextWrapped(const std::string& text, const Style& st, bool 
 			drawX = x1_ - (int)ceilf(w);
 		te.drawLine((*target_), s, drawX, iy_, scale, col, bold,
 			linkActive_ || st.underline);
+		if (out_->textRuns.size() < 1024)
+			out_->textRuns.push_back({ drawX, by0,
+				(int)ceilf(w), pitch, s });
 		const int bx1 = drawX + (int)ceilf(w);
 		// Un lien "display:block" (une tuile, un bouton) doit etre cliquable
 		// sur toute sa surface, pas seulement sur la largeur du texte.
 		if (linkActive_)
 		{
-			const int right = st.block ? std::min(x1_, NW_PAGE_WIDTH - 2) : std::min(bx1, NW_PAGE_WIDTH - 2);
+			const int right = st.block ? std::min(x1_, W_ - 2) : std::min(bx1, W_ - 2);
 			addLinkBox(drawX, by0, right, iy_ + pitch, linkHref_, linkNode_);
 		}
 		ix_ = std::max(ix_, bx1);
@@ -253,6 +331,9 @@ void PageLayout::drawPreformattedText(const std::string& text, const Style& st)
 		{
 			te.drawLine(*target_, expanded, ix_, iy_, scale, color,
 				st.bold, st.underline);
+			if (out_->textRuns.size() < 1024)
+				out_->textRuns.push_back({ ix_, iy_,
+					(int)ceilf(te.measure(expanded, scale)), pitch, expanded });
 			ix_ += (int)ceilf(te.measure(expanded, scale));
 			lineMaxH_ = std::max(lineMaxH_, pitch);
 		}
@@ -310,6 +391,11 @@ void PageLayout::renderNode(int idx, const Style& st)
 			return;
 		}
 		if (isHeadTag(tag)) return;
+		const char* anchorId = node.getAttr("id");
+		const char* anchorName = tag == "a" ? node.getAttr("name") : nullptr;
+		const char* anchor = anchorId && *anchorId ? anchorId : anchorName;
+		if (anchor && *anchor && out_->anchors.size() < NW_MAX_DOM_NODES)
+			out_->anchors.push_back({ anchor, by_ });
 
 		if (tag == "br")
 		{
@@ -324,10 +410,14 @@ void PageLayout::renderNode(int idx, const Style& st)
 
 		if (tag == "img")
 		{
-			int w = attrInt(node, "width", 100);
-			int h = attrInt(node, "height", 70);
-			if (w > x1_ - x0_) w = x1_ - x0_;
-			if (h > 160) h = 160;
+			int w = attrInt(node, "width", st.width > 0 ? st.width : 100);
+			int h = attrInt(node, "height", st.height > 0 ? st.height : 70);
+			w = std::max(1, w);
+			h = std::max(1, h);
+			const float fitScale = std::min(1.0f, std::min(
+				(float)std::max(1, x1_ - x0_) / (float)w, 160.0f / (float)h));
+			w = std::max(1, (int)floorf(w * fitScale + 0.5f));
+			h = std::max(1, (int)floorf(h * fitScale + 0.5f));
 			if (ix_ + w > x1_) newline(0);
 			// case d'image (decode en V0.2)
 			(*target_).addRect(ix_, iy_, w, h, 0xFF776666, 1);
@@ -338,11 +428,11 @@ void PageLayout::renderNode(int idx, const Style& st)
 				TextEngine& te = TextEngine::instance();
 				te.drawLine((*target_), alt, ix_ + 3, iy_ + 2, 0.6f, 0xFFA89A9A, false, false);
 			}
-			const char* src = node.getAttr("src");
+			const std::string src = imageSource(node, w);
 			// L'adresse est resolue ici : le magasin d'images doit recevoir
 			// une adresse absolue.
 			out_->images.push_back({ ix_, iy_, w, h,
-				src && *src ? joinUrl(pageUrl_, src) : "", alt });
+				!src.empty() ? joinUrl(pageUrl_, src) : "", alt });
 			if (ix_ + w + 6 > x1_) newline(0);
 			else ix_ += w + 6;
 			if (h > lineMaxH_) lineMaxH_ = h;
@@ -605,7 +695,7 @@ void PageLayout::renderNode(int idx, const Style& st)
 			{
 				if (!(st.declared & CssPropColor))
 				{
-					contentStyle.color = C_LINK;
+					contentStyle.color = set_->darkPages ? forceDarkForeground(C_LINK) : C_LINK;
 					contentStyle.colorSet = true;
 				}
 				contentStyle.underline = true;
@@ -652,9 +742,9 @@ void PageLayout::renderNode(int idx, const Style& st)
 
 			if (st.paddingLeft > 0) x0_ += st.paddingLeft;
 			if (st.paddingRight > 0) x1_ -= st.paddingRight;
-			if (x0_ > NW_PAGE_WIDTH - 40) x0_ = NW_PAGE_WIDTH - 40;
+			if (x0_ > W_ - 40) x0_ = W_ - 40;
 			if (x1_ < x0_ + 30) x1_ = x0_ + 30;
-			if (x1_ > NW_PAGE_WIDTH - 2) x1_ = NW_PAGE_WIDTH - 2;
+			if (x1_ > W_ - 2) x1_ = W_ - 2;
 			by_ += st.paddingTop;
 			iy_ = by_;
 			ix_ = x0_;
@@ -1120,7 +1210,7 @@ void PageLayout::renderNode(int idx, const Style& st)
 			for (int c : node.children)
 			{
 				if (doc_->nodes[c].type == NodeType::Text || doc_->nodes[c].type == NodeType::RawText)
-					drawPreformattedText(doc_->nodes[c].text, st);
+					drawPreformattedText(doc_->nodeText(c), st);
 				else
 				{
 					resolveAndRender(c, st);
@@ -1166,9 +1256,9 @@ void PageLayout::renderNode(int idx, const Style& st)
 			}
 		}
 		if (insidePre)
-			drawPreformattedText(node.text, st);
+			drawPreformattedText(doc_->nodeText(idx), st);
 		else
-			drawTextWrapped(node.text, st, st.mono);
+			drawTextWrapped(doc_->nodeText(idx), st, st.mono);
 		return;
 	}
 
@@ -1201,7 +1291,7 @@ void PageLayout::renderNode(int idx, const Style& st)
 		std::string prevHref = linkHref_;
 		int prevLinkNode = linkNode_;
 		Style as = st;
-		if (!(st.declared & CssPropColor)) { as.color = C_LINK; as.colorSet = true; }
+		if (!(st.declared & CssPropColor)) { as.color = set_->darkPages ? forceDarkForeground(C_LINK) : C_LINK; as.colorSet = true; }
 		as.underline = true;
 		if (href && *href)
 		{
@@ -1267,6 +1357,12 @@ void PageLayout::resolveAndRender(int idx, const Style& parentSt)
 	if (node.type == NodeType::Comment) return;
 
 	Style st = css_->resolve(*doc_, idx, parentSt);
+	if (set_->darkPages && !strStartsWith(toLower(pageUrl_), "nw://"))
+	{
+		if (st.colorSet) st.color = forceDarkForeground(st.color);
+		if (st.bgSet && st.gradientCount <= 1) st.bg = forceDarkBackground(st.bg);
+		if (st.borderWidth > 0) st.borderColor = forceDarkForeground(st.borderColor);
+	}
 	if (node.isElement() && node.tag == "code") st.mono = true;
 	if (node.isElement() && node.tag == "pre" &&
 		!(st.declared & CssPropMono))
@@ -1285,7 +1381,7 @@ void PageLayout::resolveAndRender(int idx, const Style& parentSt)
 	if (node.isElement() && node.tag == "a" && !st.block)
 	{
 		Style as = st;
-		if (!(st.declared & CssPropColor)) { as.color = C_LINK; as.colorSet = true; }
+		if (!(st.declared & CssPropColor)) { as.color = set_->darkPages ? forceDarkForeground(C_LINK) : C_LINK; as.colorSet = true; }
 		as.underline = true;
 		const char* href = node.getAttr("href");
 		bool prev = linkActive_;
@@ -1349,13 +1445,14 @@ bool PageLayout::renderInternal(PageModel& out, const std::string& pageUrl,
 	renderStopped_ = false;
 	out.segmentIndex = segmentIndex;
 	out.furthestSegmentIndex = segmentIndex;
-	if (segmented && !out.bmp.create(NW_PAGE_WIDTH, cap, segmentOffset))
+	linkStorageBytes_ = 0;
+	if (segmented && !out.bmp.create(W_, cap, segmentOffset))
 	{
 		out.errorCode = 2;
 		out.errorText = "Memoire insuffisante pour le segment";
 		return false;
 	}
-	while (!segmented && !out.bmp.create(NW_PAGE_WIDTH, cap, segmentOffset))
+	while (!segmented && !out.bmp.create(W_, cap, segmentOffset))
 	{
 		if (cap <= 1200)
 		{
@@ -1383,6 +1480,7 @@ bool PageLayout::renderInternal(PageModel& out, const std::string& pageUrl,
 
 	const bool isInternal = strStartsWith(toLower(pageUrl), "nw://") || strStartsWith(toLower(pageUrl), "nw:/");
 	uint32_t defaultBg = isInternal ? 0xFF1A1317 : 0xFFFFFFFF; // Fond sombre prune interne ou blanc web standard
+	if (set_->darkPages && !isInternal) defaultBg = forceDarkBackground(defaultBg);
 	uint32_t defaultText = isInternal ? C_TEXT : 0xFF202020; // Texte clair interne ou sombre standard
 	Style pageBackground;
 	pageBackgroundNode_ = -1;
@@ -1397,6 +1495,11 @@ bool PageLayout::renderInternal(PageModel& out, const std::string& pageUrl,
 	if (htmlNode >= 0)
 	{
 		htmlSt = css_->resolve(*doc_, htmlNode, rootSt);
+		if (set_->darkPages && !isInternal)
+		{
+			if (htmlSt.colorSet) htmlSt.color = forceDarkForeground(htmlSt.color);
+			if (htmlSt.bgSet && htmlSt.gradientCount <= 1) htmlSt.bg = forceDarkBackground(htmlSt.bg);
+		}
 		if (htmlSt.bgSet)
 		{
 			if (htmlSt.gradientCount <= 1)
@@ -1410,6 +1513,11 @@ bool PageLayout::renderInternal(PageModel& out, const std::string& pageUrl,
 	if (body >= 0 && body != htmlNode)
 	{
 		Style bodySt = css_->resolve(*doc_, body, htmlSt);
+		if (set_->darkPages && !isInternal)
+		{
+			if (bodySt.colorSet) bodySt.color = forceDarkForeground(bodySt.color);
+			if (bodySt.bgSet && bodySt.gradientCount <= 1) bodySt.bg = forceDarkBackground(bodySt.bg);
+		}
 		if (bodySt.bgSet)
 		{
 			if (bodySt.gradientCount <= 1)
@@ -1439,16 +1547,16 @@ bool PageLayout::renderInternal(PageModel& out, const std::string& pageUrl,
 	{
 		if (pageBackground.gradientRadial)
 			(*target_).fillRadialGradientRect(0, segmentOffset,
-				NW_PAGE_WIDTH, cap, pageBackground.gradientColors,
+				W_, cap, pageBackground.gradientColors,
 				pageBackground.gradientStops, pageBackground.gradientCount);
 		else
 			(*target_).fillLinearGradientRect(0, segmentOffset,
-				NW_PAGE_WIDTH, cap, pageBackground.gradientColors,
+				W_, cap, pageBackground.gradientColors,
 				pageBackground.gradientStops, pageBackground.gradientCount,
 				pageBackground.gradientAngle);
 	}
 
-	x0_ = 4; x1_ = NW_PAGE_WIDTH - 4;
+	x0_ = 4; x1_ = W_ - 4;
 	ix_ = x0_; iy_ = 0; by_ = 0; lineMaxH_ = 0;
 	pendingSpace_ = false;
 	renderDepth_ = 0;

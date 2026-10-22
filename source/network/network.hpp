@@ -28,7 +28,10 @@ public:
 	bool start(const std::string& url, size_t maxBytes, bool verifyTls,
 	           const std::string& method = "GET", const std::string& postData = "",
 	           NetRequestType requestType = NetRequestType::Page, int timeoutMs = 30000,
-	           const std::string& referer = "", const std::string& csrfToken = "");
+	           const std::string& referer = "", const std::string& csrfToken = "",
+	           const std::string& downloadPath = "",
+	           const std::string& ifNoneMatch = "",
+	           const std::string& ifModifiedSince = "");
 
 	// Annule le transfert en cours.
 	void cancel();
@@ -44,9 +47,8 @@ public:
 
 private:
 	mutable LightLock lock_ = {};
-	volatile int cancelFlag_ = 0;
-	volatile bool running_ = false;
-	volatile NetState state_ = NetState::Idle;
+	std::atomic<int> cancelFlag_{ 0 };
+	NetState state_ = NetState::Idle;
 	std::atomic<float> progress_{ 0.0f };
 	std::atomic<size_t> bytes_{ 0 };
 	NetState lastState_ = NetState::Idle;
@@ -63,6 +65,9 @@ private:
 		int timeoutMs = 30000;
 		std::string referer;
 		std::string csrfToken;
+		std::string downloadPath;
+		std::string ifNoneMatch;
+		std::string ifModifiedSince;
 	};
 	std::deque<Request> requestQueue_;
 	bool workerRunning_ = false;

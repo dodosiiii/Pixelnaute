@@ -4,6 +4,14 @@
 #include <math.h>
 #include <stdlib.h>
 
+// CSS est resolu sur le thread principal. Chaque moteur charge sa largeur
+// avant d'analyser une feuille ou de resoudre les styles inline.
+static int gCssViewportWidth = NW_PAGE_WIDTH;
+static int cssViewportHeight()
+{
+	return (NW_TOP_HEIGHT * gCssViewportWidth + NW_PAGE_WIDTH / 2) / NW_PAGE_WIDTH;
+}
+
 //-----------------------------------------------------------------------------
 // Couleurs nommees (selection courante)
 //-----------------------------------------------------------------------------
@@ -333,16 +341,17 @@ private:
 		if (unit == "em" || unit == "rem") return value * base_;
 		if (unit == "pt") return value * (4.0 / 3.0);
 		if (unit == "%") return value * percentBase_ / 100.0;
-		if (unit == "vw") return value * NW_PAGE_WIDTH / 100.0;
-		if (unit == "vh") return value * NW_TOP_HEIGHT / 100.0;
+		if (unit == "vw") return value * gCssViewportWidth / 100.0;
+		if (unit == "vh") return value * cssViewportHeight() / 100.0;
 		valid_ = false;
 		return 0.0;
 	}
 };
 
 static int parseCssLength(const std::string& token, int base = 16,
-	int percentBase = NW_PAGE_WIDTH, int depth = 0)
+	int percentBase = 0, int depth = 0)
 {
+	if (percentBase <= 0) percentBase = gCssViewportWidth;
 	std::string t = strTrim(token);
 	if (t.empty() || t == "auto" || depth > 8) return 0;
 	const std::string lower = toLower(t);
@@ -391,8 +400,8 @@ static int parseCssLength(const std::string& token, int base = 16,
 	if (unit == "em" || unit == "rem") val *= (float)base;
 	else if (unit == "pt") val *= 4.0f / 3.0f;
 	else if (unit == "%") val *= (float)percentBase / 100.0f;
-	else if (unit == "vw") val *= (float)NW_PAGE_WIDTH / 100.0f;
-	else if (unit == "vh") val *= (float)NW_TOP_HEIGHT / 100.0f;
+	else if (unit == "vw") val *= (float)gCssViewportWidth / 100.0f;
+	else if (unit == "vh") val *= (float)cssViewportHeight() / 100.0f;
 	else if (!unit.empty() && unit != "px") return 0;
 	if (val > 100000.0f) val = 100000.0f;
 	if (val < -100000.0f) val = -100000.0f;
@@ -1036,14 +1045,14 @@ static void parseDeclarationValues(const std::string& prop, const std::string& v
 	}
 	if (p == "min-width" || p == "max-width")
 	{
-		const int w = parseCssLength(v, 16, NW_PAGE_WIDTH);
+		const int w = parseCssLength(v, 16, gCssViewportWidth);
 		if (p == "min-width") { out.minWidth = w; out.declared |= CssPropMinWidth; }
 		else { out.maxWidth = w; out.declared |= CssPropMaxWidth; }
 		return;
 	}
 	if (p == "height" || p == "min-height" || p == "max-height")
 	{
-		const int h = parseCssLength(v, 16, NW_TOP_HEIGHT);
+		const int h = parseCssLength(v, 16, cssViewportHeight());
 		if (p == "height" && h > 0)
 		{
 			out.height = h;
@@ -1893,7 +1902,7 @@ static int mediaWidth(const std::string& query, size_t valuePos)
 	float pixels = value;
 	if (unit.find("rem") == 0 || unit.find("em") == 0) pixels *= 16.0f;
 	else if (unit.find("pt") == 0) pixels *= 4.0f / 3.0f;
-	else if (unit.find("vw") == 0) pixels *= (float)NW_PAGE_WIDTH / 100.0f;
+	else if (unit.find("vw") == 0) pixels *= (float)gCssViewportWidth / 100.0f;
 	return (int)pixels;
 }
 
@@ -1910,7 +1919,7 @@ static bool evalMediaQuery(const std::string& query)
 		if (colon != std::string::npos)
 		{
 			int maxW = mediaWidth(q, colon + 1);
-			if (maxW > 0 && NW_PAGE_WIDTH > maxW) return false;
+			if (maxW > 0 && gCssViewportWidth > maxW) return false;
 		}
 	}
 
@@ -1921,14 +1930,21 @@ static bool evalMediaQuery(const std::string& query)
 		if (colon != std::string::npos)
 		{
 			int minW = mediaWidth(q, colon + 1);
-			if (minW > 0 && NW_PAGE_WIDTH < minW) return false;
+			if (minW > 0 && gCssViewportWidth < minW) return false;
 		}
 	}
 	return true;
 }
 
+void CssEngine::setViewportWidth(int width)
+{
+	viewportWidth_ = width >= NW_PAGE_WIDTH && width <= 640 ? width : NW_PAGE_WIDTH;
+	gCssViewportWidth = viewportWidth_;
+}
+
 void CssEngine::parseStylesheet(const std::string& css, int sourceOrder)
 {
+	gCssViewportWidth = viewportWidth_;
 	const int previousSourceOrder = sourceOrder_;
 	const int previousSourceRuleOrder = sourceRuleOrder_;
 	if (sourceOrder >= 0)
@@ -1996,7 +2012,7 @@ void CssEngine::parseStylesheet(const std::string& css, int sourceOrder)
 		{
 			if (evalMediaQuery(selector))
 			{
-				// Evaluer le bloc imbrique avec nos 400px de largeur
+				// Evaluer le bloc imbrique avec la largeur courante (400 ou 640 px).
 				parseStylesheet(body);
 			}
 		}
@@ -2047,7 +2063,10 @@ void collectStyleBlocks(const Document& doc, CssEngine& css)
 			{
 				const Node& ch = doc.nodes[c];
 				if (ch.type == NodeType::RawText || ch.type == NodeType::Text)
-					sheet += ch.text;
+				{
+					const std::string_view text = doc.nodeTextView(c);
+					if (!text.empty()) sheet.append(text.data(), text.size());
+				}
 			}
 			if (!sheet.empty()) css.parseStylesheet(sheet, (int)i);
 		}
@@ -2059,6 +2078,7 @@ void collectStyleBlocks(const Document& doc, CssEngine& css)
 //-----------------------------------------------------------------------------
 Style CssEngine::resolve(const Document& doc, int nodeIdx, const Style& parent) const
 {
+	gCssViewportWidth = viewportWidth_;
 	Style out;
 	out.color = parent.color;
 	out.colorSet = parent.colorSet;

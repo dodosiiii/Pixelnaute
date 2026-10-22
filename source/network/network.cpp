@@ -1,6 +1,16 @@
 #include "network.hpp"
 #include <malloc.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
 #include <curl/curl.h>
+
+static uint64_t downloadUrlKey(const std::string& url)
+{
+	uint64_t hash = 1469598103934665603ULL;
+	for (unsigned char c : url) { hash ^= c; hash *= 1099511628211ULL; }
+	return hash;
+}
 
 
 bool NetworkManager::begin()
@@ -81,7 +91,8 @@ size_t NetworkManager::bytesReceived() const
 bool NetworkManager::start(const std::string& url, size_t maxBytes, bool verifyTls,
 	const std::string& method, const std::string& postData,
 	NetRequestType requestType, int timeoutMs, const std::string& referer,
-	const std::string& csrfToken)
+	const std::string& csrfToken, const std::string& downloadPath,
+	const std::string& ifNoneMatch, const std::string& ifModifiedSince)
 {
 	if (!socInit_ || !curlInit_)
 	{
@@ -99,6 +110,9 @@ bool NetworkManager::start(const std::string& url, size_t maxBytes, bool verifyT
 	request.timeoutMs = timeoutMs;
 	request.referer = referer;
 	request.csrfToken = csrfToken;
+	request.downloadPath = downloadPath;
+	request.ifNoneMatch = ifNoneMatch;
+	request.ifModifiedSince = ifModifiedSince;
 	requestQueue_.push_back(std::move(request));
 	if (workerRunning_ || resultReady_)
 	{
@@ -204,10 +218,111 @@ void NetworkManager::worker()
 		opt.timeoutMs = request.timeoutMs;
 		opt.referer = request.referer;
 		opt.csrfToken = request.csrfToken;
+		opt.ifNoneMatch = request.ifNoneMatch;
+		opt.ifModifiedSince = request.ifModifiedSince;
 		opt.convertTextEncoding = request.requestType != NetRequestType::Image;
+		if (request.requestType == NetRequestType::Image)
+			opt.accept = "image/jpeg,image/png,image/gif;q=0.8,*/*;q=0.2";
 
+		std::string partialPath;
+		FILE* downloadFile = nullptr;
 		NetResponse resp;
-		const bool ok = httpGet(request.url, opt, resp, &cancelFlag_, &progress_, &bytes_);
+		bool ok = false;
+		if (request.requestType == NetRequestType::Download)
+		{
+			partialPath = request.downloadPath + ".part";
+			const std::string keyPath = partialPath + ".urlkey";
+			char storedKey[32] = {};
+			FILE* keyFile = fopen(keyPath.c_str(), "rb");
+			const size_t keyLength = keyFile ? fread(storedKey, 1, sizeof(storedKey) - 1, keyFile) : 0;
+			if (keyFile) fclose(keyFile);
+			char currentKey[24];
+			snprintf(currentKey, sizeof(currentKey), "%016llx", (unsigned long long)downloadUrlKey(request.url));
+			if (keyLength != 16 || strncmp(storedKey, currentKey, 16) != 0)
+			{
+				remove(partialPath.c_str());
+				remove(keyPath.c_str());
+			}
+			struct stat partialInfo{};
+			uint64_t partialBytes = stat(partialPath.c_str(), &partialInfo) == 0 &&
+				partialInfo.st_size > 0 ? (uint64_t)partialInfo.st_size : 0;
+			if (partialBytes >= request.maxBytes)
+			{
+				remove(partialPath.c_str());
+				partialBytes = 0;
+			}
+			opt.resumeFrom = partialBytes;
+			bytes_.store((size_t)partialBytes, std::memory_order_relaxed);
+			downloadFile = fopen(partialPath.c_str(), partialBytes ? "ab" : "wb");
+			if (downloadFile)
+			{
+				opt.outputFile = downloadFile;
+				opt.convertTextEncoding = false;
+				FILE* keyOut = fopen(keyPath.c_str(), "wb");
+				if (keyOut)
+				{
+					fwrite(currentKey, 1, 16, keyOut);
+					fclose(keyOut);
+				}
+			}
+			ok = downloadFile && httpGet(request.url, opt, resp,
+				&cancelFlag_, &progress_, &bytes_);
+			// Certains serveurs ignorent Range ou ont deja supprime le fichier.
+			// Dans ce cas, recommencer proprement une seule fois depuis zero.
+			if (downloadFile && partialBytes > 0 &&
+				((resp.status == 200) || resp.status == 416))
+			{
+				fclose(downloadFile);
+				downloadFile = nullptr;
+				downloadFile = fopen(partialPath.c_str(), "wb");
+				opt.resumeFrom = 0;
+				if (downloadFile)
+				{
+					opt.outputFile = downloadFile;
+					bytes_.store(0, std::memory_order_relaxed);
+					ok = httpGet(request.url, opt, resp,
+						&cancelFlag_, &progress_, &bytes_);
+				}
+				else ok = false;
+			}
+			if (!downloadFile) resp.error = "Impossible de creer le fichier de telechargement.";
+			if (downloadFile)
+			{
+				const bool written = ferror(downloadFile) == 0;
+				const bool flushed = fflush(downloadFile) == 0;
+				const bool closed = fclose(downloadFile) == 0;
+				downloadFile = nullptr;
+				if (!written || !flushed || !closed)
+				{
+					ok = false;
+					resp.error = "Erreur pendant l'ecriture du fichier.";
+				}
+			}
+			if (ok && resp.ok && !resp.tooBig && resp.status < 400 &&
+				rename(partialPath.c_str(), request.downloadPath.c_str()) == 0)
+			{
+				resp.downloadPath = request.downloadPath;
+				remove((partialPath + ".urlkey").c_str());
+			}
+			else
+			{
+				if (resp.tooBig || resp.status >= 400)
+				{
+					remove(partialPath.c_str());
+					remove((partialPath + ".urlkey").c_str());
+				}
+				if (resp.tooBig) resp.error = "Fichier trop volumineux (limite 32 Mio).";
+				else if (resp.cancelled) resp.error = "Telechargement interrompu; selectionnez de nouveau le lien pour reprendre.";
+				else if (resp.status < 400 && !resp.error.empty())
+					resp.error += " Le fichier partiel reste sur la SD; reessayez le lien pour reprendre.";
+				resp.ok = false;
+			}
+		}
+		else
+		{
+			ok = httpGet(request.url, opt, resp,
+				&cancelFlag_, &progress_, &bytes_);
+		}
 		// httpGet initialise NetResponse; reinstaurer le type ensuite pour que
 		// Browser distingue les pages, feuilles CSS et images.
 		resp.requestType = request.requestType;
@@ -228,7 +343,8 @@ void NetworkManager::worker()
 			return;
 		}
 		result_ = resp;
-		if (ok) bytes_.store(resp.body.size(), std::memory_order_relaxed);
+		if (ok && resp.requestType != NetRequestType::Download)
+			bytes_.store(resp.body.size(), std::memory_order_relaxed);
 		resultReady_ = true;
 		workerRunning_ = false;
 		state_ = NetState::Done;

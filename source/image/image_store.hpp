@@ -45,6 +45,8 @@ public:
 
 	// Image deja en cache, ou nullptr.
 	const StoredImage* find(const std::string& url) const;
+	// Test de presence sans modifier l'ordre LRU (utilise pendant le tri lazy).
+	bool contains(const std::string& url) const;
 
 	// Decode une image deja telechargee par le worker reseau puis la met en cache.
 	const StoredImage* storeDownloaded(const std::string& url, const std::string& data);

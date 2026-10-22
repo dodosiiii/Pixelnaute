@@ -200,7 +200,9 @@ bool htmlParse(const std::string& html, Document& doc)
 	if (estimate < 16) estimate = 16;
 	if (estimate > NW_MAX_DOM_NODES) estimate = NW_MAX_DOM_NODES;
 	doc.nodes.reserve(estimate);
-	int root = doc.addNode(Node{ NodeType::Document, "", "", {}, -1, {} });
+	Node documentNode;
+	documentNode.type = NodeType::Document;
+	int root = doc.addNode(std::move(documentNode));
 	doc.root = root;
 
 	// Noeud <html> implicite

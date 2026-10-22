@@ -27,6 +27,12 @@ enum class UiMode
 	Settings,      // reglages
 	Cache,         // cache des pages
 	About,         // a propos
+	Diagnostics,   // mesures de la page courante
+	Links,         // navigation clavier dans les liens de la page
+	MiniMap,       // apercu de la structure et saut dans la page
+	PageFind,      // saisie d'une recherche dans le contenu affiche
+	UpdateNotes,   // notes de version avant installation CIA
+	QRCode,        // QR de l'adresse de la page courante
 };
 
 // Touche du clavier logiciel.
@@ -81,11 +87,17 @@ private:
 	uint64_t toastUntil_ = 0;
 	int listOffset_ = 0;         // defilement des listes
 	int listSel_ = 0;            // favori selectionne au clavier
+	std::string findQuery_;
+	int findLastY_ = -1;
+	int releaseNotesOffset_ = 0;
+	bool qrModules_[37][37]{};
+	std::string qrPayload_;
 	std::string pendingBookmarkDelete_;
 	uint64_t bookmarkDeleteUntil_ = 0;
 	int kbdPage_ = 0;            // 0 = lettres, 1 = chiffres/symboles, 2 = accents
 	int keyboardFocus_ = 0;
 	int menuSel_ = 0;
+	int menuOffset_ = 0;
 	int analogDirection_ = -1;
 	uint64_t analogRepeatAt_ = 0;
 	int caretDirection_ = 0;
@@ -147,6 +159,11 @@ private:
 		const ReleaseUpdater& updater);
 	void drawCacheList(Browser& b);
 	void drawAbout();
+	void drawDiagnostics(Browser& b, NetworkManager& net);
+	void drawLinksList(Browser& b);
+	void drawMiniMap(Browser& b);
+	void drawUpdateNotes(const ReleaseUpdater& updater);
+	void drawQRCode();
 
 	// --- interactions ---
 	void applyKey(Browser& b, WebSettings& set, const UiKey& k);
@@ -156,6 +173,7 @@ private:
 	void keyHit(Browser& b, WebSettings& set, int x, int y);
 	void moveKeyboardFocus(int dx, int dy);
 	void moveCaret(int direction);
+	void moveMenuSelection(int delta);
 	void activateMenuItem(Browser& b, int index);
 
 	void uploadIfNeeded();

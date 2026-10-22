@@ -1,8 +1,10 @@
 #include "diag.hpp"
 #include <3ds/allocator/linear.h>
+#include <malloc.h>
 #include <stdio.h>
 
 static const char* g_stage = "boot";
+static size_t g_heapPeakUsed = 0;
 
 //--------------------------------------------------------------------------
 // Jalons de demarrage
@@ -28,6 +30,44 @@ void diagBootNote(const char* label, long value)
 	fclose(f);
 }
 
+size_t diagHeapPeakUsed()
+{
+	const struct mallinfo memory = mallinfo();
+	const size_t used = memory.uordblks > 0 ? (size_t)memory.uordblks : 0;
+	if (used > g_heapPeakUsed) g_heapPeakUsed = used;
+	return g_heapPeakUsed;
+}
+
+size_t diagApplicationHeapFree()
+{
+	const struct mallinfo memory = mallinfo();
+	if (memory.uordblks < 0) return 0;
+	const size_t used = (size_t)memory.uordblks;
+	const size_t total = envGetHeapSize();
+	return used < total ? total - used : 0;
+}
+
+void diagBootMemory(const char* stage)
+{
+	const struct mallinfo memory = mallinfo();
+	const size_t used = memory.uordblks > 0 ? (size_t)memory.uordblks : 0;
+	const size_t freeBytes = diagApplicationHeapFree();
+	const size_t arenaFree = memory.fordblks > 0 ? (size_t)memory.fordblks : 0;
+	if (used > g_heapPeakUsed) g_heapPeakUsed = used;
+
+	FILE* f = fopen("sdmc:/N3DSWeb/boot.txt", "a");
+	if (!f) return;
+	fprintf(f, "memoire_etape=%s tas_utilise=%lu tas_total=%lu tas_libre=%lu tas_arene_libre=%lu pic_utilise=%lu lineaire_libre=%lu\n",
+		stage ? stage : "inconnue",
+		(unsigned long)used,
+		(unsigned long)envGetHeapSize(),
+		(unsigned long)freeBytes,
+		(unsigned long)arenaFree,
+		(unsigned long)g_heapPeakUsed,
+		(unsigned long)linearSpaceFree());
+	fclose(f);
+}
+
 void diagStage(const char* label)
 {
 	g_stage = label ? label : "";
@@ -41,10 +81,10 @@ void diagCrash(const char* reason)
 {
 	FILE* f = fopen("sdmc:/N3DSWeb/crash.txt", "a");
 	if (!f) return;
-	fprintf(f, "%s pendant : %s, heap=%lu, mem_app_libre=%lu, mem_lineaire_libre=%lu\n",
+	fprintf(f, "%s pendant : %s, heap=%lu, tas_libre=%lu, mem_lineaire_libre=%lu\n",
 		reason ? reason : "arret", g_stage,
 		(unsigned long)envGetHeapSize(),
-		(unsigned long)osGetMemRegionFree(MEMREGION_APPLICATION),
+		(unsigned long)diagApplicationHeapFree(),
 		(unsigned long)linearSpaceFree());
 	fclose(f);
 }

@@ -3,6 +3,7 @@
 #include <string.h>
 #include <malloc.h>
 #include <stdio.h>
+#include <math.h>
 
 // Le dump du tampon d'affichage vers la SD servait au diagnostic : il ecrivait
 // 245 Ko a chaque image et ralentissait fortement le navigateur. Desactive.
@@ -69,18 +70,16 @@ void PageRenderer::upload(const PageModel& page, int scrollY)
 	if (!texReady || !page.bmp.px) return;
 	layoutW_ = page.bmp.w;
 	layoutH_ = page.height;
+	const float scale = (float)layoutW_ / (float)VIEW_W;
+	const int viewHeight = (int)ceilf((float)VIEW_H * scale);
 
 	int y0 = scrollY;
 	if (y0 < 0) y0 = 0;
-	if (y0 > layoutH_ - NW_TOP_HEIGHT) y0 = layoutH_ - NW_TOP_HEIGHT;
+	if (y0 > layoutH_ - viewHeight) y0 = layoutH_ - viewHeight;
 	if (y0 < 0) y0 = 0;
 
 	uint16_t* dst = (uint16_t*)texData;
 	const uint16_t* src = page.bmp.px;
-
-	int rows = layoutH_ - y0;
-	if (rows > NW_TOP_HEIGHT) rows = NW_TOP_HEIGHT;
-	int cols = layoutW_ > NW_PAGE_WIDTH ? NW_PAGE_WIDTH : layoutW_;
 
 	int tilesX = TEX_W / 8;
 	const uint16_t pageBackground = src[0];
@@ -88,15 +87,16 @@ void PageRenderer::upload(const PageModel& page, int scrollY)
 		for (int c = 0; c < TEX_W; ++c)
 			dst[mortonTileIndex(c, r, tilesX)] = pageBackground;
 
-	for (int r = 0; r < rows; r++)
+	for (int r = 0; r < VIEW_H; r++)
 	{
-		const int sourceY = y0 + r - page.bmp.originY;
+		const int logicalY = y0 + (int)((float)r * scale);
+		const int sourceY = logicalY - page.bmp.originY;
 		if (sourceY < 0 || sourceY >= page.bmp.h) continue;
 		const uint16_t* srow = src + (size_t)sourceY * layoutW_;
-		for (int c = 0; c < cols; c++)
+		for (int c = 0; c < VIEW_W; c++)
 		{
-			// Entrelacement 8x8 (voir morton.hpp) : x aux bits bas, y ensuite.
-			dst[mortonTileIndex(c, r, tilesX)] = srow[c];
+			const int logicalX = std::min(layoutW_ - 1, (int)((float)c * scale));
+			dst[mortonTileIndex(c, r, tilesX)] = srow[logicalX];
 		}
 	}
 
@@ -120,9 +120,12 @@ void PageRenderer::draw(const PageModel& page, int scrollY)
 {
 	if (!texReady) return;
 	if (page.height <= 0) return;
+	const float scale = (float)(page.bmp.w > 0 ? page.bmp.w : NW_PAGE_WIDTH) /
+		(float)VIEW_W;
+	const int viewHeight = (int)ceilf((float)VIEW_H * scale);
 	int boundedScroll = scrollY;
 	if (boundedScroll < 0) boundedScroll = 0;
-	if (boundedScroll > page.height - NW_TOP_HEIGHT) boundedScroll = page.height - NW_TOP_HEIGHT;
+	if (boundedScroll > page.height - viewHeight) boundedScroll = page.height - viewHeight;
 	if (boundedScroll < 0) boundedScroll = 0;
 
 	if (dirty_ || boundedScroll != lastScroll_ || layoutH_ != page.height || layoutW_ != page.bmp.w)
@@ -150,6 +153,8 @@ void PageRenderer::drawImages(const PageModel& page, int scrollY)
 {
 	if (!images_ || page.images.empty() || !texReady || !texData) return;
 
+	const float scale = (float)(page.bmp.w > 0 ? page.bmp.w : NW_PAGE_WIDTH) /
+		(float)VIEW_W;
 	int tilesX = TEX_W / 8;
 	uint16_t* dst = (uint16_t*)texData;
 
@@ -159,27 +164,27 @@ void PageRenderer::drawImages(const PageModel& page, int scrollY)
 		if (!img || !img->valid || img->pixels.empty()) continue;
 		if (box.w <= 0 || box.h <= 0 || img->width <= 0 || img->height <= 0) continue;
 
-		int row0 = box.y - scrollY;
-		int row1 = row0 + box.h;
+		int row0 = (int)floorf((float)(box.y - scrollY) / scale);
+		int row1 = (int)ceilf((float)(box.y + box.h - scrollY) / scale);
 		if (row1 <= 0 || row0 >= VIEW_H) continue;
 		if (row0 < 0) row0 = 0;
 		if (row1 > VIEW_H) row1 = VIEW_H;
 
-		int col0 = box.x;
-		int col1 = box.x + box.w;
+		int col0 = (int)floorf((float)box.x / scale);
+		int col1 = (int)ceilf((float)(box.x + box.w) / scale);
 		if (col0 < 0) col0 = 0;
 		if (col1 > VIEW_W) col1 = VIEW_W;
 		if (col1 <= col0) continue;
 
 		for (int row = row0; row < row1; row++)
 		{
-			const int boxY = (row + scrollY) - box.y;
+			const int boxY = (int)((float)row * scale) + scrollY - box.y;
 			const int srcY = boxY * img->height / box.h;
 			if (srcY < 0 || srcY >= img->height) continue;
 
 			for (int col = col0; col < col1; col++)
 			{
-				const int boxX = col - box.x;
+				const int boxX = (int)((float)col * scale) - box.x;
 				const int srcX = boxX * img->width / box.w;
 				if (srcX < 0 || srcX >= img->width) continue;
 

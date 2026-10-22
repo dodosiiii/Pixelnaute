@@ -104,6 +104,7 @@ private:
 	int ttfDescent_ = 0;
 	int ttfLineGap_ = 0;
 	mutable std::unordered_map<GlyphKey, CachedGlyph, GlyphKeyHash> glyphCache_;
+	mutable size_t glyphCacheBytes_ = 0;
 
 	const CachedGlyph& getGlyph(uint32_t cp, int sizePx, bool bold) const;
 	bool loadTtfFont(const char* path, std::vector<uint8_t>& outData, stbtt_fontinfo& outInfo);
