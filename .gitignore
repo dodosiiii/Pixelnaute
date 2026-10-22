@@ -1,2 +1,3 @@
 crash_dump_*.dmp
 /dosoier 3ds/N3DSWeb/cache/
+/build/*.d
