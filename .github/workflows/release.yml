@@ -28,7 +28,13 @@ jobs:
             exit 1
           fi
       - name: Install project libraries
-        run: dkp-pacman -Syu --noconfirm 3ds-curl 3ds-mbedtls 3ds-zlib citro2d citro3d 3dstools general-tools
+        run: dkp-pacman -Syu --noconfirm 3ds-curl 3ds-mbedtls 3ds-zlib citro2d citro3d 3dstools
+      - name: Install makerom
+        run: |
+          curl -fsSLo /tmp/makerom.zip https://github.com/3DSGuy/Project_CTR/releases/download/makerom-v0.19.0/makerom-v0.19.0-ubuntu_x86_64.zip
+          echo "287b809dec064e0ad597e3d272c49ecb7eed41693d5ee6fef9d8a8aa24c2497e  /tmp/makerom.zip" | sha256sum --check
+          unzip -p /tmp/makerom.zip makerom > /usr/local/bin/makerom
+          chmod +x /usr/local/bin/makerom
       - name: Build 3DSX and CIA
         run: make cia
       - uses: softprops/action-gh-release@v2
