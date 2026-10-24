@@ -74,6 +74,14 @@ CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++17
 # these scoped to the third-party C units to avoid hiding project warnings.
 quickjs.o: CFLAGS += -DCONFIG_VERSION=\"v0.4.0\"
 quickjs.o dtoa.o libregexp.o libunicode.o cutils.o: CFLAGS += -Wno-incompatible-pointer-types -Wno-format -Wno-maybe-uninitialized
+.PHONY: quickjs-newlib-patch
+quickjs-newlib-patch:
+	@if git -C "$(TOPDIR)/third_party/js_eval/quickjs" apply --reverse --check "$(TOPDIR)/tools/quickjs-newlib-3ds.patch" >/dev/null 2>&1; then \
+		:; \
+	else \
+		git -C "$(TOPDIR)/third_party/js_eval/quickjs" apply "$(TOPDIR)/tools/quickjs-newlib-3ds.patch"; \
+	fi
+quickjs.o: | quickjs-newlib-patch
 
 ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)

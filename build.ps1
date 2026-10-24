@@ -38,6 +38,15 @@ foreach ($tool in $requiredTools) {
     if (-not (Test-Path $tool)) { throw "Outil introuvable : $tool (devkitPro est-il installe ?)" }
 }
 
+$quickJsPatch = Join-Path $root "tools\quickjs-newlib-3ds.patch"
+& git -C $quickjsDir apply --reverse --check $quickJsPatch 2>$null
+if ($LASTEXITCODE -ne 0) {
+    & git -C $quickjsDir apply --check $quickJsPatch
+    if ($LASTEXITCODE -ne 0) { throw "Le correctif Newlib QuickJS ne s'applique pas." }
+    & git -C $quickjsDir apply $quickJsPatch
+    if ($LASTEXITCODE -ne 0) { throw "Echec d'application du correctif Newlib QuickJS." }
+}
+
 $arch = @("-march=armv6k", "-mtune=mpcore", "-mfloat-abi=hard", "-mtp=soft")
 $cflags   = @("-g", "-Wall", "-O2", "-mword-relocations", "-ffunction-sections") +
             $arch + @("-D__3DS__")
