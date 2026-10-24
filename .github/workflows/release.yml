@@ -28,7 +28,7 @@ jobs:
             exit 1
           fi
       - name: Install project libraries
-        run: dkp-pacman -Syu --noconfirm 3ds-curl 3ds-mbedtls 3ds-zlib citro2d citro3d 3dstools
+        run: dkp-pacman -S --needed --noconfirm 3ds-curl 3ds-mbedtls 3ds-zlib citro2d citro3d 3dstools
       - name: Install makerom
         run: |
           curl -fsSLo /tmp/makerom.zip https://github.com/3DSGuy/Project_CTR/releases/download/makerom-v0.18.4/makerom-v0.18.4-ubuntu_x86_64.zip
