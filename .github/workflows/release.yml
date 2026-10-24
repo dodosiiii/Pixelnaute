@@ -19,8 +19,12 @@ jobs:
       - name: Verify release tag
         run: |
           version="$(sed -n 's/^#define NW_VERSION_STRING "\([^"]*\)"/\1/p' source/common.hpp)"
-          if [ -z "$version" ] || [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "Release tag $GITHUB_REF_NAME does not match application version v$version"
+          short_version="${version%.0}"
+          if [ -z "$version" ] || {
+            [ "$GITHUB_REF_NAME" != "v$version" ] &&
+            [ "$GITHUB_REF_NAME" != "v$short_version" ]
+          }; then
+            echo "Release tag $GITHUB_REF_NAME does not match application version v$version (or v$short_version)"
             exit 1
           fi
       - name: Install project libraries
@@ -29,6 +33,7 @@ jobs:
         run: make cia
       - uses: softprops/action-gh-release@v2
         with:
+          overwrite_files: true
           files: |
             N3DSWeb.3dsx
             N3DSWeb.cia
