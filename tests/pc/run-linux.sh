@@ -24,6 +24,7 @@ cxxflags=(-O2 -std=c++17 -I"$root/tests/pc" -I"$root/source")
 	"$root/source/network/url.cpp" \
 	"$root/source/image/image_store.cpp" \
 	"$root/source/network/encoding.cpp" \
+	"$root/source/pdf/pdf_reader.cpp" \
 	"$root/source/search/search.cpp" \
 	"$root/source/search/search_page.cpp" \
 	"$tmp/stb_truetype_impl.o" "$tmp/stb_impl.o" \
