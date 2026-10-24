@@ -28,7 +28,7 @@ jobs:
             exit 1
           fi
       - name: Install project libraries
-        run: dkp-pacman -Syu --noconfirm 3ds-curl 3ds-mbedtls 3ds-zlib citro2d citro3d 3dstools
+        run: dkp-pacman -Syu --noconfirm 3ds-curl 3ds-mbedtls 3ds-zlib citro2d citro3d 3dstools general-tools
       - name: Build 3DSX and CIA
         run: make cia
       - uses: softprops/action-gh-release@v2
