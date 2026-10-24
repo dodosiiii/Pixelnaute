@@ -7,8 +7,10 @@
 //=============================================================================
 #include "../common.hpp"
 #include <algorithm>
+#include <deque>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 enum class NodeType
@@ -37,12 +39,12 @@ public:
 	TagId& operator=(const std::string& name) { set(name); return *this; }
 	TagId& operator=(const char* name) { set(name ? std::string(name) : std::string()); return *this; }
 
-	operator const std::string&() const { return names()[value_]; }
-	const char* c_str() const { return names()[value_].c_str(); }
+	operator const std::string&() const { return name(value_); }
+	const char* c_str() const { return name(value_).c_str(); }
 	char operator[](size_t index) const
 	{
-		const std::string& name = names()[value_];
-		return index < name.size() ? name[index] : '\0';
+		const std::string& value = name(value_);
+		return index < value.size() ? value[index] : '\0';
 	}
 	bool operator==(TagId other) const { return value_ == other.value_; }
 	bool operator!=(TagId other) const { return value_ != other.value_; }
@@ -56,41 +58,76 @@ public:
 	friend bool operator!=(const char* lhs, TagId rhs) { return !lhs || !rhs.matches(std::string(lhs)); }
 
 private:
-	uint8_t value_ = 0;
-	static const std::vector<std::string>& names()
+	uint16_t value_ = 0;
+	struct Registry
 	{
-		static const std::vector<std::string> table = {
-			"", "a", "abbr", "address", "area", "article", "aside", "audio", "b", "base", "blockquote",
-			"body", "br", "button", "canvas", "center", "cite", "code", "col", "dd", "del", "details", "dialog",
-			"div", "dl", "dt", "em", "embed", "fieldset", "figcaption", "figure", "footer", "form",
-			"h1", "h2", "h3", "h4", "h5", "h6", "head", "header", "hr", "html", "i",
-			"iframe", "img", "input", "ins", "kbd", "label", "li", "link", "main", "meta", "nav", "ol",
-			"object", "option", "p", "picture", "pre", "q", "s", "samp", "script", "section",
-			"select", "small", "source", "span", "strong", "style", "sub", "summary", "sup", "svg",
-			"table", "tbody", "td", "template", "textarea", "tfoot", "th", "thead", "time", "title",
-			"tr", "u", "ul", "var", "video", "wbr", "xmp"
-		};
-		return table;
+		std::deque<std::string> names;
+		std::unordered_map<std::string, uint16_t> ids;
+
+		Registry()
+		{
+			static const char* const builtins[] = {
+				"", "a", "abbr", "address", "area", "article", "aside", "audio", "b", "base", "blockquote",
+				"body", "br", "button", "canvas", "center", "cite", "code", "col", "dd", "del", "details", "dialog",
+				"div", "dl", "dt", "em", "embed", "fieldset", "figcaption", "figure", "footer", "form",
+				"h1", "h2", "h3", "h4", "h5", "h6", "head", "header", "hr", "html", "i",
+				"iframe", "img", "input", "ins", "kbd", "label", "li", "link", "main", "meta", "nav", "ol",
+				"object", "option", "p", "picture", "pre", "q", "s", "samp", "script", "section",
+				"select", "small", "source", "span", "strong", "style", "sub", "summary", "sup", "svg",
+				"table", "tbody", "td", "template", "textarea", "tfoot", "th", "thead", "time", "title",
+				"tr", "u", "ul", "var", "video", "wbr", "xmp"
+			};
+			for (const char* name : builtins)
+			{
+				const uint16_t id = (uint16_t)names.size();
+				names.push_back(name);
+				ids.emplace(name, id);
+			}
+		}
+	};
+
+	static Registry& registry()
+	{
+		static Registry value;
+		return value;
 	}
+
+	static const std::string& name(uint16_t id)
+	{
+		const Registry& value = registry();
+		return id < value.names.size() ? value.names[id] : value.names[0];
+	}
+
 	void set(const std::string& name)
 	{
 		value_ = 0;
 		if (name.empty()) return;
-		const auto& table = names();
-		for (size_t i = 1; i < table.size(); ++i)
-			if (table[i] == name) { value_ = (uint8_t)i; return; }
+		if (name.size() > 128) return;
+		Registry& values = registry();
+		const auto found = values.ids.find(name);
+		if (found != values.ids.end())
+		{
+			value_ = found->second;
+			return;
+		}
+		if (values.names.size() >= 4096 ||
+			values.names.size() >= (size_t)0xFFFFu)
+			return;
+		value_ = (uint16_t)values.names.size();
+		values.names.push_back(name);
+		values.ids.emplace(name, value_);
 	}
 	bool matches(const std::string& name) const
 	{
-		return value_ != 0 && names()[value_] == name;
+		return value_ != 0 && TagId::name(value_) == name;
 	}
 };
-static_assert(sizeof(TagId) == 1, "TagId doit rester un octet");
+static_assert(sizeof(TagId) == 2, "TagId doit rester compact");
 
 struct Node
 {
 	NodeType type = NodeType::Element;
-	TagId tag;                    // identifiant compact (un octet)
+	TagId tag;                    // identifiant compact, balises partagees
 	uint32_t textOffset = 0;      // contenu dans l'arene texte du Document
 	uint32_t textLength = 0;
 	std::vector<Attribute> attrs;

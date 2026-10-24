@@ -31,6 +31,7 @@ $sources = "main_pc.cpp ..\..\source\render\text.cpp ..\..\source\render\bitmap.
            "..\..\source\network\url.cpp " +
            "..\..\source\image\image_store.cpp ..\..\source\image\stb_impl.c " +
            "..\..\source\network\encoding.cpp " +
+           "..\..\source\pdf\pdf_reader.cpp " +
            "..\..\source\search\search.cpp ..\..\source\search\search_page.cpp"
 $cmd = "`"$vcvars`" >nul 2>&1 && cd /d `"$pcDir`" && " +
        "cl /nologo /std:c++17 /EHsc /O2 /W3 /D_CRT_SECURE_NO_WARNINGS /I. " +

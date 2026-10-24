@@ -21,10 +21,10 @@ void Bitmap::clear(uint32_t color)
 void Bitmap::fillRect(int x, int y, int rw, int rh, uint32_t color)
 {
 	if (!px || rw <= 0 || rh <= 0) return;
-	int x0 = x < 0 ? 0 : x;
-	int y0 = y < originY ? originY : y;
-	int x1 = x + rw; if (x1 > w) x1 = w;
-	int y1 = y + rh; if (y1 > originY + h) y1 = originY + h;
+	int x0 = std::max(clip.x0, x);
+	int y0 = std::max(clip.y0, y);
+	int x1 = std::min(clip.x1, x + rw);
+	int y1 = std::min(clip.y1, y + rh);
 	if (x1 <= x0 || y1 <= y0) return;
 	uint16_t v = rgbTo565(color);
 	for (int yy = y0; yy < y1; yy++)
@@ -50,10 +50,10 @@ void Bitmap::fillRoundedRect(int x, int y, int rw, int rh, int radius, uint32_t 
 {
 	if (!px || rw <= 0 || rh <= 0) return;
 	radius = std::max(0, std::min(radius, std::min(rw, rh) / 2));
-	const int x0 = std::max(0, x);
-	const int y0 = std::max(originY, y);
-	const int x1 = std::min(w, x + rw);
-	const int y1 = std::min(originY + h, y + rh);
+	const int x0 = std::max(clip.x0, x);
+	const int y0 = std::max(clip.y0, y);
+	const int x1 = std::min(clip.x1, x + rw);
+	const int y1 = std::min(clip.y1, y + rh);
 	if (x1 <= x0 || y1 <= y0) return;
 	const u8 alpha = (color >> 24) & 0xFF;
 	for (int py = y0; py < y1; ++py)
@@ -74,10 +74,10 @@ void Bitmap::addRoundedRect(int x, int y, int rw, int rh, int radius,
 	if (!px || rw <= 0 || rh <= 0) return;
 	thickness = std::max(1, thickness);
 	radius = std::max(0, std::min(radius, std::min(rw, rh) / 2));
-	const int x0 = std::max(0, x);
-	const int y0 = std::max(originY, y);
-	const int x1 = std::min(w, x + rw);
-	const int y1 = std::min(originY + h, y + rh);
+	const int x0 = std::max(clip.x0, x);
+	const int y0 = std::max(clip.y0, y);
+	const int x1 = std::min(clip.x1, x + rw);
+	const int y1 = std::min(clip.y1, y + rh);
 	if (x1 <= x0 || y1 <= y0) return;
 	const int innerW = rw - thickness * 2;
 	const int innerH = rh - thickness * 2;
@@ -110,10 +110,10 @@ void Bitmap::shadowRoundedRect(int x, int y, int rw, int rh, int radius,
 	const int sh = rh + spread * 2;
 	if (sw <= 0 || sh <= 0) return;
 	const int sr = std::max(0, std::min(radius + spread, std::min(sw, sh) / 2));
-	const int x0 = std::max(0, sx - blur);
-	const int y0 = std::max(originY, sy - blur);
-	const int x1 = std::min(w, sx + sw + blur);
-	const int y1 = std::min(originY + h, sy + sh + blur);
+	const int x0 = std::max(clip.x0, sx - blur);
+	const int y0 = std::max(clip.y0, sy - blur);
+	const int x1 = std::min(clip.x1, sx + sw + blur);
+	const int y1 = std::min(clip.y1, sy + sh + blur);
 	const int baseAlpha = (color >> 24) & 0xFF;
 	const uint32_t rgb = color & 0x00FFFFFF;
 	for (int py = y0; py < y1; ++py)
@@ -147,10 +147,10 @@ void Bitmap::fillLinearGradientRect(int x, int y, int rw, int rh,
 	if (!px || rw <= 0 || rh <= 0 || !colors || !stops || count < 2)
 		return;
 	radius = std::max(0, std::min(radius, std::min(rw, rh) / 2));
-	const int x0 = std::max(0, x);
-	const int y0 = std::max(originY, y);
-	const int x1 = std::min(w, x + rw);
-	const int y1 = std::min(originY + h, y + rh);
+	const int x0 = std::max(clip.x0, x);
+	const int y0 = std::max(clip.y0, y);
+	const int x1 = std::min(clip.x1, x + rw);
+	const int y1 = std::min(clip.y1, y + rh);
 	if (x1 <= x0 || y1 <= y0) return;
 
 	const float radians = (float)angleDegrees * 0.01745329251994329577f;
@@ -205,10 +205,10 @@ void Bitmap::fillRadialGradientRect(int x, int y, int rw, int rh,
 	if (!px || rw <= 0 || rh <= 0 || !colors || !stops || count < 2)
 		return;
 	radius = std::max(0, std::min(radius, std::min(rw, rh) / 2));
-	const int x0 = std::max(0, x);
-	const int y0 = std::max(originY, y);
-	const int x1 = std::min(w, x + rw);
-	const int y1 = std::min(originY + h, y + rh);
+	const int x0 = std::max(clip.x0, x);
+	const int y0 = std::max(clip.y0, y);
+	const int x1 = std::min(clip.x1, x + rw);
+	const int y1 = std::min(clip.y1, y + rh);
 	if (x1 <= x0 || y1 <= y0) return;
 	const float centerX = (float)x + (float)rw * 0.5f;
 	const float centerY = (float)y + (float)rh * 0.5f;
@@ -253,10 +253,10 @@ void Bitmap::fillRadialGradientRect(int x, int y, int rw, int rh,
 void Bitmap::blendRect(int x, int y, int rw, int rh, uint32_t color)
 {
 	if (!px || rw <= 0 || rh <= 0) return;
-	int x0 = x < 0 ? 0 : x;
-	int y0 = y < originY ? originY : y;
-	int x1 = x + rw; if (x1 > w) x1 = w;
-	int y1 = y + rh; if (y1 > originY + h) y1 = originY + h;
+	int x0 = std::max(clip.x0, x);
+	int y0 = std::max(clip.y0, y);
+	int x1 = std::min(clip.x1, x + rw);
+	int y1 = std::min(clip.y1, y + rh);
 	if (x1 <= x0 || y1 <= y0) return;
 	u8 a = (color >> 24) & 0xFF;
 	if (a == 0xFF) { fillRect(x0, y0, x1 - x0, y1 - y0, color); return; }
@@ -281,7 +281,7 @@ void Bitmap::vline(int x, int y, int y2, uint32_t color) { fillRect(x, y, 1, y2 
 
 void Bitmap::blendPixel16(int x, int y, uint32_t rgb, u8 a)
 {
-	if (x < 0 || y < originY || x >= w || y >= originY + h) return;
+	if (!isPixelVisible(x, y)) return;
 	uint16_t& d = px[(size_t)(y - originY) * w + x];
 	blendPixel(d, rgb, a);
 }
@@ -292,13 +292,13 @@ void Bitmap::blit565(int dx, int dy, const uint16_t* src, int sw, int sh, int sp
 	for (int yy = 0; yy < sh; yy++)
 	{
 		int ty = dy + yy;
-		if (ty < originY || ty >= originY + h) continue;
+		if (ty < clip.y0 || ty >= clip.y1) continue;
 		const uint16_t* srow = src + (size_t)yy * spitch;
 		uint16_t* drow = px + (size_t)(ty - originY) * w;
 		for (int xx = 0; xx < sw; xx++)
 		{
 			int tx = dx + xx;
-			if (tx < 0 || tx >= w) continue;
+			if (tx < clip.x0 || tx >= clip.x1) continue;
 			uint16_t s = srow[xx];
 			if (s == 0x0001) continue; // marqueur transparent
 			drow[tx] = s;

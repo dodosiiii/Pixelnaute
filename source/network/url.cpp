@@ -1,19 +1,103 @@
 #include "../common.hpp"
-
+#include <ctype.h>
 
 //=============================================================================
 // Resolution d'une URL relative par rapport a une URL de base
 //=============================================================================
+static std::string normalizedHttpOrigin(const std::string& url)
+{
+	const size_t schemeEnd = url.find("://");
+	if (schemeEnd == std::string::npos) return std::string();
+
+	std::string scheme = toLower(url.substr(0, schemeEnd));
+	if (scheme != "http" && scheme != "https") return std::string();
+
+	const size_t authorityStart = schemeEnd + 3;
+	size_t authorityEnd = url.find_first_of("/?#", authorityStart);
+	if (authorityEnd == std::string::npos) authorityEnd = url.size();
+	std::string authority = url.substr(authorityStart, authorityEnd - authorityStart);
+	if (authority.empty() || authority.find('@') != std::string::npos)
+		return std::string();
+	for (unsigned char ch : authority)
+		if (ch <= 0x20 || ch == '\\' || ch == '%')
+			return std::string();
+
+	std::string host;
+	std::string port;
+	if (authority[0] == '[')
+	{
+		const size_t bracket = authority.find(']');
+		if (bracket == std::string::npos) return std::string();
+		host = authority.substr(0, bracket + 1);
+		if (bracket + 1 < authority.size())
+		{
+			if (authority[bracket + 1] != ':') return std::string();
+			port = authority.substr(bracket + 2);
+		}
+	}
+	else
+	{
+		const size_t colon = authority.find(':');
+		if (colon != std::string::npos)
+		{
+			if (authority.find(':', colon + 1) != std::string::npos)
+				return std::string();
+			host = authority.substr(0, colon);
+			port = authority.substr(colon + 1);
+		}
+		else host = authority;
+	}
+	if (host.empty()) return std::string();
+	for (char& ch : host) ch = (char)tolower((unsigned char)ch);
+
+	if (!port.empty())
+	{
+		unsigned value = 0;
+		for (unsigned char ch : port)
+		{
+			if (ch < '0' || ch > '9') return std::string();
+			const unsigned digit = ch - '0';
+			if (value > (65535u - digit) / 10u) return std::string();
+			value = value * 10u + digit;
+		}
+		if (value == 0) return std::string();
+		if ((scheme == "http" && value == 80) ||
+			(scheme == "https" && value == 443))
+			port.clear();
+		else port = std::to_string(value);
+	}
+	else if (!authority.empty() && authority.back() == ':')
+		return std::string();
+
+	return scheme + "://" + host + (port.empty() ? "" : ":" + port);
+}
+
+bool urlSameOrigin(const std::string& first, const std::string& second)
+{
+	const std::string firstOrigin = normalizedHttpOrigin(first);
+	return !firstOrigin.empty() && firstOrigin == normalizedHttpOrigin(second);
+}
+
 std::string urlJoin(const std::string& base, const std::string& refIn)
 {
 	std::string ref = strTrim(refIn);
 	if (ref.empty()) return base;
 
-	static const char* abs[] = {
-		"http://", "https://", "mailto:", "data:", "nw://", "about:", "javascript:", nullptr
-	};
-	for (int i = 0; abs[i]; i++)
-		if (strStartsWith(ref, abs[i])) return ref;
+	const size_t colon = ref.find(':');
+	const size_t pathStart = ref.find_first_of("/?#");
+	if (colon != std::string::npos &&
+		(pathStart == std::string::npos || colon < pathStart))
+	{
+		const std::string scheme = toLower(ref.substr(0, colon));
+		static const char* absoluteSchemes[] = {
+			"http", "https", "mailto", "data", "nw", "about", "javascript", nullptr
+		};
+		for (int i = 0; absoluteSchemes[i]; ++i)
+		{
+			if (scheme == absoluteSchemes[i])
+				return scheme + ref.substr(colon);
+		}
+	}
 
 	const size_t se = base.find("://");
 	if (se == std::string::npos) return ref;

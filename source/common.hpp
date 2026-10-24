@@ -11,8 +11,8 @@
 #include <cstdlib>
 
 #define NW_VERSION_MAJOR 0
-#define NW_VERSION_MINOR 6
-#define NW_VERSION_STRING "0.6.0"
+#define NW_VERSION_MINOR 7
+#define NW_VERSION_STRING "0.7.0"
 
 //-----------------------------------------------------------------------------
 // Limites memoire (stabilite avant tout sur New 3DS)
@@ -371,3 +371,4 @@ static inline uint64_t timeMs(void) { return (uint64_t)osGetTime(); }
 
 // Resolution d'une URL relative par rapport a une URL de base.
 std::string urlJoin(const std::string& base, const std::string& refIn);
+bool urlSameOrigin(const std::string& first, const std::string& second);

@@ -10,6 +10,7 @@
 #include "../settings/settings.hpp"
 #include "../network/network.hpp"
 #include "../storage/storage.hpp"
+#include "../pdf/pdf_reader.hpp"
 #include "../cache/page_segment_cache.hpp"
 #include "../js/js_runtime.hpp"
 #include <string>
@@ -27,6 +28,7 @@ public:
 		CssEngine css;            // feuilles de style
 		PageModel page;           // rendu
 		int scrollY = 0;
+		int scrollX = 0;
 		bool pageReady = false;
 		bool isSearchPage = false;
 		bool jsRequired = false;
@@ -36,10 +38,15 @@ public:
 		uint64_t renderedDomVersion = 0;
 		uint64_t pageCacheKey = 0;
 		int failedSegmentIndex = -1;
+		std::vector<std::string> unavailableImages;
 		JSRuntime* jsRuntime = nullptr;
 		JSContext* jsContext = nullptr;
 		std::shared_ptr<JSPageBinding> jsBinding = std::make_shared<JSPageBinding>();
 		std::unique_ptr<Document> readerOriginal;
+		std::unique_ptr<PdfDocument> pdfDocument;
+		std::string pdfPath;
+		size_t pdfPage = 0;
+		int pdfZoomPercent = 100;
 	};
 
 	Browser(NetworkManager& net, WebSettings& settings);
@@ -56,6 +63,9 @@ public:
 	void goHome();
 	void openBookmark(const std::string& url);
 	bool downloadUrl(const std::string& url);
+	bool openLocalPdf(const std::string& path, std::string& error);
+	bool processPendingPdfOpen();
+	bool cyclePdfZoom();
 
 	// --- onglets ---
 	void newTab(const std::string& url = "");
@@ -87,12 +97,16 @@ public:
 	void endEditField();
 	bool setFieldValue(int fieldIndex, const std::string& v);
 	void submitFormByNode(int submitNode);
+	bool submitFormForField(int fieldIndex);
 	float pageScale() const;
 	int pageXFromView(int x) const;
 	int pageYFromView(int y) const;
 	bool enqueuePageFetch(JSPageBinding* binding, int tabIndex, uint32_t promiseId, bool xhr,
 		const std::string& url, const std::string& method, const std::string& body);
 	void scroll(int dy);
+	void scrollHorizontal(int dx);
+	void scrollHorizontalTo(int x);
+	int scrollX() const;
 	bool syncJavaScriptContexts();
 
 	// Position de defilement courante (pour le geste tactile).
@@ -147,6 +161,8 @@ private:
 	int segmentIndexPending_ = -1;
 	int pendingScrollY_ = -1;
 	std::string progressStatus_;
+	std::string pendingPdfPath_;
+	int pendingPdfTab_ = -1;
 	int requestTab_ = -1;
 	struct CssRequest { std::string url; std::string referer; int sourceOrder = -1; };
 	std::vector<CssRequest> cssQueue_;
@@ -198,6 +214,11 @@ private:
 	void queueScripts(int tabIdx, const Document& doc, const std::string& pageUrl);
 	void clearScriptQueue();
 	int layoutWidth() const { return set_.largePage ? 640 : NW_PAGE_WIDTH; }
+	int layoutWidth(const Tab& tab) const
+	{
+		return tab.pdfDocument
+			? layoutWidth() * tab.pdfZoomPercent / 100 : layoutWidth();
+	}
 	void trimInactiveTabs();
 	bool verifyTlsFor(const std::string& url) const;
 	size_t safePageBodyLimit() const;

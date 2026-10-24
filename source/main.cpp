@@ -257,6 +257,7 @@ struct PageGesture
 {
 	bool active = false;
 	int startPageY = 0;     // scrollY au moment de l'appui
+	int startPageX = 0;     // scrollX au moment de l'appui
 	int startPx = 0, startPy = 0;
 	int moveX = 0, moveY = 0;   // deplacement cumule (valeur absolue max)
 	uint64_t startTime = 0;
@@ -448,11 +449,20 @@ int main(int argc, char** argv)
 		if ((in.down & KEY_START) && (in.held & KEY_R))
 			break;
 
-		// SELECT : nouvel instantane de diagnostic (voir writeDiag).
-		if (in.down & KEY_SELECT)
+		// L + R + SELECT ouvre/ferme les outils developpeur sans declencher
+		// l'action SELECT habituelle de la page.
+		const u32 developerChord = KEY_L | KEY_R | KEY_SELECT;
+		const bool openDeveloper =
+			(in.down & KEY_SELECT) && (in.held & developerChord) == developerChord;
+		if (openDeveloper)
+			ui.toggleDeveloperMode();
+
+		// SELECT seul : instantane technique sur la carte SD.
+		if ((in.down & KEY_SELECT) && !openDeveloper)
 			diagRequested = true;
 
-		ui.handleKeys(browser, net, settings, updater, in.down);
+		if (!openDeveloper)
+			ui.handleKeys(browser, net, settings, updater, in.down, in.held);
 		ui.handleTouch(browser, net, settings, updater, in);
 		ui.handleAnalog(browser, net, settings, in);
 
@@ -465,6 +475,9 @@ int main(int argc, char** argv)
 		//------------------------------------------------------------------
 		if (ui.mode() == UiMode::Browsing)
 		{
+			const Browser::Tab& activeTab = browser.currentTab();
+			const bool zoomedPdf = activeTab.pdfDocument &&
+				activeTab.pdfZoomPercent > 100;
 			// 1. Defilement continu a la croix directionnelle (D-Pad)
 			if (in.held & KEY_DUP)
 			{
@@ -476,8 +489,18 @@ int main(int argc, char** argv)
 				browser.scroll(10);
 				inertiaSpeed = 0.0f;
 			}
+			if (zoomedPdf)
+			{
+				if (in.held & KEY_DLEFT) browser.scrollHorizontal(-12);
+				else if (in.held & KEY_DRIGHT) browser.scrollHorizontal(12);
+			}
 
 			// 2. Defilement analogique fluide au joystick principal (Circle Pad)
+			if (zoomedPdf && (in.circleX > 20 || in.circleX < -20))
+			{
+				const int step = (int)((float)in.circleX * 0.075f);
+				if (step != 0) browser.scrollHorizontal(step);
+			}
 			if (in.circleY > 20 || in.circleY < -20)
 			{
 				int step = (int)(-((float)in.circleY) * 0.075f);
@@ -501,7 +524,8 @@ int main(int argc, char** argv)
 			}
 
 			// 4. Navigation d'element en element (liens, boutons, champs) avec D-PAD Gauche / Droite
-			if ((in.down & KEY_DRIGHT) || (in.down & KEY_DLEFT))
+			if (!zoomedPdf &&
+				((in.down & KEY_DRIGHT) || (in.down & KEY_DLEFT)))
 			{
 				const Browser::Tab& ct = browser.currentTab();
 				if (ct.pageReady)
@@ -612,6 +636,7 @@ int main(int argc, char** argv)
 			{
 				gesture.active = true;
 				gesture.startPageY = browser.scrollY();
+				gesture.startPageX = browser.scrollX();
 				gesture.startPx = in.tp.px;
 				gesture.startPy = in.tp.py;
 				gesture.moveX = 0;
@@ -630,6 +655,9 @@ int main(int argc, char** argv)
 				if (-dy > gesture.moveY) gesture.moveY = -dy;
 				browser.scrollTo(gesture.startPageY -
 					(int)((float)dy * browser.pageScale() + (dy >= 0 ? 0.5f : -0.5f)));
+				browser.scrollHorizontalTo(gesture.startPageX -
+					(int)((float)dx * browser.pageScale() +
+						(dx >= 0 ? 0.5f : -0.5f)));
 			}
 
 			if (in.touchUp && gesture.active)
@@ -701,7 +729,8 @@ int main(int argc, char** argv)
 					lastHeight = t.page.height;
 					lastPx = t.page.bmp.px;
 				}
-				renderer.draw(t.page, t.scrollY);
+				renderer.draw(t.page, t.scrollY, t.scrollX,
+					t.pdfDocument ? t.pdfZoomPercent : 100);
 			}
 			else
 			{
@@ -845,6 +874,8 @@ int main(int argc, char** argv)
 		ui.frame(browser, net, settings, updater);
 
 		C3D_FrameEnd(0);
+		if (browser.processPendingPdfOpen())
+			renderer.forceRedraw();
 		if (browser.tickPageResponse())
 			renderer.forceRedraw();
 		if (browser.tickProgressiveLayout())

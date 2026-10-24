@@ -13,12 +13,21 @@
 #define TEX_H 256
 
 static constexpr uint32_t C_FOCUS_BLUE = 0xFFFF8A30;
-static constexpr int MENU_ITEM_COUNT = 14;
+static constexpr int MENU_ITEM_COUNT = 16;
 static constexpr int MENU_ROW_COUNT = MENU_ITEM_COUNT / 2;
 static constexpr int MENU_VISIBLE_ROWS = 6;
 static constexpr int MENU_FIRST_Y = 92;
 static constexpr int MENU_ROW_HEIGHT = 20;
 static constexpr int MENU_ROW_STEP = 21;
+static const char* const DEVELOPER_TEST_SITES[][2] =
+{
+	{ "Wikipedia", "https://fr.wikipedia.org/wiki/Nintendo_3DS" },
+	{ "GitHub", "https://github.com/" },
+	{ "Hacker News", "https://news.ycombinator.com/" },
+	{ "Google", "https://www.google.com/" }
+};
+static constexpr int DEVELOPER_TEST_SITE_COUNT =
+	sizeof(DEVELOPER_TEST_SITES) / sizeof(DEVELOPER_TEST_SITES[0]);
 
 //--------------------------------------------------------------------------
 // Petits helpers
@@ -368,6 +377,21 @@ void BottomUi::toast(const std::string& msg)
 	dirty_ = true;
 }
 
+void BottomUi::toggleDeveloperMode()
+{
+	if (mode_ == UiMode::Developer)
+	{
+		mode_ = UiMode::Browsing;
+		toast("Mode developpeur ferme");
+	}
+	else
+	{
+		mode_ = UiMode::Developer;
+		toast("Mode developpeur");
+	}
+	dirty_ = true;
+}
+
 static bool pageWorkPending(Browser& browser, NetworkManager& net)
 {
 	return browser.layoutPending() || browser.stylesPending() ||
@@ -569,7 +593,7 @@ void BottomUi::drawStatusRow(Browser& b, NetworkManager& net)
 	roundRect(bmp_, 0, 220, 320, 20, 0, C_BG_2);
 
 	// Version en bas a gauche (discret)
-	const std::string versionStr = "v" NW_VERSION_STRING;
+	const std::string versionStr = "v0.7";
 	const int vw = textW(versionStr, 0.48f);
 	text(bmp_, versionStr, 6, 224, 0.48f, C_TEXT_DD);
 
@@ -841,13 +865,14 @@ void BottomUi::drawKeyboard(Bitmap& b)
 void BottomUi::drawMenu(Browser& b)
 {
 	(void)b;
-	static const char* items[14] =
+	static const char* items[MENU_ITEM_COUNT] =
 	{
 		"Nouvel onglet", "Fermer l'onglet",
 		"Ajouter aux favoris", "Favoris",
 		"Historique", "Reglages",
-		"A propos", "Mode lecteur", "Diagnostics", "Liens (D-pad)",
-		"Mini-carte", "Chercher page", "Recharger", "QR de la page"
+		"A propos", "Mode lecteur", "Test affichage", "Liens (D-pad)",
+		"Mini-carte", "Chercher page", "Recharger", "QR de la page",
+		"Telechargements", "Arreter le chargement"
 	};
 	const int maxOffset = MENU_ROW_COUNT - MENU_VISIBLE_ROWS;
 	menuOffset_ = std::max(0, std::min(menuOffset_, maxOffset));
@@ -929,6 +954,40 @@ void BottomUi::drawBookmarksList(Browser& b)
 		text(bmp_, fitStr(entries[idx].title, 180, 0.8f), 6, y + 3, 0.8f, C_TEXT, true);
 		text(bmp_, fitStr(entries[idx].url, 90, 0.6f), 196, y + 4, 0.6f, C_TEXT_D);
 		text(bmp_, "X", 304, y + 4, 0.8f, C_RED, true);
+	}
+}
+
+void BottomUi::drawDownloadsList()
+{
+	text(bmp_, "Telechargements (A : ouvrir, B : retour)", 10, 92, 0.68f, C_TEXT_D);
+	text(bmp_, "sdmc:/N3DSWeb/downloads", 10, 103, 0.55f, C_TEXT_DD);
+	if (downloadFiles_.empty())
+	{
+		text(bmp_, "Aucun fichier telecharge.", 10, 132, 0.78f, C_TEXT);
+		text(bmp_, "Les fichiers telecharges apparaitront ici.", 10, 151,
+			0.58f, C_TEXT_D);
+		return;
+	}
+	const int visible = 3;
+	const int rowHeight = 32;
+	const int maxOffset = std::max(0, (int)downloadFiles_.size() - visible);
+	listOffset_ = std::max(0, std::min(listOffset_, maxOffset));
+	listSel_ = std::max(0, std::min(listSel_, (int)downloadFiles_.size() - 1));
+	for (int i = 0; i < visible; ++i)
+	{
+		const int index = listOffset_ + i;
+		if (index >= (int)downloadFiles_.size()) break;
+		const DownloadFileInfo& file = downloadFiles_[(size_t)index];
+		const int y = 116 + i * rowHeight;
+		bmp_.fillRect(0, y, 320, rowHeight - 2,
+			index == listSel_ ? C_SURFACE2 : ((i & 1) ? C_NAVY : C_NAVY_2));
+		if (index == listSel_) bmp_.fillRect(0, y, 2, rowHeight - 2, C_ACCENT);
+		text(bmp_, fitStr(file.name, 218, 0.66f),
+			7, y + 2, 0.66f, C_TEXT, true);
+		text(bmp_, fitStr(file.extension, 78, 0.56f),
+			237, y + 4, 0.56f, C_ACCENT);
+		text(bmp_, file.modified, 7, y + 17, 0.52f, C_TEXT_D);
+		text(bmp_, formatBytes(file.size), 250, y + 17, 0.52f, C_TEXT_D);
 	}
 }
 
@@ -1068,7 +1127,7 @@ void BottomUi::drawCacheList(Browser& b)
 void BottomUi::drawAbout()
 {
 	text(bmp_, "Pixelnaute", 12, 82, 1.05f, C_TEXT, true);
-	text(bmp_, fitStr("Version " NW_VERSION_STRING " (" __DATE__ ")", 296, 0.68f), 12, 108, 0.68f, C_TEXT_DD);
+	text(bmp_, fitStr("Version v0.7 (" __DATE__ ")", 296, 0.68f), 12, 108, 0.68f, C_TEXT_DD);
 	text(bmp_, fitStr("Navigateur autonome pour New Nintendo 3DS", 296, 0.68f), 12, 128, 0.68f, C_TEXT);
 	text(bmp_, fitStr("Aucun PC, aucun proxy : connexion directe.", 296, 0.65f), 12, 150, 0.65f, C_TEXT_D);
 	text(bmp_, fitStr("Moteur de recherche reglable dans Reglages.", 296, 0.65f), 12, 171, 0.65f, C_TEXT_D);
@@ -1076,33 +1135,41 @@ void BottomUi::drawAbout()
 	text(bmp_, fitStr("github.com/dodosiiii/Pixelnaute", 296, 0.58f), 12, 211, 0.58f, C_TEXT_DD);
 }
 
-void BottomUi::drawDiagnostics(Browser& b, NetworkManager& net)
+void BottomUi::drawDeveloperMode(Browser& b, NetworkManager& net)
 {
 	const Browser::Tab& tab = b.currentTab();
 	const struct mallinfo memory = mallinfo();
 	const size_t heapUsed = memory.uordblks > 0 ? (size_t)memory.uordblks : 0;
-	text(bmp_, "Diagnostic de la page", 10, 91, 0.76f, C_TEXT_D);
+	text(bmp_, "Outils developpeur - L + R + SELECT", 10, 91, 0.68f, C_ACCENT, true);
 	const std::string rows[] = {
 		"URL : " + fitStr(tab.url, 280, 0.52f),
-		"Noeuds DOM : " + itos((long)tab.doc.nodes.size()),
-		"Liens : " + itos((long)tab.page.links.size()) + "  Images : " + itos((long)tab.page.images.size()),
-		"Regles CSS : " + itos((long)tab.css.rules().size()),
-		"Hauteur : " + itos((long)tab.page.height) + " px  Defilement : " + itos((long)tab.scrollY),
-		std::string("Reseau : ") + (net.busy() ? "actif" : "inactif") + "  Octets : " + itos((long)net.bytesReceived()),
-		"Tas utilise/total : " + formatBytes(heapUsed) + " / " + formatBytes(envGetHeapSize()),
-		"Tas application libre : " + formatBytes(diagApplicationHeapFree()),
-		"Pic tas observe : " + formatBytes(diagHeapPeakUsed()),
-		"Memoire images : " + formatBytes(b.images().bytesUsed()),
-		"Memoire lineaire libre : " + formatBytes(linearSpaceFree()),
-		std::string("JavaScript : ") + (tab.jsRequired ? "present" : "absent") + "  Rendu : " + (tab.pageReady ? "pret" : "en cours")
+		"DOM : " + itos((long)tab.doc.nodes.size()) + " noeuds  Liens : " +
+			itos((long)tab.page.links.size()) + "  Images : " +
+			itos((long)tab.page.images.size()),
+		"CSS : " + itos((long)tab.css.rules().size()) + " regles  Page : " +
+			itos((long)tab.page.height) + " px",
+		std::string("Reseau : ") + (net.busy() ? "actif" : "inactif") +
+			"  Octets : " + itos((long)net.bytesReceived()) + "  Rendu : " +
+			(tab.pageReady ? "pret" : "en cours"),
+		"Tas : " + formatBytes(heapUsed) + "/" + formatBytes(envGetHeapSize()) +
+			"  Libre app. : " + formatBytes(diagApplicationHeapFree()),
+		"Images : " + formatBytes(b.images().bytesUsed()) +
+			"  JS : " + (tab.jsRequired ? "present" : "absent") +
+			"  Site : " + DEVELOPER_TEST_SITES[developerSite_][0]
 	};
 	for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); ++i)
 	{
-		const int y = 108 + (int)i * 10;
-		if (y > 220) break;
-		text(bmp_, rows[i], 8, y, 0.52f, i == 0 ? C_ACCENT : C_TEXT);
+		text(bmp_, rows[i], 8, 108 + (int)i * 10, 0.52f,
+			i == 0 ? C_ACCENT : C_TEXT);
 	}
-	text(bmp_, "B ou touchez pour revenir", 10, 224, 0.5f, C_TEXT_D);
+	roundRect(bmp_, 8, 166, 304, 22, 5, C_SURFACE2);
+	textCentered(bmp_, "A / toucher : suite locale de rendu CSS", 8, 304,
+		171, 0.56f, C_TEXT);
+	roundRect(bmp_, 8, 192, 304, 22, 5, C_SURFACE2);
+	textCentered(bmp_, "X / toucher : ouvrir le site externe selectionne",
+		8, 304, 197, 0.53f, C_TEXT);
+	text(bmp_, "L/R : changer de site   SELECT : instantane SD   B : fermer",
+		8, 221, 0.45f, C_TEXT_D);
 }
 
 void BottomUi::drawLinksList(Browser& b)
@@ -1301,6 +1368,9 @@ void BottomUi::frame(Browser& b, NetworkManager& net, WebSettings& set,
 		case UiMode::Bookmarks:
 			drawBookmarksList(b);
 			break;
+		case UiMode::Downloads:
+			drawDownloadsList();
+			break;
 		case UiMode::Settings:
 			drawSettingsList(b, set, updater);
 			break;
@@ -1310,8 +1380,8 @@ void BottomUi::frame(Browser& b, NetworkManager& net, WebSettings& set,
 		case UiMode::About:
 			drawAbout();
 			break;
-		case UiMode::Diagnostics:
-			drawDiagnostics(b, net);
+		case UiMode::Developer:
+			drawDeveloperMode(b, net);
 			break;
 		case UiMode::Links:
 			drawLinksList(b);
@@ -1608,17 +1678,20 @@ void BottomUi::moveKeyboardFocus(int dx, int dy)
 		const UiKey& candidate = keys_[i];
 		const int x = candidate.x + candidate.w / 2;
 		const int y = candidate.y + candidate.h / 2;
+		if (dx && (candidate.y >= current.y + current.h ||
+			candidate.y + candidate.h <= current.y))
+			continue;
 		const int primary = dx ? (x - cx) * dx : (y - cy) * dy;
 		if (primary <= 0) continue;
 		const int secondary = dx ? abs(y - cy) : abs(x - cx);
-		const int score = primary * 2 + secondary;
+		const int score = primary * 1000 + secondary;
 		if (score < bestScore)
 		{
 			bestScore = score;
 			best = (int)i;
 		}
 	}
-	if (best < 0)
+	if (best < 0 && !dx)
 	{
 		for (size_t i = 0; i < keys_.size(); ++i)
 		{
@@ -1628,7 +1701,7 @@ void BottomUi::moveKeyboardFocus(int dx, int dy)
 			const int y = candidate.y + candidate.h / 2;
 			const int primary = dx ? (cx - x) * dx : (cy - y) * dy;
 			const int secondary = dx ? abs(y - cy) : abs(x - cx);
-			const int score = primary * 2 + secondary;
+			const int score = primary * 1000 + secondary;
 			if (primary > 0 && score < bestScore)
 			{
 				bestScore = score;
@@ -1645,7 +1718,7 @@ void BottomUi::moveKeyboardFocus(int dx, int dy)
 
 void BottomUi::activateMenuItem(Browser& b, int index)
 {
-	if (index < 0 || index >= 14) return;
+	if (index < 0 || index >= MENU_ITEM_COUNT) return;
 	switch (index)
 	{
 		case 0:
@@ -1694,7 +1767,8 @@ void BottomUi::activateMenuItem(Browser& b, int index)
 			mode_ = UiMode::Browsing;
 			break;
 		case 8:
-			mode_ = UiMode::Diagnostics;
+			if (b.showInternal("nw://display-test"))
+				mode_ = UiMode::Browsing;
 			break;
 		case 9:
 			if (b.currentTab().page.links.empty())
@@ -1755,6 +1829,19 @@ void BottomUi::activateMenuItem(Browser& b, int index)
 			}
 			break;
 		}
+		case 14:
+		{
+			std::string error;
+			if (!downloadsListFiles(downloadFiles_, error)) toast(error);
+			mode_ = UiMode::Downloads;
+			listOffset_ = 0;
+			listSel_ = 0;
+			break;
+		}
+		case 15:
+			b.stop();
+			mode_ = UiMode::Browsing;
+			break;
 	}
 	dirty_ = true;
 }
@@ -1804,7 +1891,12 @@ void BottomUi::commitBuf(Browser& b, WebSettings& set)
 	{
 		b.setFieldValue(focusIdx_, buf_);
 		b.endEditField();
+		const int fieldIndex = focusIdx_;
+		const bool isSearchField = fieldIndex >= 0 &&
+			fieldIndex < (int)b.currentTab().page.fields.size() &&
+			b.currentTab().page.fields[(size_t)fieldIndex].kind == FieldSearch;
 		mode_ = UiMode::Browsing;
+		if (isSearchField) b.submitFormForField(fieldIndex);
 	}
 	else
 	{
@@ -1862,11 +1954,14 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 			dirty_ = true;
 		}
 	}
-	else if ((mode_ == UiMode::Settings || mode_ == UiMode::Cache) &&
+	else if ((mode_ == UiMode::Settings || mode_ == UiMode::Cache ||
+		mode_ == UiMode::Downloads) &&
 		in.touch && !in.touchDown)
 	{
 		const int maxOffset = mode_ == UiMode::Settings ? 10 :
-			std::max(0, (int)cachedSites_.size() - 3);
+			(mode_ == UiMode::Cache
+				? std::max(0, (int)cachedSites_.size() - 3)
+				: std::max(0, (int)downloadFiles_.size() - 3));
 		if (in.dragY < -6 && listOffset_ < maxOffset)
 		{
 			listOffset_++;
@@ -1985,6 +2080,27 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 					b.openUrl(b.bookmarks().entries[idx].url);
 					mode_ = UiMode::Browsing;
 				}
+				dirty_ = true;
+			}
+			break;
+		}
+		case UiMode::Downloads:
+		{
+			if (y < 116 || y >= 212) break;
+			const int index = listOffset_ + (y - 116) / 32;
+			if (index >= 0 && index < (int)downloadFiles_.size())
+			{
+				listSel_ = index;
+				const DownloadFileInfo& file = downloadFiles_[(size_t)index];
+				if (toLower(file.extension) == ".pdf")
+				{
+					std::string error;
+					if (b.openLocalPdf(file.path, error))
+						mode_ = UiMode::Browsing;
+					else toast(error);
+				}
+				else
+					toast("Ouverture disponible pour les PDF uniquement.");
 				dirty_ = true;
 			}
 			break;
@@ -2222,8 +2338,20 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 			break;
 		}
 		case UiMode::About:
-		case UiMode::Diagnostics:
 			mode_ = UiMode::Browsing;
+			dirty_ = true;
+			break;
+		case UiMode::Developer:
+			if (y >= 166 && y < 188)
+			{
+				if (b.showInternal("nw://display-test"))
+					mode_ = UiMode::Browsing;
+			}
+			else if (y >= 192 && y < 214)
+			{
+				b.openBookmark(DEVELOPER_TEST_SITES[developerSite_][1]);
+				mode_ = UiMode::Browsing;
+			}
 			dirty_ = true;
 			break;
 		case UiMode::Links:
@@ -2290,8 +2418,24 @@ void BottomUi::handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
 }
 
 void BottomUi::handleKeys(Browser& b, NetworkManager& net, WebSettings& set,
-	ReleaseUpdater& updater, u32 kDown)
+	ReleaseUpdater& updater, u32 kDown, u32 kHeld)
 {
+	const u32 pdfZoomChord = KEY_ZL | KEY_ZR;
+	if (b.currentTab().pdfDocument && (kHeld & pdfZoomChord) == pdfZoomChord)
+	{
+		if (!pdfZoomChordHeld_)
+		{
+			pdfZoomChordHeld_ = true;
+			if (b.cyclePdfZoom())
+				toast("Zoom PDF : " +
+					itos(b.currentTab().pdfZoomPercent) + "%");
+			else
+				toast("Impossible de mettre a jour le zoom PDF.");
+			dirty_ = true;
+		}
+		return;
+	}
+	pdfZoomChordHeld_ = false;
 	if (!kDown) return;
 
 	switch (mode_)
@@ -2428,6 +2572,47 @@ void BottomUi::handleKeys(Browser& b, NetworkManager& net, WebSettings& set,
 			{
 				if (kDown & KEY_DUP) { if (listOffset_ > 0) listOffset_--; dirty_ = true; return; }
 				if (kDown & KEY_DDOWN) { listOffset_++; dirty_ = true; return; }
+			}
+			break;
+
+		case UiMode::Downloads:
+			if (kDown & KEY_B)
+			{
+				mode_ = UiMode::Browsing;
+				dirty_ = true;
+				return;
+			}
+			if (kDown & (KEY_DUP | KEY_CPAD_UP))
+			{
+				if (listSel_ > 0) --listSel_;
+				if (listSel_ < listOffset_) listOffset_ = listSel_;
+				dirty_ = true;
+				return;
+			}
+			if (kDown & (KEY_DDOWN | KEY_CPAD_DOWN))
+			{
+				if (listSel_ + 1 < (int)downloadFiles_.size()) ++listSel_;
+				if (listSel_ >= listOffset_ + 3) listOffset_ = listSel_ - 2;
+				dirty_ = true;
+				return;
+			}
+			if (kDown & (KEY_A | KEY_X))
+			{
+				if (listSel_ >= 0 && listSel_ < (int)downloadFiles_.size())
+				{
+					const DownloadFileInfo& file = downloadFiles_[(size_t)listSel_];
+					if (toLower(file.extension) == ".pdf")
+					{
+						std::string error;
+						if (b.openLocalPdf(file.path, error))
+							mode_ = UiMode::Browsing;
+						else toast(error);
+					}
+					else
+						toast("Ouverture disponible pour les PDF uniquement.");
+				}
+				dirty_ = true;
+				return;
 			}
 			break;
 
@@ -2646,10 +2831,40 @@ void BottomUi::handleKeys(Browser& b, NetworkManager& net, WebSettings& set,
 			break;
 
 		case UiMode::About:
-		case UiMode::Diagnostics:
 			if (kDown & KEY_B)
 			{
 				mode_ = UiMode::Browsing;
+				dirty_ = true;
+				return;
+			}
+			break;
+
+		case UiMode::Developer:
+			if (kDown & KEY_B)
+			{
+				mode_ = UiMode::Browsing;
+				dirty_ = true;
+				return;
+			}
+			if (kDown & KEY_A)
+			{
+				if (b.showInternal("nw://display-test"))
+					mode_ = UiMode::Browsing;
+				dirty_ = true;
+				return;
+			}
+			if (kDown & KEY_X)
+			{
+				b.openBookmark(DEVELOPER_TEST_SITES[developerSite_][1]);
+				mode_ = UiMode::Browsing;
+				dirty_ = true;
+				return;
+			}
+			if (kDown & (KEY_L | KEY_R))
+			{
+				const int direction = (kDown & KEY_R) ? 1 : -1;
+				developerSite_ = (developerSite_ + direction +
+					DEVELOPER_TEST_SITE_COUNT) % DEVELOPER_TEST_SITE_COUNT;
 				dirty_ = true;
 				return;
 			}

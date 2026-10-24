@@ -16,6 +16,12 @@ struct LinkBox
 	int x, y, w, h;
 	std::string url;
 	int node = -1;
+	bool fixed = false;
+};
+
+struct FixedBox
+{
+	int x = 0, y = 0, w = 0, h = 0;
 };
 
 // Champ de formulaire (mode d'edition géré par l'application).
@@ -62,6 +68,8 @@ struct ImageBox
 	int x = 0, y = 0, w = 0, h = 0;
 	std::string src;
 	std::string alt;
+	CssImageFit fit = CssImageFitFill;
+	int positionX = 50, positionY = 50;
 };
 
 struct AnchorBox { std::string name; int y = 0; };
@@ -83,6 +91,7 @@ struct PageModel
 	int furthestSegmentIndex = 0;     // dernier segment dont le DOM a ete parcouru
 	bool truncated = false;           // la mise en page a atteint sa limite de hauteur
 	std::vector<LinkBox> links;
+	std::vector<FixedBox> fixedBoxes;
 	std::vector<FormField> fields;
 	std::vector<FormSubmit> submits;
 	std::vector<ImageBox> images;
@@ -108,6 +117,7 @@ struct PageModel
 		furthestSegmentIndex = 0;
 		truncated = false;
 		links.clear();
+		fixedBoxes.clear();
 		fields.clear();
 		submits.clear();
 		images.clear();
@@ -172,6 +182,9 @@ private:
 	int stopAtY_ = 0;
 	bool segmented_ = false;
 	bool renderStopped_ = false;
+	int segmentOffset_ = 0;
+	int segmentPageStart_ = 0;
+	bool fixedPositionActive_ = false;
 	size_t linkStorageBytes_ = 0;
 
 	void renderNode(int idx, const Style& st);
@@ -180,8 +193,10 @@ private:
 		int segmentIndex, int segmentHeight, bool segmented);
 	void newline(int height);
 	void flushLink();
+	bool clipToVisibleArea(int& x, int& y, int& w, int& h) const;
 	void addLinkBox(int x0, int y0, int x1, int y1, const std::string& url, int node = -1);
 	void drawTextWrapped(const std::string& text, const Style& st, bool mono);
-	void drawPreformattedText(const std::string& text, const Style& st);
+	void drawPreformattedText(const std::string& text, const Style& st,
+		bool wrap = false);
 	void resolveAndRender(int idx, const Style& parentSt);
 };

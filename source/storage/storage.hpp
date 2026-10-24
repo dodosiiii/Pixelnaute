@@ -10,6 +10,7 @@
 #define NW_SD_ROOT    "sdmc:/N3DSWeb"
 #define NW_SD_CACHE   "sdmc:/N3DSWeb/cache"
 #define NW_SD_DOWN    "sdmc:/N3DSWeb/downloads"
+#define NW_SD_PDFS    "sdmc:/N3DSWeb/pdfs"
 #define NW_SD_SETTINGS "sdmc:/N3DSWeb/settings.cfg"
 #define NW_SD_HISTORY "sdmc:/N3DSWeb/history.txt"
 #define NW_SD_BOOKMARKS "sdmc:/N3DSWeb/bookmarks.txt"

@@ -11,6 +11,7 @@
 #include "../render/bitmap.hpp"
 #include "../settings/settings.hpp"
 #include "../network/network.hpp"
+#include "../storage/downloads.hpp"
 #include "../updater/updater.hpp"
 #include <citro2d.h>
 #include <string>
@@ -24,10 +25,11 @@ enum class UiMode
 	Menu,          // menu principal
 	History,       // liste de l'historique
 	Bookmarks,     // liste des favoris
+	Downloads,     // fichiers telecharges sur la carte SD
 	Settings,      // reglages
 	Cache,         // cache des pages
 	About,         // a propos
-	Diagnostics,   // mesures de la page courante
+	Developer,     // essais de rendu, accessible par raccourci
 	Links,         // navigation clavier dans les liens de la page
 	MiniMap,       // apercu de la structure et saut dans la page
 	PageFind,      // saisie d'une recherche dans le contenu affiche
@@ -56,7 +58,7 @@ public:
 
 	// Touches / toucher (appeler une fois par frame).
 	void handleKeys(Browser& b, NetworkManager& net, WebSettings& set,
-		ReleaseUpdater& updater, u32 kDown);
+		ReleaseUpdater& updater, u32 kDown, u32 kHeld = 0);
 	void handleAnalog(Browser& b, NetworkManager& net, WebSettings& set,
 		const InputState& in);
 	void handleTouch(Browser& b, NetworkManager& net, WebSettings& set,
@@ -75,6 +77,7 @@ public:
 
 	// Message temporaire (ex. telechargement termine).
 	void toast(const std::string& msg);
+	void toggleDeveloperMode();
 
 private:
 	// --- etat ---
@@ -98,6 +101,7 @@ private:
 	int keyboardFocus_ = 0;
 	int menuSel_ = 0;
 	int menuOffset_ = 0;
+	int developerSite_ = 0;
 	int analogDirection_ = -1;
 	uint64_t analogRepeatAt_ = 0;
 	int caretDirection_ = 0;
@@ -112,6 +116,8 @@ private:
 	std::string language_ = "en";
 	int uiTheme_ = 0;
 	std::vector<PageSegmentCache::SiteEntry> cachedSites_;
+	std::vector<DownloadFileInfo> downloadFiles_;
+	bool pdfZoomChordHeld_ = false;
 	bool cacheScanOk_ = true;
 	bool cacheInfoReady_ = false;
 	uint64_t cachedPageBytes_ = 0;
@@ -155,11 +161,12 @@ private:
 	void drawMenu(Browser& b);
 	void drawHistoryList(Browser& b);
 	void drawBookmarksList(Browser& b);
+	void drawDownloadsList();
 	void drawSettingsList(Browser& b, WebSettings& set,
 		const ReleaseUpdater& updater);
 	void drawCacheList(Browser& b);
 	void drawAbout();
-	void drawDiagnostics(Browser& b, NetworkManager& net);
+	void drawDeveloperMode(Browser& b, NetworkManager& net);
 	void drawLinksList(Browser& b);
 	void drawMiniMap(Browser& b);
 	void drawUpdateNotes(const ReleaseUpdater& updater);

@@ -254,8 +254,10 @@ int TextEngine::resolveGlyph(u32 codePoint) const
 	return gi;
 }
 
-float TextEngine::measure(const std::string& utf8, float userScale) const
+float TextEngine::measure(const std::string& utf8, float userScale,
+	float letterSpacing) const
 {
+	size_t characterCount = 0;
 	if (ttfLoaded_)
 	{
 		float pixelHeight = 24.0f * userScale;
@@ -269,12 +271,14 @@ float TextEngine::measure(const std::string& utf8, float userScale) const
 			int n = utf8Decode(utf8.c_str() + i, cp);
 			if (n == 0) break;
 			i += n;
+			++characterCount;
 
 			int adv = 0, lsb = 0;
 			stbtt_GetCodepointHMetrics(&ttfRegularInfo_, (int)cp, &adv, &lsb);
 			total += (float)adv * scale;
 		}
-		return total;
+		return total + (characterCount > 1
+			? (characterCount - 1) * letterSpacing * userScale : 0.0f);
 	}
 
 	if (!font_) return 0.0f;
@@ -286,12 +290,15 @@ float TextEngine::measure(const std::string& utf8, float userScale) const
 		int n = utf8Decode(utf8.c_str() + i, cp);
 		if (n == 0) break;
 		i += n;
+		++characterCount;
 		const int gi = resolveGlyph(cp);
 		fontGlyphPos_s pos;
 		fontCalcGlyphPos(&pos, font_, gi, 0, 1.0f, 1.0f);
 		total += pos.xAdvance * kAdvanceFactor;
 	}
-	return total * sTextScale_ * userScale;
+	return total * sTextScale_ * userScale +
+		(characterCount > 1
+			? (characterCount - 1) * letterSpacing * userScale : 0.0f);
 }
 
 std::vector<std::pair<size_t, size_t>> TextEngine::splitWords(const std::string& utf8)
@@ -320,9 +327,20 @@ std::vector<std::pair<size_t, size_t>> TextEngine::splitWords(const std::string&
 }
 
 float TextEngine::drawLine(Bitmap& bmp, const std::string& utf8, int x, int y,
-	float userScale, uint32_t color, bool bold, bool underline) const
+	float userScale, uint32_t color, bool bold, bool underline, bool italic,
+	float letterSpacing) const
 {
 	if (!bmp.px) return 0.0f;
+	size_t characterCount = 0;
+	for (size_t i = 0; i < utf8.size(); ++characterCount)
+	{
+		uint32_t cp;
+		const int n = utf8Decode(utf8.c_str() + i, cp);
+		if (n <= 0) break;
+		i += (size_t)n;
+	}
+	const float scaledLetterSpacing = letterSpacing * userScale;
+	size_t characterIndex = 0;
 
 	if (ttfLoaded_)
 	{
@@ -346,13 +364,14 @@ float TextEngine::drawLine(Bitmap& bmp, const std::string& utf8, int x, int y,
 			const CachedGlyph& g = getGlyph(cp, sizePx, bold);
 			if (g.w > 0 && g.h > 0)
 			{
-				int dstX = x + (int)floorf(pen) + g.xoff;
 				int dstY = baselineY + g.yoff;
 
 				for (int gy = 0; gy < g.h; gy++)
 				{
 					int sy = dstY + gy;
-					if (sy < bmp.originY || sy >= bmp.originY + bmp.h) continue;
+					if (sy < bmp.clip.y0 || sy >= bmp.clip.y1) continue;
+					const int italicShift = italic ? (g.h - gy - 1) / 4 : 0;
+					const int dstX = x + (int)floorf(pen) + g.xoff + italicShift;
 
 					const uint8_t* src = g.alpha.data() + gy * g.w;
 					uint16_t* dst = bmp.px +
@@ -361,7 +380,7 @@ float TextEngine::drawLine(Bitmap& bmp, const std::string& utf8, int x, int y,
 					for (int gx = 0; gx < g.w; gx++)
 					{
 						int sx = dstX + gx;
-						if (sx < 0 || sx >= bmp.w) continue;
+						if (sx < bmp.clip.x0 || sx >= bmp.clip.x1) continue;
 
 						uint8_t a = src[gx];
 						if (a)
@@ -369,7 +388,7 @@ float TextEngine::drawLine(Bitmap& bmp, const std::string& utf8, int x, int y,
 							if (colorAlpha != 0xFF)
 								a = (uint8_t)((a * colorAlpha + 127) / 255);
 							Bitmap::blendPixel(dst[sx], color, a);
-							if (bold && !ttfBoldReady_ && sx + 1 < bmp.w)
+							if (bold && !ttfBoldReady_ && sx + 1 < bmp.clip.x1)
 							{
 								Bitmap::blendPixel(dst[sx + 1], color, (uint8_t)(a >> 1));
 							}
@@ -378,6 +397,8 @@ float TextEngine::drawLine(Bitmap& bmp, const std::string& utf8, int x, int y,
 				}
 			}
 			pen += g.xadvance;
+			++characterIndex;
+			if (characterIndex < characterCount) pen += scaledLetterSpacing;
 		}
 
 		if (underline && pen > 0.0f)
@@ -419,14 +440,15 @@ float TextEngine::drawLine(Bitmap& bmp, const std::string& utf8, int x, int y,
 			for (int dy = 0; dy < drawnHeight; dy++)
 			{
 				const int sy = y + dy;
-				if (sy < bmp.originY || sy >= bmp.originY + bmp.h) continue;
+				if (sy < bmp.clip.y0 || sy >= bmp.clip.y1) continue;
 				const int cellY = (int)((float)dy / scale);
 				if (cellY >= cellHeight_) continue;
+				const int italicShift = italic ? (drawnHeight - dy - 1) / 4 : 0;
 
 				for (int dx = 0; dx < dstW; dx++)
 				{
-					const int sx = dstX + dx;
-					if (sx < 0 || sx >= bmp.w) continue;
+					const int sx = dstX + dx + italicShift;
+					if (sx < bmp.clip.x0 || sx >= bmp.clip.x1) continue;
 					const int cellX = (int)((float)dx / scale);
 					if (cellX >= glyphW) continue;
 
@@ -438,7 +460,7 @@ float TextEngine::drawLine(Bitmap& bmp, const std::string& utf8, int x, int y,
 					const u8 coverage = colorAlpha == 0xFF ? a :
 						(u8)((a * colorAlpha + 127) / 255);
 					Bitmap::blendPixel(d, color, coverage);
-					if (bold && sx + 1 < bmp.w)
+					if (bold && sx + 1 < bmp.clip.x1)
 						Bitmap::blendPixel(bmp.px[
 							(size_t)(sy - bmp.originY) * bmp.w + sx + 1],
 							color, (u8)(coverage >> 1));
@@ -446,6 +468,9 @@ float TextEngine::drawLine(Bitmap& bmp, const std::string& utf8, int x, int y,
 			}
 		}
 		pen += pos.xAdvance * kAdvanceFactor;
+		++characterIndex;
+		if (characterIndex < characterCount)
+			pen += scaledLetterSpacing / scale;
 	}
 
 	const float totalW = pen * scale;

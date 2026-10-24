@@ -3,7 +3,13 @@
 // bitmap.hpp - Bitmap RGB565 pour le rendu de page logiciel
 //=============================================================================
 #include "../common.hpp"
+#include <algorithm>
 #include <cstdint>
+
+struct BitmapClipRect
+{
+	int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+};
 
 class Bitmap
 {
@@ -12,25 +18,28 @@ public:
 	int h = 0;       // hauteur (px) du buffer alloue
 	int originY = 0; // premiere ligne logique stockee dans le buffer
 	uint16_t* px = nullptr;
+	BitmapClipRect clip;
 
 	Bitmap() = default;
 	Bitmap(const Bitmap&) = delete;
 	Bitmap& operator=(const Bitmap&) = delete;
-	Bitmap(Bitmap&& o) noexcept : w(o.w), h(o.h), originY(o.originY), px(o.px)
-		{ o.w = o.h = o.originY = 0; o.px = nullptr; }
+	Bitmap(Bitmap&& o) noexcept
+		: w(o.w), h(o.h), originY(o.originY), px(o.px), clip(o.clip)
+		{ o.w = o.h = o.originY = 0; o.px = nullptr; o.clip = {}; }
 	Bitmap& operator=(Bitmap&& o) noexcept
 	{
 		if (this == &o) return *this;
 		destroy();
 		w = o.w; h = o.h; originY = o.originY; px = o.px;
-		o.w = o.h = o.originY = 0; o.px = nullptr;
+		clip = o.clip;
+		o.w = o.h = o.originY = 0; o.px = nullptr; o.clip = {};
 		return *this;
 	}
 
 	bool create(int width, int height, int yOrigin = 0)
 	{
 		destroy();
-		if (width <= 0 || width > 1024 || height <= 0 || height > 20000 || yOrigin < 0 ||
+		if (width <= 0 || width > 2048 || height <= 0 || height > 20000 || yOrigin < 0 ||
 			(size_t)width > SIZE_MAX / sizeof(uint16_t) / (size_t)height)
 		{
 			return false;
@@ -41,8 +50,9 @@ public:
 		w = width;
 		h = height;
 		originY = yOrigin;
+		clip = { 0, yOrigin, width, yOrigin + height };
 		px = (uint16_t*)malloc(bytes);
-		if (!px) { w = h = originY = 0; return false; }
+		if (!px) { w = h = originY = 0; clip = {}; return false; }
 		return true;
 	}
 
@@ -50,6 +60,31 @@ public:
 	{
 		if (px) { free(px); px = nullptr; }
 		w = h = originY = 0;
+		clip = {};
+	}
+
+	BitmapClipRect getClipRect() const { return clip; }
+
+	void setClipRect(int x0, int y0, int x1, int y1)
+	{
+		clip.x0 = std::max(clip.x0, std::max(0, x0));
+		clip.y0 = std::max(clip.y0, std::max(originY, y0));
+		clip.x1 = std::min(clip.x1, std::min(w, x1));
+		clip.y1 = std::min(clip.y1, std::min(originY + h, y1));
+	}
+
+	void restoreClipRect(const BitmapClipRect& saved)
+	{
+		clip.x0 = std::max(0, std::min(w, saved.x0));
+		clip.y0 = std::max(originY, std::min(originY + h, saved.y0));
+		clip.x1 = std::max(clip.x0, std::min(w, saved.x1));
+		clip.y1 = std::max(clip.y0, std::min(originY + h, saved.y1));
+	}
+
+	inline bool isPixelVisible(int x, int y) const
+	{
+		return x >= clip.x0 && x < clip.x1 &&
+			y >= clip.y0 && y < clip.y1;
 	}
 
 	// Conversion couleur 0xAABBGGRR -> RGB565
@@ -61,7 +96,7 @@ public:
 
 	inline void setPixel(int x, int y, uint16_t v)
 	{
-		if (x < 0 || y < originY || x >= w || y >= originY + h) return;
+		if (!isPixelVisible(x, y)) return;
 		px[(size_t)(y - originY) * w + x] = v;
 	}
 

@@ -15,13 +15,18 @@
 
 #include "../../source/css/css.hpp"
 #include "../../source/render/bitmap.hpp"
+#include "../../source/render/image_fit.hpp"
 #include "../../source/render/layout.hpp"
+#include "../../source/render/text.hpp"
 #include "../../source/render/font_decode.hpp"
 #include "../../source/search/search.hpp"
 #include "../../source/search/search_page.hpp"
+#include "../../source/browser/compatibility_page.hpp"
 #include "../../source/html/parser.hpp"
 #include "../../source/image/image_store.hpp"
 #include "../../source/network/encoding.hpp"
+#include "../../source/pdf/pdf_reader.hpp"
+#include "../../source/common.hpp"
 #include "../../source/diag/diag.hpp"
 
 #include <cstdio>
@@ -66,12 +71,108 @@ static bool testImageStore()
 	return ok;
 }
 
+static bool testImageFit()
+{
+	ImageFitRect rect;
+	if (!calculateImageFitRect(100, 100, 200, 100, CssImageFitContain,
+		50, 50, rect) ||
+		rect.destX != 0.0f || rect.destY != 25.0f ||
+		rect.destW != 100.0f || rect.destH != 50.0f)
+		return false;
+	if (!calculateImageFitRect(100, 100, 200, 100, CssImageFitCover,
+		50, 50, rect) ||
+		rect.sourceX != 50.0f || rect.sourceY != 0.0f ||
+		rect.sourceW != 100.0f || rect.sourceH != 100.0f)
+		return false;
+	if (!calculateImageFitRect(100, 100, 200, 100, CssImageFitCover,
+		0, 50, rect) || rect.sourceX != 0.0f)
+		return false;
+
+	Document doc;
+	if (!htmlParse("<style>img { object-fit: cover; "
+		"object-position: 25% 75%; }</style>"
+		"<img src=\"/thumb.png\" width=\"64\" height=\"48\">", doc))
+		return false;
+	CssEngine css;
+	collectStyleBlocks(doc, css);
+	WebSettings settings;
+	settings.enableJS = false;
+	PageLayout layout(doc, css, settings);
+	PageModel page;
+	return layout.render(page, "https://example.test/page") &&
+		page.images.size() == 1 &&
+		page.images[0].fit == CssImageFitCover &&
+		page.images[0].positionX == 25 &&
+		page.images[0].positionY == 75;
+}
+
 static bool testResponseEncoding()
 {
 	const std::string binary("\xFF\xD8\x00\x80\xFE", 5);
 	if (convertEncodingToUtf8(binary, "image/jpeg", false) != binary) return false;
 	const std::string latin("caf\xE9", 4);
 	return convertEncodingToUtf8(latin, "text/html; charset=windows-1252") == "caf\xC3\xA9";
+}
+
+static bool testUrlOrigins()
+{
+	return urlSameOrigin("https://example.com/a", "HTTPS://EXAMPLE.COM/b?x=1") &&
+		urlSameOrigin("http://example.com:80/a", "http://example.com/b") &&
+		urlSameOrigin("https://example.com:443/a", "https://example.com/b") &&
+		urlSameOrigin("https://example.com:8443/a", "https://example.com:8443/b") &&
+		urlSameOrigin("https://[2001:db8::1]/a", "https://[2001:DB8::1]:443/b") &&
+		!urlSameOrigin("http://example.com/", "https://example.com/") &&
+		!urlSameOrigin("https://example.com/", "https://sub.example.com/") &&
+		!urlSameOrigin("https://example.com:8443/", "https://example.com/") &&
+		!urlSameOrigin("https://user@example.com/", "https://user@example.com/") &&
+		!urlSameOrigin("about:blank", "about:blank") &&
+		!urlSameOrigin("https://example.com/", "not a URL") &&
+		urlJoin("https://example.com/a/page", "HTTPS://other.example/b") ==
+			"https://other.example/b" &&
+		urlJoin("https://example.com/a/page", "JaVaScRiPt:alert(1)") ==
+			"javascript:alert(1)";
+}
+
+static bool testCompatibilityPage()
+{
+	Document doc;
+	if (!htmlParse(internalCompatibilityPageHtml(), doc) ||
+		doc.title() != "Test affichage Pixelnaute" ||
+		doc.textOf(doc.root).find("Sites reels") == std::string::npos)
+	{
+		printf("  echec parse/titre/contenu de la page interne\n");
+		return false;
+	}
+
+	CssEngine css;
+	collectStyleBlocks(doc, css);
+	WebSettings settings;
+	settings.enableJS = false;
+	PageLayout layout(doc, css, settings);
+	PageModel page;
+	const bool rendered = layout.renderSegment(page, "nw://display-test", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	if (!rendered ||
+		page.height < NW_TOP_HEIGHT || !page.bmp.px ||
+		page.links.size() < 5 || page.fields.empty())
+	{
+		printf("  rendu=%d hauteur=%d bitmap=%d liens=%zu champs=%zu\n",
+			rendered, page.height, page.bmp.px != nullptr, page.links.size(),
+			page.fields.size());
+		return false;
+	}
+
+	bool wikipedia = false, google = false, reddit = false;
+	for (const LinkBox& link : page.links)
+	{
+		wikipedia = wikipedia || link.url.find("wikipedia.org") != std::string::npos;
+		google = google || link.url.find("google.com") != std::string::npos;
+		reddit = reddit || link.url.find("reddit.com") != std::string::npos;
+	}
+	if (!wikipedia || !google || !reddit)
+		printf("  liens sites: Wikipedia=%d Google=%d Reddit=%d\n",
+			wikipedia, google, reddit);
+	return wikipedia && google && reddit;
 }
 
 //---------------------------------------------------------------------------
@@ -417,8 +518,18 @@ static void testBitmapCssEffects()
 			bitmap.getPixel(6, 6) == red;
 		bitmap.blendRect(0, 0, 1, 1, 0x800000FF);
 		ok = ok && bitmap.getPixel(0, 0) == Bitmap::rgb32To565(0xFF000080);
+		bitmap.clear(C_BLACK);
+		bitmap.setClipRect(3, 3, 9, 9);
+		bitmap.fillRect(0, 0, 12, 12, C_RED);
+		ok = ok && bitmap.getPixel(4, 4) == red &&
+			bitmap.getPixel(2, 4) == black &&
+			bitmap.getPixel(4, 2) == black &&
+			bitmap.getPixel(10, 4) == black;
+		bitmap.restoreClipRect({ 0, 0, 12, 12 });
+		bitmap.fillRect(0, 0, 1, 1, C_BLUE);
+		ok = ok && bitmap.getPixel(0, 0) == Bitmap::rgb32To565(C_BLUE);
 	}
-	check(ok, "coins arrondis et transparence CSS sur bitmap");
+	check(ok, "coins arrondis, transparence et decoupage bitmap CSS");
 }
 
 static void testPageSegments()
@@ -632,6 +743,56 @@ static void testGridLayout()
 	check(ok, "CSS Flexbox: flex-direction:column avec gap vertical");
 }
 
+static void testFlexReverseLayout()
+{
+	WebSettings settings;
+	settings.enableJS = false;
+	const std::string html =
+		"<html><head><style>"
+		".row{flex-direction:row-reverse}.row{display:flex}"
+		".column{flex-direction:column-reverse}.column{display:flex}"
+		".first{width:40px;height:20px;background:#ff0000}"
+		".second{width:40px;height:20px;background:#0000ff}"
+		"</style></head><body>"
+		"<div class=\"row\"><div class=\"first\"></div><div class=\"second\"></div></div>"
+		"<div class=\"column\"><div class=\"first\"></div><div class=\"second\"></div></div>"
+		"</body></html>";
+	Document doc;
+	bool ok = htmlParse(html, doc);
+	CssEngine css;
+	collectStyleBlocks(doc, css);
+	PageLayout layout(doc, css, settings);
+	PageModel page;
+	ok = ok && layout.renderSegment(page, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	if (ok)
+	{
+		const uint16_t red = Bitmap::rgb32To565(0xFF0000FF);
+		const uint16_t blue = Bitmap::rgb32To565(0xFFFF0000);
+		int redRowX = NW_PAGE_WIDTH, blueRowX = NW_PAGE_WIDTH;
+		for (int x = 0; x < NW_PAGE_WIDTH; ++x)
+		{
+			if (redRowX == NW_PAGE_WIDTH && page.bmp.getPixel(x, 2) == red)
+				redRowX = x;
+			if (blueRowX == NW_PAGE_WIDTH && page.bmp.getPixel(x, 2) == blue)
+				blueRowX = x;
+		}
+
+		int redColumnY = page.height, blueColumnY = page.height;
+		for (int y = 0; y < page.height; ++y)
+		{
+			if (redColumnY == page.height && page.bmp.getPixel(12, y) == red)
+				redColumnY = y;
+			if (blueColumnY == page.height && page.bmp.getPixel(12, y) == blue)
+				blueColumnY = y;
+		}
+		ok = redRowX < NW_PAGE_WIDTH && blueRowX < NW_PAGE_WIDTH &&
+			redRowX > blueRowX && redColumnY < page.height &&
+			blueColumnY < page.height && redColumnY > blueColumnY;
+	}
+	check(ok, "CSS Flexbox: row-reverse et column-reverse");
+}
+
 static void testRootThemeColors()
 {
 	const std::string html =
@@ -803,6 +964,638 @@ static void testModernCssLayout()
 	check(ok, "rendu CSS combine alpha, coins arrondis et ombre");
 }
 
+static void testCssJustifiedText()
+{
+	const std::string html =
+		"<html><body><p style=\"width:180px;text-align:justify\">"
+		"Lorem ipsum dolor sit amet consectetur adipiscing elit sed do "
+		"eiusmod tempor incididunt ut labore et dolore magna aliqua"
+		"</p></body></html>";
+	Document doc;
+	bool ok = htmlParse(html, doc);
+	WebSettings settings;
+	settings.enableJS = false;
+	CssEngine css;
+	collectStyleBlocks(doc, css);
+	PageLayout layout(doc, css, settings);
+	PageModel page;
+	ok = ok && layout.renderSegment(page, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	bool fullLine = false;
+	bool inkNearRightEdge = false;
+	if (ok)
+	{
+		const uint16_t white = Bitmap::rgb32To565(0xFFFFFFFF);
+		for (const TextRunBox& run : page.textRuns)
+		{
+			if (run.w != 180 || run.text.find(' ') == std::string::npos)
+				continue;
+			fullLine = true;
+			for (int y = run.y; y < run.y + run.h && !inkNearRightEdge; ++y)
+				for (int x = 160; x < 184; ++x)
+					if (page.bmp.getPixel(x, y) != white)
+					{
+						inkNearRightEdge = true;
+						break;
+					}
+		}
+	}
+	check(ok && fullLine && inkNearRightEdge,
+		"CSS text-align:justify distribue l'espace sur les lignes pleines");
+}
+
+static void testHtmlInlineWhitespace()
+{
+	Document doc;
+	bool ok = htmlParse(
+		"<html><body><p><span>alpha</span> <span>beta</span></p></body></html>",
+		doc);
+	WebSettings settings;
+	settings.enableJS = false;
+	CssEngine css;
+	PageLayout layout(doc, css, settings);
+	PageModel page;
+	ok = ok && layout.renderSegment(page, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	TextRunBox alpha, beta;
+	if (ok)
+	{
+		for (const TextRunBox& run : page.textRuns)
+		{
+			if (run.text == "alpha") alpha = run;
+			else if (run.text == " beta") beta = run;
+		}
+		ok = alpha.w > 0 && beta.w > 0 && alpha.y == beta.y &&
+			beta.x >= alpha.x + alpha.w;
+	}
+	check(ok, "HTML inline whitespace remains visible between sibling elements");
+}
+
+static void testHtmlMediaFallback()
+{
+	Document doc;
+	bool ok = htmlParse(
+		"<body><canvas><p>canvas fallback</p></canvas>"
+		"<video><p>video fallback</p></video>"
+		"<audio><p>audio fallback</p></audio></body>", doc);
+	WebSettings settings;
+	settings.enableJS = false;
+	CssEngine css;
+	collectStyleBlocks(doc, css);
+	PageLayout layout(doc, css, settings);
+	PageModel page;
+	ok = ok && layout.renderSegment(page, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	static const char* expected[] = {
+		"canvas fallback", "video fallback", "audio fallback"
+	};
+	for (const char* text : expected)
+	{
+		bool found = false;
+		for (const TextRunBox& run : page.textRuns)
+			if (run.text.find(text) != std::string::npos)
+				found = true;
+		ok = ok && found;
+	}
+	check(ok, "HTML canvas and media fallback content remains visible");
+}
+
+static void testCssTableDisplay()
+{
+	const std::string html =
+		"<html><body><div class=\"board\"><div class=\"row\">"
+		"<div class=\"cell\">X</div><div class=\"cell\"></div>"
+		"<div class=\"cell\"></div></div><div class=\"row\">"
+		"<div class=\"cell\"></div><div class=\"cell\"></div>"
+		"<div class=\"cell\"></div></div><div class=\"row\">"
+		"<div class=\"cell\"></div><div class=\"cell\"></div>"
+		"<div class=\"cell\"></div></div></div></body></html>";
+	Document doc;
+	bool ok = htmlParse(html, doc);
+	WebSettings settings;
+	settings.enableJS = false;
+	CssEngine css;
+	css.parseStylesheet(
+		".board { display: table; margin: 0 auto; } "
+		".row { display: table-row; } "
+		".cell { display: table-cell; width: 40px; height: 40px; "
+		"border: 2px solid red; background: #00ff00; "
+		"text-align: center; vertical-align: middle; }");
+	collectStyleBlocks(doc, css);
+	PageLayout layout(doc, css, settings);
+	PageModel page;
+	ok = ok && layout.renderSegment(page, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	if (ok)
+	{
+		const uint16_t green = Bitmap::rgb32To565(0xFF00FF00);
+		int greenPixels = 0;
+		int firstGreenX = page.bmp.w, lastGreenX = -1;
+		int firstGreenY = page.bmp.h, lastGreenY = -1;
+		int centeredTextY = -1;
+		for (const TextRunBox& run : page.textRuns)
+			if (run.text == "X") centeredTextY = run.y;
+		for (int y = 0; y < std::min(180, page.bmp.h); ++y)
+			for (int x = 0; x < page.bmp.w; ++x)
+				if (page.bmp.getPixel(x, y) == green)
+				{
+					++greenPixels;
+					firstGreenX = std::min(firstGreenX, x);
+					lastGreenX = std::max(lastGreenX, x);
+					firstGreenY = std::min(firstGreenY, y);
+					lastGreenY = std::max(lastGreenY, y);
+				}
+		ok = greenPixels >= 4000 && firstGreenX > 50 &&
+			lastGreenX < page.bmp.w - 50 &&
+			lastGreenX - firstGreenX >= 100 &&
+			lastGreenY - firstGreenY >= 120 &&
+			centeredTextY >= firstGreenY + 5 &&
+			centeredTextY < firstGreenY + 35;
+		if (!ok)
+			printf("  table display: green=%d bounds=(%d,%d)-(%d,%d) "
+				"textY=%d bitmap=%dx%d\n", greenPixels, firstGreenX,
+				firstGreenY, lastGreenX, lastGreenY, centeredTextY,
+				page.bmp.w, page.bmp.h);
+	}
+	check(ok, "CSS display: table, table-row et table-cell");
+}
+
+static void testCssInlineBlock()
+{
+	Document doc;
+	bool ok = htmlParse(
+		"<html><body><div><a href=\"/one\" class=\"pill\">Un</a>"
+		"<a href=\"/two\" class=\"pill\">Deux</a></div></body></html>",
+		doc);
+	WebSettings settings;
+	settings.enableJS = false;
+	CssEngine css;
+	css.parseStylesheet(
+		".pill { display:inline-block; padding:3px 5px; "
+		"background:#ff0000; border:1px solid #0000ff; }");
+	collectStyleBlocks(doc, css);
+	PageLayout layout(doc, css, settings);
+	PageModel page;
+	ok = ok && layout.renderSegment(page, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	int firstX = -1, secondX = -1, firstY = -1, secondY = -1;
+	bool firstLink = false, secondLink = false;
+	if (ok)
+	{
+		for (const TextRunBox& run : page.textRuns)
+		{
+			if (run.text == "Un") { firstX = run.x; firstY = run.y; }
+			if (run.text == "Deux") { secondX = run.x; secondY = run.y; }
+		}
+		for (const LinkBox& link : page.links)
+		{
+			if (link.url == "https://test/one") firstLink = true;
+			if (link.url == "https://test/two") secondLink = true;
+		}
+		ok = firstX >= 0 && secondX > firstX && firstY == secondY &&
+			firstLink && secondLink &&
+			page.bmp.getPixel(firstX - 3, firstY + 3) ==
+				Bitmap::rgb32To565(0xFF0000FF);
+	}
+	check(ok, "CSS inline-block garde les boutons sur une ligne et cliquables");
+}
+
+static void testCssOutOfFlowPositioning()
+{
+	const std::string html =
+		"<html><body><div style=\"position: absolute; left: 30px; top: 20px; "
+		"width: 60px; height: 24px; background: red\">ABS</div>"
+		"<a href=\"/fixed\" style=\"display: block; position: fixed; "
+		"right: 10px; top: 12px; width: 50px; height: 24px; "
+		"background: blue\">FIX</a>"
+		"<p>Normal flow</p></body></html>";
+	Document doc;
+	bool ok = htmlParse(html, doc);
+	WebSettings settings;
+	settings.enableJS = false;
+	CssEngine css;
+	collectStyleBlocks(doc, css);
+	PageLayout layout(doc, css, settings);
+	PageModel page;
+	ok = ok && layout.renderSegment(page, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	int absoluteY = -1, fixedY = -1, normalY = -1;
+	if (ok)
+	{
+		for (const TextRunBox& run : page.textRuns)
+		{
+			if (run.text == "ABS") absoluteY = run.y;
+			else if (run.text == "FIX") fixedY = run.y;
+			else if (run.text.find("Normal flow") != std::string::npos)
+				normalY = run.y;
+		}
+		ok = absoluteY >= 20 && absoluteY <= 24 &&
+			fixedY >= 12 && fixedY <= 16 &&
+			normalY >= 0 && normalY < 20 && page.height < 80 &&
+			!page.fixedBoxes.empty();
+		bool fixedLink = false;
+		for (const LinkBox& link : page.links)
+			if (link.fixed && link.url == "https://test/fixed")
+				fixedLink = true;
+		ok = ok && fixedLink;
+	}
+	check(ok, "CSS position absolute et fixed hors du flux normal");
+
+	PageModel nextSegment;
+	ok = ok && layout.renderSegment(nextSegment, "https://test/", 1,
+		NW_PAGE_SEGMENT_HEIGHT + NW_PAGE_SEGMENT_OVERLAP);
+	bool fixedInSegment = false;
+	if (ok)
+		for (const TextRunBox& run : nextSegment.textRuns)
+			if (run.text == "FIX" && run.y >= nextSegment.bmp.originY)
+				fixedInSegment = true;
+	check(ok && fixedInSegment,
+		"CSS position fixed est redessine dans les segments suivants");
+}
+
+static void testCssFloatRight()
+{
+	const std::string html =
+		"<html><body><div style=\"width: 200px; background: #eeeeee\">"
+		"<span>Titre</span><span class=\"tag\">Jouable</span></div></body></html>";
+	Document doc;
+	bool ok = htmlParse(html, doc);
+	WebSettings settings;
+	settings.enableJS = false;
+	CssEngine css;
+	css.parseStylesheet(
+		".tag { float: right; background: red; padding: 2px; }");
+	collectStyleBlocks(doc, css);
+	PageLayout layout(doc, css, settings);
+	PageModel page;
+	ok = ok && layout.renderSegment(page, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	int titleX = -1, badgeX = -1;
+	if (ok)
+		for (const TextRunBox& run : page.textRuns)
+		{
+			if (run.text == "Titre") titleX = run.x;
+			if (run.text == "Jouable") badgeX = run.x;
+		}
+	ok = ok && titleX >= 0 && badgeX > titleX + 80 && badgeX < 190;
+	check(ok, "CSS float:right place un badge en bord droit sans casser le flux");
+}
+
+static void testCssBorderStyles()
+{
+	auto render = [](const char* borderStyle, PageModel& page)
+	{
+		Document doc;
+		const std::string html =
+			std::string("<html><body><div style=\"background: white; border: 2px ") +
+			borderStyle + " red; padding: 8px\">Bordure CSS</div></body></html>";
+		if (!htmlParse(html, doc)) return false;
+		WebSettings settings;
+		settings.enableJS = false;
+		CssEngine css;
+		collectStyleBlocks(doc, css);
+		PageLayout layout(doc, css, settings);
+		return layout.renderSegment(page, "https://test/", 0,
+			NW_PAGE_SEGMENT_HEIGHT);
+	};
+
+	PageModel dashed;
+	PageModel dotted;
+	bool ok = render("dashed", dashed) && render("dotted", dotted);
+	int longestDashedRun = 0;
+	int longestDottedRun = 0;
+	if (ok)
+	{
+		const uint16_t red = Bitmap::rgb32To565(0xFF0000FF);
+		for (int x = 0, run = 0; x < dashed.bmp.w; ++x)
+		{
+			run = dashed.bmp.getPixel(x, 0) == red ? run + 1 : 0;
+			longestDashedRun = std::max(longestDashedRun, run);
+		}
+		for (int x = 0, run = 0; x < dotted.bmp.w; ++x)
+		{
+			run = dotted.bmp.getPixel(x, 0) == red ? run + 1 : 0;
+			longestDottedRun = std::max(longestDottedRun, run);
+		}
+		ok = longestDottedRun > 0 && longestDashedRun > longestDottedRun;
+	}
+	check(ok, "CSS border-style: rendu distingue dashed et dotted");
+}
+
+static void testCssBorderSides()
+{
+	Document doc;
+	bool ok = htmlParse(
+		"<html><body><div style=\"background: white; border: 2px solid red; "
+		"border-top: 4px dashed blue; border-left-width: 3px; padding: 8px\">"
+		"Bordures independantes</div></body></html>", doc);
+	WebSettings settings;
+	settings.enableJS = false;
+	CssEngine css;
+	collectStyleBlocks(doc, css);
+	PageLayout layout(doc, css, settings);
+	PageModel page;
+	ok = ok && layout.renderSegment(page, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	if (ok)
+	{
+		const uint16_t blue = Bitmap::rgb32To565(0xFFFF0000);
+		const uint16_t red = Bitmap::rgb32To565(0xFF0000FF);
+		bool hasBlueTop = false;
+		bool hasRedRight = false;
+		for (int x = 0; x < page.bmp.w; ++x)
+			if (page.bmp.getPixel(x, 0) == blue) hasBlueTop = true;
+		for (int y = 0; y < std::min(64, page.bmp.h); ++y)
+			for (int x = std::max(0, page.bmp.w - 10); x < page.bmp.w; ++x)
+				if (page.bmp.getPixel(x, y) == red) hasRedRight = true;
+		ok = hasBlueTop && hasRedRight;
+	}
+	check(ok, "CSS border par côté respecte styles et couleurs distincts");
+}
+
+static void testCssTextAndPercentWidths()
+{
+	Document doc;
+	bool ok = htmlParse(
+		"<html><body><div style=\"width: 50%; background: red\">"
+		"<div style=\"width: 50%; background: blue; white-space: nowrap; "
+		"text-transform: uppercase\">texte conserve sur une seule ligne</div>"
+		"</div><p style=\"white-space: pre-line\">ligne une\nligne deux</p></body></html>",
+		doc);
+	WebSettings settings;
+	settings.enableJS = false;
+	CssEngine css;
+	collectStyleBlocks(doc, css);
+	PageLayout layout(doc, css, settings);
+	PageModel page;
+	ok = ok && layout.renderSegment(page, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	bool transformed = false;
+	int preLineRuns = 0;
+	if (ok)
+	{
+		for (const TextRunBox& run : page.textRuns)
+		{
+			if (run.text.find("TEXTE CONSERVE") != std::string::npos)
+				transformed = true;
+			if (run.text.find("ligne une") != std::string::npos ||
+				run.text.find("ligne deux") != std::string::npos)
+				++preLineRuns;
+		}
+		const uint16_t red = Bitmap::rgb32To565(0xFF0000FF);
+		const uint16_t blue = Bitmap::rgb32To565(0xFFFF0000);
+		ok = transformed && preLineRuns == 2 &&
+			page.bmp.getPixel(50, 5) == blue &&
+			page.bmp.getPixel(150, 5) == red &&
+			page.bmp.getPixel(250, 5) != red;
+	}
+	check(ok, "CSS text-transform, white-space et largeur relative au parent");
+
+	Document spacingDoc;
+	ok = htmlParse(
+		"<html><body><p>PIXEL</p>"
+		"<p style=\"letter-spacing: 2px\">PIXEL</p></body></html>",
+		spacingDoc);
+	CssEngine spacingCss;
+	collectStyleBlocks(spacingDoc, spacingCss);
+	PageLayout spacingLayout(spacingDoc, spacingCss, settings);
+	PageModel spacingPage;
+	ok = ok && spacingLayout.renderSegment(spacingPage, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	int regularWidth = -1, spacedWidth = -1;
+	if (ok)
+	{
+		for (const TextRunBox& run : spacingPage.textRuns)
+		{
+			if (run.text != "PIXEL") continue;
+			if (regularWidth < 0) regularWidth = run.w;
+			else spacedWidth = run.w;
+		}
+		ok = regularWidth >= 0 && spacedWidth - regularWidth >= 4;
+		if (!ok)
+		{
+			printf("  letter spacing: regular=%d spaced=%d runs=%u\n",
+				regularWidth, spacedWidth,
+				(unsigned)spacingPage.textRuns.size());
+		}
+	}
+	check(ok, "CSS letter-spacing ajuste la largeur et le rendu du texte");
+
+	Document emSpacingDoc;
+	ok = htmlParse(
+		"<html><body><p style=\"font-size: 20px; letter-spacing: 0.1em\">"
+		"PIXEL</p><p style=\"letter-spacing: 0.1em; font-size: 20px\">"
+		"PIXEL</p></body></html>", emSpacingDoc);
+	CssEngine emSpacingCss;
+	collectStyleBlocks(emSpacingDoc, emSpacingCss);
+	Style inheritedStyle = defaultStyle();
+	float emWidths[2] = {};
+	size_t emWidthIndex = 0;
+	for (size_t i = 0; i < emSpacingDoc.nodes.size(); ++i)
+	{
+		if (emSpacingDoc.nodes[i].tag != "p") continue;
+		const Style resolved = emSpacingCss.resolve(emSpacingDoc, (int)i,
+			defaultStyle());
+		if (resolved.letterSpacing != 2.0f) ok = false;
+		if (emWidthIndex < 2)
+			emWidths[emWidthIndex++] = TextEngine::instance().measure(
+				"PIXEL", 0.55f, resolved.letterSpacing);
+		inheritedStyle = resolved;
+	}
+	ok = ok && emWidthIndex == 2 && emWidths[0] == emWidths[1] &&
+		!inheritedStyle.letterSpacingIsEm;
+	check(ok, "CSS letter-spacing em suit la taille de police calculee");
+
+	Document preWrapDoc;
+	ok = htmlParse("<html><body><div style=\"width: 40px; "
+		"white-space: pre-wrap\">AAAA  BBBB CCCC</div></body></html>",
+		preWrapDoc);
+	CssEngine preWrapCss;
+	collectStyleBlocks(preWrapDoc, preWrapCss);
+	PageLayout preWrapLayout(preWrapDoc, preWrapCss, settings);
+	PageModel preWrapPage;
+	ok = ok && preWrapLayout.renderSegment(preWrapPage, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	std::string wrappedText;
+	int firstLineY = -1;
+	bool hasWrappedLine = false;
+	if (ok)
+	{
+		for (const TextRunBox& run : preWrapPage.textRuns)
+		{
+			if (run.text.find_first_not_of(" ABCDEFGHIJKLMNOPQRSTUVWXYZ") !=
+				std::string::npos)
+				continue;
+			if (run.text.empty()) continue;
+			wrappedText += run.text;
+			if (firstLineY < 0) firstLineY = run.y;
+			else if (run.y != firstLineY) hasWrappedLine = true;
+		}
+		ok = wrappedText == "AAAA  BBBB CCCC" && hasWrappedLine;
+	}
+	check(ok, "CSS white-space: pre-wrap conserve les espaces et revient a la ligne");
+}
+
+static void testCssOverflowClipping()
+{
+	Document doc;
+	bool ok = htmlParse(
+		"<html><body><div style=\"width:40px;height:10px;overflow:hidden\">"
+		"<span style=\"white-space:pre\">AAAAAAAAAAAA\nBBBBBBBBBBBB</span>"
+		"</div></body></html>", doc);
+	WebSettings settings;
+	settings.enableJS = false;
+	CssEngine css;
+	collectStyleBlocks(doc, css);
+	PageLayout layout(doc, css, settings);
+	PageModel page;
+	ok = ok && layout.renderSegment(page, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	if (ok)
+	{
+		const uint16_t textColor = Bitmap::rgb32To565(0xFF202020);
+		bool leakedOutsideClip = false;
+		for (int y = 16; y < 48; ++y)
+			for (int x = 0; x < page.bmp.w; ++x)
+				if (page.bmp.getPixel(x, y) == textColor)
+					leakedOutsideClip = true;
+		for (int y = 0; y < 16; ++y)
+			for (int x = 50; x < page.bmp.w; ++x)
+				if (page.bmp.getPixel(x, y) == textColor)
+					leakedOutsideClip = true;
+		ok = !leakedOutsideClip;
+	}
+	check(ok, "CSS overflow:hidden decoupe le texte sur les deux axes");
+}
+
+static void testCssPercentHeights()
+{
+	Document doc;
+	bool ok = htmlParse(
+		"<html><body><div style=\"height:100px;background:red\">"
+		"<div style=\"height:50%;background:blue\"></div>"
+		"<div style=\"min-height:25%;max-height:40%;background:#00ff00\"></div>"
+		"</div></body></html>", doc);
+	WebSettings settings;
+	settings.enableJS = false;
+	CssEngine css;
+	collectStyleBlocks(doc, css);
+	PageLayout layout(doc, css, settings);
+	PageModel page;
+	ok = ok && layout.renderSegment(page, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	if (ok)
+	{
+		const uint16_t blue = Bitmap::rgb32To565(0xFFFF0000);
+		const uint16_t green = Bitmap::rgb32To565(0xFF00FF00);
+		ok = page.bmp.getPixel(8, 5) == blue &&
+			page.bmp.getPixel(8, 60) == green &&
+			page.bmp.getPixel(8, 85) == Bitmap::rgb32To565(0xFF0000FF);
+	}
+	check(ok, "CSS height/min-height/max-height en pourcentage du parent explicite");
+}
+
+static void testCssRelativePosition()
+{
+	auto renderPositions = [](bool relative, TextRunBox& first,
+		TextRunBox& second)
+	{
+		const std::string positioning = relative
+			? "position:relative;left:20px;top:10px;" : "";
+		const std::string html =
+			"<html><body><div style=\"" + positioning +
+			"background:#ff0000\">premier</div>"
+			"<div style=\"background:#0000ff\">second</div>"
+			"</body></html>";
+		Document doc;
+		if (!htmlParse(html, doc)) return false;
+		WebSettings settings;
+		settings.enableJS = false;
+		CssEngine css;
+		collectStyleBlocks(doc, css);
+		PageLayout layout(doc, css, settings);
+		PageModel page;
+		if (!layout.renderSegment(page, "https://test/", 0,
+			NW_PAGE_SEGMENT_HEIGHT))
+			return false;
+		for (const TextRunBox& run : page.textRuns)
+		{
+			if (run.text == "premier") first = run;
+			else if (run.text == "second") second = run;
+		}
+		return !first.text.empty() && !second.text.empty();
+	};
+
+	TextRunBox relativeFirst, relativeSecond, staticFirst, staticSecond;
+	const bool rendered = renderPositions(true, relativeFirst, relativeSecond) &&
+		renderPositions(false, staticFirst, staticSecond);
+	const bool ok = rendered &&
+		relativeFirst.x == staticFirst.x + 20 &&
+		relativeFirst.y == staticFirst.y + 10 &&
+		relativeSecond.x == staticSecond.x &&
+		relativeSecond.y == staticSecond.y;
+	check(ok, "CSS position:relative decale le rendu sans deplacer le flux suivant");
+
+	auto renderPercentPosition = [](bool relative, TextRunBox& run)
+	{
+		const std::string position = relative
+			? "position:relative;left:10%;top:25%;" : "";
+		const std::string html =
+			"<html><body><div style=\"width:200px;height:100px\">"
+			"<div style=\"" + position +
+			"background:#ff0000\">pourcentage</div></div></body></html>";
+		Document doc;
+		if (!htmlParse(html, doc)) return false;
+		WebSettings settings;
+		settings.enableJS = false;
+		CssEngine css;
+		collectStyleBlocks(doc, css);
+		PageLayout layout(doc, css, settings);
+		PageModel page;
+		if (!layout.renderSegment(page, "https://test/", 0,
+			NW_PAGE_SEGMENT_HEIGHT))
+			return false;
+		for (const TextRunBox& text : page.textRuns)
+			if (text.text == "pourcentage") run = text;
+		return !run.text.empty();
+	};
+	TextRunBox percentStatic, percentRelative;
+	const bool percentRendered =
+		renderPercentPosition(false, percentStatic) &&
+		renderPercentPosition(true, percentRelative);
+	check(percentRendered &&
+		percentRelative.x >= percentStatic.x + 18 &&
+		percentRelative.x <= percentStatic.x + 20 &&
+		percentRelative.y == percentStatic.y + 25,
+		"CSS position:relative calcule les decalages en pourcentage");
+}
+
+static void testFlexGrowLayout()
+{
+	Document doc;
+	bool ok = htmlParse(
+		"<html><body><div style=\"display: flex; gap: 0\">"
+		"<div style=\"flex-grow: 1; background: red\">A</div>"
+		"<div style=\"flex-grow: 1; background: blue\">B</div>"
+		"</div></body></html>", doc);
+	WebSettings settings;
+	settings.enableJS = false;
+	CssEngine css;
+	collectStyleBlocks(doc, css);
+	PageLayout layout(doc, css, settings);
+	PageModel page;
+	ok = ok && layout.renderSegment(page, "https://test/", 0,
+		NW_PAGE_SEGMENT_HEIGHT);
+	if (ok)
+	{
+		const uint16_t red = Bitmap::rgb32To565(0xFF0000FF);
+		const uint16_t blue = Bitmap::rgb32To565(0xFFFF0000);
+		ok = page.bmp.getPixel(100, 2) == red &&
+			page.bmp.getPixel(300, 2) == blue;
+	}
+	check(ok, "Flexbox partage l'espace libre avec flex-grow");
+}
+
 static void testPreformattedCssText()
 {
 	Document doc;
@@ -848,6 +1641,38 @@ static void testPreformattedCssText()
 	check(ok && backgroundRendered && redPixels > 10 && firstRedY >= 0 &&
 		lastRedY - firstRedY >= 10,
 		"bloc pre respecte fond, padding, couleur, taille et interligne CSS");
+}
+
+static void testCssItalicText()
+{
+	auto render = [](const char* style, PageModel& page)
+	{
+		Document doc;
+		const std::string html = std::string("<html><body><p style=\"font-size: 24px; ") +
+			style + "\">Pixelnaute italic</p></body></html>";
+		if (!htmlParse(html, doc)) return false;
+		WebSettings settings;
+		settings.enableJS = false;
+		CssEngine css;
+		collectStyleBlocks(doc, css);
+		PageLayout layout(doc, css, settings);
+		return layout.renderSegment(page, "https://test/", 0,
+			NW_PAGE_SEGMENT_HEIGHT);
+	};
+
+	PageModel regular;
+	PageModel italic;
+	bool ok = render("", regular) && render("font-style: italic;", italic) &&
+		regular.bmp.w == italic.bmp.w && regular.bmp.h == italic.bmp.h;
+	int differentPixels = 0;
+	if (ok)
+	{
+		const size_t pixelCount = (size_t)regular.bmp.w * regular.bmp.h;
+		for (size_t i = 0; i < pixelCount; ++i)
+			if (regular.bmp.px[i] != italic.bmp.px[i]) ++differentPixels;
+		ok = differentPixels > 0;
+	}
+	check(ok, "font-style: italic modifie le rendu du texte");
 }
 
 static void testGlyphReadBack()
@@ -1008,9 +1833,58 @@ static void renderSheet()
 	}
 }
 
-int main()
+int main(int argc, char** argv)
 {
+	if (argc > 1)
+	{
+		PdfDocument document;
+		std::string error;
+		if (!pdfReadFile(argv[1], document, error))
+		{
+			printf("PDF test failed: %s\n", error.c_str());
+			return 1;
+		}
+		const std::string replacement = "\xEF\xBF\xBD";
+		size_t replacementCount = 0;
+		for (const std::string& page : document.pages)
+		{
+			size_t pos = 0;
+			while ((pos = page.find(replacement, pos)) != std::string::npos)
+			{
+				++replacementCount;
+				pos += replacement.size();
+			}
+		}
+		printf("PDF pages=%zu replacements=%zu\n", document.pages.size(),
+			replacementCount);
+		if (!document.pages.empty())
+			printf("%s\n", document.pages[0].substr(0, 6000).c_str());
+		for (int zoom : { 100, 125, 150, 200, 300 })
+		{
+			const int width = NW_PAGE_WIDTH * zoom / 100;
+			Document pageDocument;
+			CssEngine css;
+			WebSettings settings;
+			settings.enableJS = false;
+			if (!htmlParse(pdfDocumentHtml(document, "PDF test", 0, zoom),
+				pageDocument))
+				return 3;
+			css.setViewportWidth(width);
+			collectStyleBlocks(pageDocument, css);
+			PageLayout layout(pageDocument, css, settings, width);
+			PageModel page;
+			if (!layout.renderSegment(page, "file://pdf-test", 0,
+				NW_PAGE_SEGMENT_HEIGHT) || page.bmp.w != width)
+				return 4;
+			printf("zoom=%d%% rendered-width=%d height=%d\n", zoom,
+				page.bmp.w, page.height);
+		}
+		return replacementCount == 0 ? 0 : 2;
+	}
 	printf("=== Verification PC de la recherche, du CSS et de la police ===\n\n");
+	const int pdfFailures = pdfSelfTest();
+	printf("PDF simple : %s\n", pdfFailures == 0 ? "OK" : "ECHEC");
+	g_failures += pdfFailures;
 	int searchFailures = searchSelfTest();
 	if (searchFailures == 0)
 		printf("Recherche : OK\n");
@@ -1046,9 +1920,15 @@ int main()
 	const bool imageOk = testImageStore();
 	printf("Cache images / LRU : %s\n", imageOk ? "OK" : "ECHEC");
 	if (!imageOk) g_failures++;
+	const bool imageFitOk = testImageFit();
+	printf("CSS object-fit / cadrage image : %s\n", imageFitOk ? "OK" : "ECHEC");
+	if (!imageFitOk) g_failures++;
 	const bool encodingOk = testResponseEncoding();
 	printf("Reponses binaires / encodage texte : %s\n", encodingOk ? "OK" : "ECHEC");
 	if (!encodingOk) g_failures++;
+	const bool urlOriginsOk = testUrlOrigins();
+	printf("Origines URL / politique CORS : %s\n", urlOriginsOk ? "OK" : "ECHEC");
+	if (!urlOriginsOk) g_failures++;
 	testSwizzleBijection();
 	testAlphaRoundTrip();
 	testLinearGradient();
@@ -1057,13 +1937,33 @@ int main()
 	buildFont();
 	testGlyphReadBack();
 	renderSheet();
+	const bool compatibilityPageOk = testCompatibilityPage();
+	printf("Page de test du rendu Pixelnaute : %s\n",
+		compatibilityPageOk ? "OK" : "ECHEC");
+	if (!compatibilityPageOk) g_failures++;
 	testBitmapCssEffects();
 	testPageSegments();
 	testGridLayout();
+	testFlexReverseLayout();
 	testRootThemeColors();
 	testSegmentedBackgroundKeepsText();
 	testModernCssLayout();
+	testCssJustifiedText();
+	testHtmlInlineWhitespace();
+	testHtmlMediaFallback();
+	testCssTableDisplay();
+	testCssInlineBlock();
+	testCssOutOfFlowPositioning();
+	testCssFloatRight();
+	testCssBorderStyles();
+	testCssBorderSides();
+	testCssTextAndPercentWidths();
+	testCssOverflowClipping();
+	testCssPercentHeights();
+	testCssRelativePosition();
+	testFlexGrowLayout();
 	testPreformattedCssText();
+	testCssItalicText();
 
 	printf("\n%s (%d echec%s)\n", g_failures == 0 ? "TOUT EST OK" : "DES ECHECS",
 		g_failures, g_failures > 1 ? "s" : "");

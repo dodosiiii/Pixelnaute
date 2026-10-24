@@ -1,0 +1,51 @@
+#pragma once
+
+#include <string>
+
+inline std::string internalCompatibilityPageHtml()
+{
+	return
+		"<html><head><title>Test affichage Pixelnaute</title><style>"
+		"body{background:#10182D;color:#F4F0EF;font-family:sans-serif;margin:8px}"
+		"h1{color:#F2A25C;font-size:25px;margin-bottom:6px}"
+		"h2{color:#F2A25C;font-size:18px;margin-bottom:5px}"
+		".card{background:#1B2B4B;padding:8px;margin:8px 0;border:1px solid #49618A}"
+		".sample{background:#22365C;padding:5px;margin:4px 0}"
+		"a{color:#8FCBFF}"
+		"</style></head><body>"
+		"<h1>TEST AFFICHAGE</h1>"
+		"<p>Cette page montre les elements que Pixelnaute sait rendre. "
+		"Faites defiler, puis testez les liens de vrais sites.</p>"
+		"<div class='card'><h2>1. Texte et couleurs</h2>"
+		"<p>Texte normal, <b>gras</b>, <i>italique</i> et "
+		"<span style='color:#F2A25C'>couleur accent</span>.</p>"
+		"<p style='font-size:12px'>Petit texte (12 px)</p>"
+		"<p style='font-size:20px'>Grand texte (20 px)</p></div>"
+		"<div class='card'><h2>2. Blocs, liens et listes</h2>"
+		"<div class='sample'>Bloc avec fond, bordure et marge</div>"
+		"<ul><li>Premier element</li><li>Deuxieme element</li></ul>"
+		"<a href='https://fr.wikipedia.org/wiki/Nintendo_3DS'>"
+		"Tester Wikipedia : article Nintendo 3DS</a></div>"
+		"<div class='card'><h2>3. Formulaire</h2>"
+		"<p>Le champ doit etre selectionnable et modifiable.</p>"
+		"<form action='https://www.google.com/search' method='get'>"
+		"<input type='text' name='q' value='New Nintendo 3DS' size='20'>"
+		"<button type='submit'>Rechercher sur Google</button></form></div>"
+		"<div class='card'><h2>4. Tableau et separateur</h2>"
+		"<table style='width:100%;border:1px solid #8FCBFF'>"
+		"<tr><th style='color:#F2A25C'>Fonction</th>"
+		"<th style='color:#F2A25C'>Test</th></tr>"
+		"<tr><td>HTML</td><td>Texte</td></tr>"
+		"<tr><td>CSS</td><td>Couleurs</td></tr></table><hr>"
+		"<p>Le tableau peut etre simplifie, mais le texte doit rester lisible.</p></div>"
+		"<div class='card'><h2>5. Sites reels</h2>"
+		"<p><a href='https://fr.wikipedia.org/wiki/Nintendo_3DS'>"
+		"Wikipedia - article</a></p>"
+		"<p><a href='https://www.google.com/'>Google - accueil</a></p>"
+		"<p><a href='https://www.google.com/search?q=New+Nintendo+3DS'>"
+		"Google - recherche</a></p>"
+		"<p><a href='https://www.reddit.com/r/3dshacks/'>"
+		"Reddit - r/3dshacks</a></p>"
+		"<p>Notez si le site charge, si le texte est lisible et si les liens fonctionnent.</p>"
+		"</div></body></html>";
+}

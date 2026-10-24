@@ -1,4 +1,5 @@
 #include "browser.hpp"
+#include "compatibility_page.hpp"
 #include "../search/search.hpp"
 #include "../search/search_page.hpp"
 #include "../render/text.hpp"
@@ -48,6 +49,15 @@ static bool trackerUrl(const std::string& url)
 	return false;
 }
 
+static void rememberUnavailableImage(Browser::Tab& tab, const std::string& url)
+{
+	if (url.empty() || tab.unavailableImages.size() >= 128 ||
+		std::find(tab.unavailableImages.begin(), tab.unavailableImages.end(), url) !=
+			tab.unavailableImages.end())
+		return;
+	tab.unavailableImages.push_back(url);
+}
+
 static std::string rewriteLightUrl(const std::string& url)
 {
 	const std::string host = normalizedHost(url);
@@ -64,17 +74,18 @@ static std::string rewriteLightUrl(const std::string& url)
 	return rewritten;
 }
 
-static int pageViewHeight(const PageModel& page)
+static int pageViewHeight(const PageModel& page, int zoomPercent = 100)
 {
-	const int width = page.bmp.w > 0 ? page.bmp.w : NW_PAGE_WIDTH;
+	const int width = page.bmp.w > 0
+		? page.bmp.w * 100 / std::max(100, zoomPercent) : NW_PAGE_WIDTH;
 	return std::max(1, (NW_TOP_HEIGHT * width + NW_PAGE_WIDTH - 1) / NW_PAGE_WIDTH);
 }
 
-static int maxPageScroll(const PageModel& page)
+static int maxPageScroll(const PageModel& page, int zoomPercent = 100)
 {
 	const int contentHeight = std::min(page.height,
 		(int)NW_MAX_PAGE_CONTENT_HEIGHT);
-	return std::max(0, contentHeight - pageViewHeight(page));
+	return std::max(0, contentHeight - pageViewHeight(page, zoomPercent));
 }
 
 static void fingerprintBytes(uint64_t& hash, const void* data, size_t size)
@@ -274,6 +285,21 @@ static uint64_t pageFingerprint(const Browser::Tab& tab, int viewportWidth)
 			fingerprintString(hash, selector.notSelector);
 			fingerprintBytes(hash, &selector.combinator, sizeof(selector.combinator));
 			fingerprintBytes(hash, &selector.firstChild, sizeof(selector.firstChild));
+			fingerprintBytes(hash, &selector.lastChild, sizeof(selector.lastChild));
+			fingerprintBytes(hash, &selector.onlyChild, sizeof(selector.onlyChild));
+			fingerprintBytes(hash, &selector.nthChildSet,
+				sizeof(selector.nthChildSet));
+			fingerprintBytes(hash, &selector.nthChildA,
+				sizeof(selector.nthChildA));
+			fingerprintBytes(hash, &selector.nthChildB,
+				sizeof(selector.nthChildB));
+			fingerprintBytes(hash, &selector.nthOfTypeSet,
+				sizeof(selector.nthOfTypeSet));
+			fingerprintBytes(hash, &selector.nthOfTypeA,
+				sizeof(selector.nthOfTypeA));
+			fingerprintBytes(hash, &selector.nthOfTypeB,
+				sizeof(selector.nthOfTypeB));
+			fingerprintBytes(hash, &selector.root, sizeof(selector.root));
 			fingerprintBytes(hash, &selector.hover, sizeof(selector.hover));
 			fingerprintBytes(hash, &selector.focus, sizeof(selector.focus));
 			fingerprintBytes(hash, &selector.checked, sizeof(selector.checked));
@@ -283,6 +309,7 @@ static uint64_t pageFingerprint(const Browser::Tab& tab, int viewportWidth)
 			{
 				fingerprintString(hash, attr.name);
 				fingerprintString(hash, attr.value);
+				fingerprintBytes(hash, &attr.operation, sizeof(attr.operation));
 			}
 		}
 		for (const CssDeclaration& declaration : rule.declarations)
@@ -300,16 +327,48 @@ static uint64_t pageFingerprint(const Browser::Tab& tab, int viewportWidth)
 		fingerprintBytes(hash, &style.fontSize, sizeof(style.fontSize));
 		fingerprintBytes(hash, &style.marginTop,
 			sizeof(style.marginTop) * 4);
+		fingerprintBytes(hash, &style.marginTopPercent,
+			sizeof(style.marginTopPercent) * 4);
+		fingerprintBytes(hash, &style.marginTopIsPercent,
+			sizeof(style.marginTopIsPercent) * 4);
 		fingerprintBytes(hash, &style.paddingTop,
 			sizeof(style.paddingTop) * 4);
+		fingerprintBytes(hash, &style.paddingTopPercent,
+			sizeof(style.paddingTopPercent) * 4);
+		fingerprintBytes(hash, &style.paddingTopIsPercent,
+			sizeof(style.paddingTopIsPercent) * 4);
 		fingerprintBytes(hash, &style.width, sizeof(style.width) * 3);
 		fingerprintBytes(hash, &style.height, sizeof(style.height));
+		fingerprintBytes(hash, &style.heightPercent,
+			sizeof(style.heightPercent));
+		fingerprintBytes(hash, &style.heightIsPercent,
+			sizeof(style.heightIsPercent));
+		fingerprintBytes(hash, &style.minHeightPercent,
+			sizeof(style.minHeightPercent));
+		fingerprintBytes(hash, &style.minHeightIsPercent,
+			sizeof(style.minHeightIsPercent));
+		fingerprintBytes(hash, &style.maxHeightPercent,
+			sizeof(style.maxHeightPercent));
+		fingerprintBytes(hash, &style.maxHeightIsPercent,
+			sizeof(style.maxHeightIsPercent));
 		fingerprintBytes(hash, &style.displayNone, sizeof(style.displayNone));
 		fingerprintBytes(hash, &style.block, sizeof(style.block));
 		fingerprintBytes(hash, &style.displayInline, sizeof(style.displayInline));
+		fingerprintBytes(hash, &style.displayTable, sizeof(style.displayTable));
+		fingerprintBytes(hash, &style.displayTableRow,
+			sizeof(style.displayTableRow));
+		fingerprintBytes(hash, &style.displayTableCell,
+			sizeof(style.displayTableCell));
+		fingerprintBytes(hash, &style.verticalAlignMiddle,
+			sizeof(style.verticalAlignMiddle));
 		fingerprintBytes(hash, &style.bold, sizeof(style.bold));
 		fingerprintBytes(hash, &style.italic, sizeof(style.italic));
 		fingerprintBytes(hash, &style.underline, sizeof(style.underline));
+		fingerprintBytes(hash, &style.whiteSpace, sizeof(style.whiteSpace));
+		fingerprintBytes(hash, &style.textTransform, sizeof(style.textTransform));
+		fingerprintBytes(hash, &style.letterSpacing, sizeof(style.letterSpacing));
+		fingerprintBytes(hash, &style.letterSpacingIsEm,
+			sizeof(style.letterSpacingIsEm));
 		fingerprintBytes(hash, &style.align, sizeof(style.align));
 		fingerprintBytes(hash, &style.mono, sizeof(style.mono));
 		fingerprintBytes(hash, &style.listStyleNone, sizeof(style.listStyleNone));
@@ -318,9 +377,49 @@ static uint64_t pageFingerprint(const Browser::Tab& tab, int viewportWidth)
 		fingerprintBytes(hash, &style.flexRow, sizeof(style.flexRow));
 		fingerprintBytes(hash, &style.flexWrap, sizeof(style.flexWrap));
 		fingerprintBytes(hash, &style.justifyContent, sizeof(style.justifyContent));
+		fingerprintBytes(hash, &style.flexGrow, sizeof(style.flexGrow));
+		fingerprintBytes(hash, &style.overflowXClip,
+			sizeof(style.overflowXClip));
+		fingerprintBytes(hash, &style.overflowYClip,
+			sizeof(style.overflowYClip));
+		fingerprintBytes(hash, &style.positionRelative,
+			sizeof(style.positionRelative));
+		fingerprintBytes(hash, &style.positionAbsolute,
+			sizeof(style.positionAbsolute));
+		fingerprintBytes(hash, &style.positionFixed,
+			sizeof(style.positionFixed));
+		fingerprintBytes(hash, &style.displayInlineBlock,
+			sizeof(style.displayInlineBlock));
+		fingerprintBytes(hash, &style.floatRight, sizeof(style.floatRight));
+		fingerprintBytes(hash, &style.positionLeft,
+			sizeof(style.positionLeft) * 4);
+		fingerprintBytes(hash, &style.positionLeftPercent,
+			sizeof(style.positionLeftPercent) * 4);
+		fingerprintBytes(hash, &style.positionLeftIsPercent,
+			sizeof(style.positionLeftIsPercent) * 4);
 		fingerprintBytes(hash, &style.rowGap, sizeof(style.rowGap) * 2);
 		fingerprintBytes(hash, &style.borderWidth, sizeof(style.borderWidth));
 		fingerprintBytes(hash, &style.borderColor, sizeof(style.borderColor));
+		fingerprintBytes(hash, &style.widthPercent, sizeof(style.widthPercent));
+		fingerprintBytes(hash, &style.widthIsPercent, sizeof(style.widthIsPercent));
+		fingerprintBytes(hash, &style.minWidthPercent, sizeof(style.minWidthPercent));
+		fingerprintBytes(hash, &style.minWidthIsPercent,
+			sizeof(style.minWidthIsPercent));
+		fingerprintBytes(hash, &style.maxWidthPercent, sizeof(style.maxWidthPercent));
+		fingerprintBytes(hash, &style.maxWidthIsPercent,
+			sizeof(style.maxWidthIsPercent));
+		fingerprintBytes(hash, &style.borderTop.width, sizeof(style.borderTop.width));
+		fingerprintBytes(hash, &style.borderTop.color, sizeof(style.borderTop.color));
+		fingerprintBytes(hash, &style.borderTop.style, sizeof(style.borderTop.style));
+		fingerprintBytes(hash, &style.borderRight.width, sizeof(style.borderRight.width));
+		fingerprintBytes(hash, &style.borderRight.color, sizeof(style.borderRight.color));
+		fingerprintBytes(hash, &style.borderRight.style, sizeof(style.borderRight.style));
+		fingerprintBytes(hash, &style.borderBottom.width, sizeof(style.borderBottom.width));
+		fingerprintBytes(hash, &style.borderBottom.color, sizeof(style.borderBottom.color));
+		fingerprintBytes(hash, &style.borderBottom.style, sizeof(style.borderBottom.style));
+		fingerprintBytes(hash, &style.borderLeft.width, sizeof(style.borderLeft.width));
+		fingerprintBytes(hash, &style.borderLeft.color, sizeof(style.borderLeft.color));
+		fingerprintBytes(hash, &style.borderLeft.style, sizeof(style.borderLeft.style));
 		fingerprintBytes(hash, &style.lineHeight, sizeof(style.lineHeight));
 		fingerprintBytes(hash, &style.lineHeightRelative,
 			sizeof(style.lineHeightRelative));
@@ -411,14 +510,24 @@ static void refreshComputedStyles(Browser::Tab& tab)
 			values["fontWeight"] = style.bold ? "700" : "400";
 			values["fontStyle"] = style.italic ? "italic" : "normal";
 			values["textAlign"] = style.align == 1 ? "center" : (style.align == 2 ? "right" : "left");
+			values["verticalAlign"] = style.verticalAlignMiddle ? "middle" : "baseline";
+			values["letterSpacing"] = std::to_string(style.letterSpacing) + "px";
+			values["position"] = style.positionFixed ? "fixed" :
+				(style.positionAbsolute ? "absolute" :
+					(style.positionRelative ? "relative" : "static"));
+			values["float"] = style.floatRight ? "right" : "none";
 			const bool heading = tag.size() == 2 && tag[0] == 'h' && tag[1] >= '1' && tag[1] <= '6';
 			const bool uaBlock = tag == "html" || tag == "body" || tag == "div" || tag == "p" ||
 				tag == "section" || tag == "article" || tag == "header" || tag == "footer" ||
 				tag == "main" || tag == "nav" || tag == "ul" || tag == "ol" || tag == "li" ||
 				heading || tag == "form" || tag == "pre";
 			values["display"] = style.displayNone ? "none" :
-				(style.flex ? "flex" : (style.displayInline ? "inline" :
-					((style.block || uaBlock) ? "block" : "inline")));
+				(style.displayTable ? "table" :
+					(style.displayTableRow ? "table-row" :
+						(style.displayTableCell ? "table-cell" :
+							(style.flex ? "flex" :
+								(style.displayInline ? "inline" :
+									((style.block || uaBlock) ? "block" : "inline"))))));
 			values["width"] = style.width > 0 ? std::to_string(style.width) + "px" : "auto";
 			values["height"] = style.height > 0 ? std::to_string(style.height) + "px" : "auto";
 			values["marginTop"] = std::to_string(style.marginTop) + "px";
@@ -655,11 +764,7 @@ bool Browser::enqueuePageFetch(JSPageBinding* binding, int tabIndex, uint32_t pr
 	if (tabIndex < 0 || !tabs_[(size_t)tabIndex].jsRuntime ||
 		!tabs_[(size_t)tabIndex].jsContext)
 		return false;
-	const size_t scheme = url.find("://"); if (scheme == std::string::npos) return false;
-	const size_t end = url.find_first_of("/?#", scheme + 3);
-	std::string origin = url.substr(0, end);
-	for (char& ch : origin) ch = (char)tolower((unsigned char)ch);
-	if (origin != binding->origin) return false; // CORS n'est pas encore implémenté.
+	if (!urlSameOrigin(binding->url, url)) return false; // CORS n'est pas encore implémenté.
 	if (set_.blockTrackers && trackerUrl(url)) return false;
 	FetchJob job;
 	job.tabIndex = tabIndex; job.promiseId = promiseId; job.generation = binding->contextGeneration; job.xhr = xhr;
@@ -722,14 +827,23 @@ void Browser::onFetchResponse(NetResponse& response)
 	if (!binding || job.tabIndex < 0 || job.tabIndex >= (int)tabs_.size()) return;
 	Tab& tab = tabs_[(size_t)job.tabIndex];
 	if (tab.jsBinding != binding || binding->contextGeneration != job.generation || !tab.jsRuntime || !tab.jsContext) return;
-	const char* error = response.ok ? "" : (response.error.empty() ? "Network request failed" : response.error.c_str());
+	const bool crossOriginRedirect = !response.url.empty() &&
+		!urlSameOrigin(binding->url, response.url);
+	const char* error = crossOriginRedirect ? "Cross-origin redirect blocked" :
+		(response.tooBig ? "Response body exceeds the fetch size limit" :
+			(response.ok ? "" : (response.error.empty() ? "Network request failed" : response.error.c_str())));
+	const bool blocked = crossOriginRedirect || response.tooBig;
+	const char* responseUrl = crossOriginRedirect ? "" : response.url.c_str();
+	const char* body = blocked ? "" : response.body.data();
+	const size_t bodyLength = blocked ? 0 : response.body.size();
+	const char* contentType = blocked ? "" : response.contentType.c_str();
+	const int status = blocked ? 0 : response.status;
 	if (job.xhr)
-		jsPageResolveXHR(tab.jsRuntime, tab.jsContext, job.promiseId, response.url.c_str(),
-			response.body.data(), response.body.size(), response.contentType.c_str(), response.status, error);
+		jsPageResolveXHR(tab.jsRuntime, tab.jsContext, job.promiseId, responseUrl,
+			body, bodyLength, contentType, status, error);
 	else
 		jsPageResolveFetch(tab.jsRuntime, tab.jsContext, job.promiseId,
-			response.url.c_str(), response.body.data(), response.body.size(), response.contentType.c_str(),
-			response.status, error);
+			responseUrl, body, bodyLength, contentType, status, error);
 }
 
 void Browser::releaseJavaScript(Tab& tab)
@@ -771,6 +885,11 @@ void Browser::resetTab(Tab& t)
 {
 	releaseJavaScript(t);
 	t.readerOriginal.reset();
+	t.pdfDocument.reset();
+	t.pdfPath.clear();
+	t.pdfPage = 0;
+	t.pdfZoomPercent = 100;
+	t.scrollX = 0;
 	t.jsRequired = false;
 	t.doc = Document();
 	t.css = CssEngine();
@@ -781,6 +900,7 @@ void Browser::resetTab(Tab& t)
 	t.scrollY = 0;
 	t.focusNode = -1;
 	t.failedSegmentIndex = -1;
+	t.unavailableImages.clear();
 	segmentPending_ = false;
 	segmentTab_ = -1;
 	segmentIndexPending_ = -1;
@@ -851,6 +971,7 @@ void Browser::openUrl(const std::string& url, bool record)
 				if (anchor.name == id) { scrollTo(anchor.y); return; }
 			return;
 		}
+
 	}
 	if (set_.lightUrls && strStartsWith(toLower(targetUrl), "http")) targetUrl = rewriteLightUrl(targetUrl);
 	cancelTabRequest(current_);
@@ -865,6 +986,84 @@ void Browser::openUrl(const std::string& url, bool record)
 	std::string prevUrl = t.url;
 	resetTab(t);
 	loadUrlInto(current_, targetUrl, record, "GET", "", prevUrl);
+}
+
+bool Browser::openLocalPdf(const std::string& path, std::string& error)
+{
+	error.clear();
+	clearStyleQueue();
+	clearImageQueue();
+	clearScriptQueue();
+	cancelTabRequest(current_);
+	responsePending_ = false;
+	layoutPending_ = false;
+	Tab& tab = currentTab();
+	resetTab(tab);
+	tab.pdfPath = path;
+	tab.pdfPage = 0;
+	tab.pdfZoomPercent = 100;
+	tab.url = "file://" + path;
+	const size_t slash = path.find_last_of("/\\");
+	tab.title = slash == std::string::npos ? path : path.substr(slash + 1);
+	tab.pageReady = false;
+	pendingPdfPath_ = path;
+	pendingPdfTab_ = current_;
+	progressStatus_ = "Ouverture du PDF...";
+	return true;
+}
+
+bool Browser::processPendingPdfOpen()
+{
+	if (pendingPdfPath_.empty() || pendingPdfTab_ < 0 ||
+		pendingPdfTab_ >= (int)tabs_.size())
+		return false;
+	const std::string path = std::move(pendingPdfPath_);
+	const int tabIndex = pendingPdfTab_;
+	pendingPdfPath_.clear();
+	pendingPdfTab_ = -1;
+	PdfDocument document;
+	std::string error;
+	if (!pdfReadFile(path, document, error))
+	{
+		const std::string html =
+			"<html><body><h2>Impossible d'ouvrir le PDF</h2><p>" +
+			htmlEscape(error) + "</p></body></html>";
+		renderInternal(tabIndex, html);
+		progressStatus_.clear();
+		return true;
+	}
+	Tab& tab = tabs_[(size_t)tabIndex];
+	tab.pdfDocument.reset(new PdfDocument(std::move(document)));
+	renderInternal(tabIndex, pdfDocumentHtml(*tab.pdfDocument, tab.title, 0,
+		tab.pdfZoomPercent));
+	if (!tab.pageReady)
+	{
+		tab.pdfDocument.reset();
+		renderInternal(tabIndex,
+			"<html><body><h2>Impossible d'afficher cette page PDF</h2></body></html>");
+	}
+	progressStatus_.clear();
+	return true;
+}
+
+bool Browser::cyclePdfZoom()
+{
+	Tab& tab = currentTab();
+	if (!tab.pdfDocument) return false;
+	static const int levels[] = { 100, 125, 150, 200, 300 };
+	size_t next = 0;
+	for (size_t i = 0; i < sizeof(levels) / sizeof(levels[0]); ++i)
+	{
+		if (levels[i] != tab.pdfZoomPercent) continue;
+		next = (i + 1) % (sizeof(levels) / sizeof(levels[0]));
+		break;
+	}
+	tab.pdfZoomPercent = levels[next];
+	tab.scrollX = 0;
+	tab.scrollY = 0;
+	renderInternal(current_, pdfDocumentHtml(*tab.pdfDocument, tab.title,
+		tab.pdfPage, tab.pdfZoomPercent));
+	return true;
 }
 
 void Browser::loadUrlInto(int tabIdx, const std::string& url, bool record, const std::string& method, const std::string& postData, const std::string& referer, const std::string& csrfToken)
@@ -937,6 +1136,7 @@ void Browser::reload()
 	progressStatus_ = "Connexion au site...";
 	Tab& t = currentTab();
 	if (t.url.empty()) { goHome(); return; }
+	t.unavailableImages.clear();
 	t.pageReady = false;
 	diagStage("fetch");
 	cancelTabRequest(current_);
@@ -1060,6 +1260,7 @@ std::string Browser::internalHomeHtml(const std::string& engine)
 		{ "YouTube",    "https://m.youtube.com/" },
 		{ "GitHub",     "https://github.com/" },
 		{ "Jeux 3DS",   "https://www.gamebrew.org/wiki/List_of_3DS_homebrew_applications" },
+		{ "Test affichage", "nw://display-test" },
 		{ "Reglages",   "nw://settings" },
 	};
 
@@ -1172,7 +1373,7 @@ void Browser::renderInternal(int tabIdx, const std::string& html)
 	}
 	if (d.nodes.empty() && tab.doc.empty()) { tab.pageReady = false; return; }
 	tab.css = CssEngine();
-	tab.css.setViewportWidth(layoutWidth());
+	tab.css.setViewportWidth(layoutWidth(tab));
 	collectStyleBlocks(d, tab.css);
 	renderInto(tabIdx, std::move(d));
 }
@@ -1181,6 +1382,37 @@ void Browser::renderInternal(int tabIdx, const std::string& html)
 bool Browser::showInternal(const std::string& url)
 {
 	std::string u = toLower(url);
+	if (u.rfind("nw://pdf-page", 0) == 0)
+	{
+		Tab& tab = currentTab();
+		if (!tab.pdfDocument || tab.pdfDocument->pages.empty()) return false;
+		const size_t query = url.find("page=");
+		if (query == std::string::npos) return false;
+		const int page = atoi(url.c_str() + query + 5);
+		if (page < 1 || page > (int)tab.pdfDocument->pages.size()) return false;
+		tab.pdfPage = (size_t)(page - 1);
+		tab.scrollY = 0;
+		tab.scrollX = 0;
+		renderInternal(current_, pdfDocumentHtml(*tab.pdfDocument,
+			tab.title, tab.pdfPage, tab.pdfZoomPercent));
+		return true;
+	}
+	if (u == "nw://display-test")
+	{
+		clearStyleQueue();
+		clearImageQueue();
+		clearScriptQueue();
+		cancelTabRequest(current_);
+		responsePending_ = false;
+		layoutPending_ = false;
+		pendingResponse_ = NetResponse();
+		progressStatus_.clear();
+		Tab& tab = currentTab();
+		resetTab(tab);
+		tab.url = "nw://display-test";
+		renderInternal(current_, internalCompatibilityPageHtml());
+		return true;
+	}
 	if (u.rfind("nw://tls-allow", 0) == 0)
 	{
 		const size_t query = url.find("url=");
@@ -1487,6 +1719,9 @@ void Browser::pollNetwork()
 						imageRedrawPending_ = true;
 					}
 				}
+				if (!imageStored && tabIdx >= 0 && tabIdx < (int)tabs_.size() &&
+					tabs_[tabIdx].url == imageRequestReferer_)
+					rememberUnavailableImage(tabs_[tabIdx], imageRequestUrl_);
 				imageRequestTab_ = -1;
 				imageRequestUrl_.clear();
 				imageRequestReferer_.clear();
@@ -1846,6 +2081,8 @@ bool Browser::tickImages()
 		imageRequestReferer_ = pendingImagesReferer_;
 		diagStage("image fetch");
 	}
+	else if (current_ >= 0 && current_ < (int)tabs_.size())
+		rememberUnavailableImage(tabs_[(size_t)current_], url);
 	return redraw;
 }
 
@@ -2262,7 +2499,7 @@ void Browser::rerenderTab(int tabIdx)
 	diagStage("layout");
 	pendingImages_.clear();
 	Tab& tab = tabs_[tabIdx];
-	tab.pageCacheKey = pageFingerprint(tab, layoutWidth());
+	tab.pageCacheKey = pageFingerprint(tab, layoutWidth(tab));
 	tab.failedSegmentIndex = -1;
 	int focusedDomNode = -1;
 	if (tab.focusNode >= 0 && tab.focusNode < (int)tab.page.fields.size())
@@ -2270,13 +2507,14 @@ void Browser::rerenderTab(int tabIdx)
 	tab.title = tab.doc.title();
 	tab.pageReady = false;
 
-	PageLayout lay(tab.doc, tab.css, set_, layoutWidth());
+	PageLayout lay(tab.doc, tab.css, set_, layoutWidth(tab));
 	diagStage("layout start");
 	diagBootNote("page_layout_cap", set_.maxPageHeight);
 	diagBootMemory("avant_mise_en_page");
 	diagBootNote("app_heap_free_before_layout", (long)diagApplicationHeapFree());
 	diagBootNote("linear_mem_free_before_layout", (long)linearSpaceFree());
-	const int segmentIndex = clamp((tab.scrollY + pageViewHeight(tab.page) - 1) /
+	const int segmentIndex = clamp((tab.scrollY +
+		pageViewHeight(tab.page, tab.pdfZoomPercent) - 1) /
 		NW_PAGE_SEGMENT_HEIGHT, 0, NW_MAX_PAGE_SEGMENTS - 1);
 	const int segmentHeight = segmentIndex == 0
 		? NW_PAGE_SEGMENT_HEIGHT
@@ -2291,7 +2529,7 @@ void Browser::rerenderTab(int tabIdx)
 		Document rDoc;
 		if (htmlParse(rHtml, rDoc))
 		{
-			PageLayout lay2(rDoc, g_emptyCss, set_, layoutWidth());
+			PageLayout lay2(rDoc, g_emptyCss, set_, layoutWidth(tab));
 			lay2.renderSegment(tab.page, tab.url, 0, NW_PAGE_SEGMENT_HEIGHT);
 		}
 		else
@@ -2300,7 +2538,7 @@ void Browser::rerenderTab(int tabIdx)
 			std::string h = "<html><body><h3>Memoire insuffisante</h3><p>"
 				"La page est trop lourde pour la New 3DS.</p></body></html>";
 			htmlParse(h, errDoc);
-			PageLayout lay2(errDoc, g_emptyCss, set_, layoutWidth());
+			PageLayout lay2(errDoc, g_emptyCss, set_, layoutWidth(tab));
 			lay2.renderSegment(tab.page, tab.url, 0, NW_PAGE_SEGMENT_HEIGHT);
 		}
 		diagStage("layout fallback complete");
@@ -2315,7 +2553,7 @@ void Browser::rerenderTab(int tabIdx)
 			if (htmlParse(rHtml, rDoc))
 			{
 				tab.page = PageModel();
-				PageLayout layReader(rDoc, g_emptyCss, set_, layoutWidth());
+				PageLayout layReader(rDoc, g_emptyCss, set_, layoutWidth(tab));
 				layReader.render(tab.page, tab.url);
 			}
 		}
@@ -2338,13 +2576,14 @@ void Browser::rerenderTab(int tabIdx)
 	if (!tab.page.bmp.px)
 	{
 		tab.page = PageModel();
-		if (tab.page.bmp.create(layoutWidth(), NW_TOP_HEIGHT * layoutWidth() / NW_PAGE_WIDTH))
+		if (tab.page.bmp.create(layoutWidth(tab),
+			NW_TOP_HEIGHT * layoutWidth(tab) / NW_PAGE_WIDTH))
 		{
 			tab.page.bmp.clear(0xFF17131A);
 			TextEngine::instance().drawLine(tab.page.bmp,
 				"Mémoire insuffisante pour afficher cette page",
 				16, 96, 0.58f, 0xFFF2A25C, true, false);
-			tab.page.height = pageViewHeight(tab.page);
+			tab.page.height = pageViewHeight(tab.page, tab.pdfZoomPercent);
 			tab.page.errorCode = 2;
 			tab.page.errorText = "Memoire insuffisante pour le rendu";
 			progressStatus_ = "Memoire insuffisante pour afficher la page";
@@ -2377,7 +2616,7 @@ void Browser::queueImages(int tabIdx, int maximum)
 	// Ne charger que les images proches de la zone visible. La meme fonction
 	// est rappelee apres un defilement, ce qui permet d'atteindre les images
 	// plus loin dans une longue page sans garder toutes les reponses en RAM.
-	const int viewHeight = pageViewHeight(tab.page);
+	const int viewHeight = pageViewHeight(tab.page, tab.pdfZoomPercent);
 	const int viewTop = std::max(0, tab.scrollY - viewHeight / 2);
 	const int viewBottom = tab.scrollY + viewHeight * 2;
 	std::vector<bool> selected(tab.page.images.size(), false);
@@ -2391,6 +2630,9 @@ void Browser::queueImages(int tabIdx, int maximum)
 			const auto& image = tab.page.images[i];
 			if (image.src.empty() || images_.contains(image.src) ||
 				(set_.blockTrackers && trackerUrl(image.src)) ||
+				std::find(tab.unavailableImages.begin(),
+					tab.unavailableImages.end(), image.src) != tab.unavailableImages.end() ||
+				(imageRequestTab_ == tabIdx && imageRequestUrl_ == image.src) ||
 				std::find(pendingImages_.begin(), pendingImages_.end(), image.src) != pendingImages_.end())
 				continue;
 			const int imageBottom = image.y + std::max(1, image.h);
@@ -2413,12 +2655,16 @@ int Browser::hitLink(int x, int y) const
 	if (!t.pageReady) return -1;
 	int sy = t.scrollY;
 	const float scale = pageScale();
-	x = (int)((float)x * scale);
+	x = t.scrollX + (int)((float)x * scale);
 	y = (int)((float)y * scale);
 	for (size_t i = 0; i < t.page.links.size(); i++)
 	{
 		const LinkBox& lb = t.page.links[i];
-		if (x >= lb.x && x < lb.x + lb.w && y + sy >= lb.y && y + sy < lb.y + lb.h)
+		const int linkY = lb.fixed
+			? y + t.page.segmentIndex * NW_PAGE_SEGMENT_HEIGHT
+			: y + sy;
+		if (x >= lb.x && x < lb.x + lb.w &&
+			linkY >= lb.y && linkY < lb.y + lb.h)
 			return (int)i;
 	}
 	return -1;
@@ -2661,6 +2907,21 @@ void Browser::submitFormByNode(int submitNode)
 		}
 }
 
+bool Browser::submitFormForField(int fieldIndex)
+{
+	Tab& tab = currentTab();
+	if (fieldIndex < 0 || fieldIndex >= (int)tab.page.fields.size())
+		return false;
+	const int formId = tab.page.fields[(size_t)fieldIndex].formId;
+	for (size_t i = 0; i < tab.page.submits.size(); ++i)
+	{
+		if (tab.page.submits[i].formId != formId) continue;
+		submitFormByPage((int)i);
+		return true;
+	}
+	return false;
+}
+
 void Browser::submitFormByPage(int submitIndex)
 {
 	Tab& tab = currentTab();
@@ -2822,13 +3083,14 @@ void Browser::submitFormByPage(int submitIndex)
 void Browser::scroll(int dy)
 {
 	Tab& tab = currentTab();
-	if (!tab.pageReady || tab.page.height <= pageViewHeight(tab.page)) return;
+	if (!tab.pageReady || tab.page.height <=
+		pageViewHeight(tab.page, tab.pdfZoomPercent)) return;
 	const int logicalDy = (int)floorf((float)dy * pageScale() + (dy >= 0 ? 0.5f : -0.5f));
 	const int desired = std::max(0, tab.scrollY + logicalDy);
-	const int max = maxPageScroll(tab.page);
+	const int max = maxPageScroll(tab.page, tab.pdfZoomPercent);
 	if (desired > max && tab.page.truncated)
 	{
-		const int viewHeight = pageViewHeight(tab.page);
+		const int viewHeight = pageViewHeight(tab.page, tab.pdfZoomPercent);
 		const int requestedSegment = (desired + viewHeight - 1) /
 			NW_PAGE_SEGMENT_HEIGHT;
 		const int index = std::min(requestedSegment, tab.page.segmentIndex + 1);
@@ -2840,7 +3102,8 @@ void Browser::scroll(int dy)
 	tab.scrollY = std::min(desired, max);
 	if (tab.scrollY != oldScrollY && set_.loadImages && imageRequestTab_ < 0)
 		queueImages(current_, 6);
-	const int visibleSegment = (tab.scrollY + pageViewHeight(tab.page) - 1) /
+	const int visibleSegment = (tab.scrollY +
+		pageViewHeight(tab.page, tab.pdfZoomPercent) - 1) /
 		NW_PAGE_SEGMENT_HEIGHT;
 	if (visibleSegment != tab.page.segmentIndex)
 		requestSegment(current_, visibleSegment, tab.scrollY);
@@ -2852,15 +3115,43 @@ int Browser::scrollY() const
 	return tabs_[current_].scrollY;
 }
 
+void Browser::scrollHorizontal(int dx)
+{
+	if (tabs_.empty()) return;
+	const int pageDelta = (int)floorf((float)dx * pageScale() +
+		(dx >= 0 ? 0.5f : -0.5f));
+	scrollHorizontalTo(currentTab().scrollX + pageDelta);
+}
+
+void Browser::scrollHorizontalTo(int x)
+{
+	if (tabs_.empty()) return;
+	Tab& tab = currentTab();
+	if (!tab.pdfDocument || tab.pdfZoomPercent <= 100 ||
+		tab.page.bmp.w <= 0) return;
+	const int viewWidth = (int)floorf((float)NW_PAGE_WIDTH * pageScale() +
+		0.5f);
+	const int max = std::max(0, tab.page.bmp.w - viewWidth);
+	tab.scrollX = clamp(x, 0, max);
+}
+
+int Browser::scrollX() const
+{
+	return tabs_.empty() ? 0 : tabs_[current_].scrollX;
+}
+
 float Browser::pageScale() const
 {
 	if (tabs_.empty() || tabs_[(size_t)current_].page.bmp.w <= 0) return 1.0f;
-	return (float)tabs_[(size_t)current_].page.bmp.w / (float)NW_PAGE_WIDTH;
+	const Tab& tab = tabs_[(size_t)current_];
+	return (float)tab.page.bmp.w * 100.0f /
+		((float)NW_PAGE_WIDTH * (float)std::max(100, tab.pdfZoomPercent));
 }
 
 int Browser::pageXFromView(int x) const
 {
-	return (int)floorf((float)x * pageScale() + 0.5f);
+	const int offset = tabs_.empty() ? 0 : tabs_[(size_t)current_].scrollX;
+	return offset + (int)floorf((float)x * pageScale() + 0.5f);
 }
 
 int Browser::pageYFromView(int y) const
@@ -2873,10 +3164,11 @@ void Browser::scrollTo(int y)
 	Tab& tab = currentTab();
 	if (!tab.pageReady) return;
 	const int desired = std::max(0, y);
-	const int max = maxPageScroll(tab.page);
+	const int max = maxPageScroll(tab.page, tab.pdfZoomPercent);
 	if (desired > max && tab.page.truncated)
 	{
-		const int requestedSegment = (desired + pageViewHeight(tab.page) - 1) /
+		const int requestedSegment = (desired +
+			pageViewHeight(tab.page, tab.pdfZoomPercent) - 1) /
 			NW_PAGE_SEGMENT_HEIGHT;
 		const int index = std::min(requestedSegment, tab.page.segmentIndex + 1);
 		requestSegment(current_, index, desired);
@@ -2887,7 +3179,8 @@ void Browser::scrollTo(int y)
 	tab.scrollY = std::min(desired, max);
 	if (tab.scrollY != oldScrollY && set_.loadImages && imageRequestTab_ < 0)
 		queueImages(current_, 6);
-	const int visibleSegment = (tab.scrollY + pageViewHeight(tab.page) - 1) /
+	const int visibleSegment = (tab.scrollY +
+		pageViewHeight(tab.page, tab.pdfZoomPercent) - 1) /
 		NW_PAGE_SEGMENT_HEIGHT;
 	if (visibleSegment != tab.page.segmentIndex)
 		requestSegment(current_, visibleSegment, tab.scrollY);
@@ -2936,7 +3229,8 @@ bool Browser::tickProgressiveLayout()
 
 	Tab& tab = tabs_[(size_t)tabIdx];
 	Bitmap cached;
-	const bool needsDomLayout = segmentIndex > tab.page.furthestSegmentIndex;
+	const bool needsDomLayout = segmentIndex > tab.page.furthestSegmentIndex ||
+		!tab.page.fixedBoxes.empty();
 	const bool cacheHit = !needsDomLayout &&
 		pageSegmentCache_.load(tab.pageCacheKey, segmentIndex, cached);
 	if (cacheHit && !needsDomLayout)
@@ -2950,7 +3244,7 @@ bool Browser::tickProgressiveLayout()
 			? NW_PAGE_SEGMENT_HEIGHT
 			: NW_PAGE_SEGMENT_HEIGHT + NW_PAGE_SEGMENT_OVERLAP;
 		PageModel rendered;
-		PageLayout layout(tab.doc, tab.css, set_, layoutWidth());
+		PageLayout layout(tab.doc, tab.css, set_, layoutWidth(tab));
 		if (!layout.renderSegment(rendered, tab.url, segmentIndex, segmentHeight))
 		{
 			layoutPending_ = false;
@@ -2966,6 +3260,15 @@ bool Browser::tickProgressiveLayout()
 		{
 			tab.page.bmp = std::move(rendered.bmp);
 			tab.page.segmentIndex = segmentIndex;
+			if (needsDomLayout)
+			{
+				tab.page.links.erase(std::remove_if(tab.page.links.begin(),
+					tab.page.links.end(), [](const LinkBox& link)
+					{ return link.fixed; }), tab.page.links.end());
+				for (const LinkBox& link : rendered.links)
+					if (link.fixed) tab.page.links.push_back(link);
+				tab.page.fixedBoxes = std::move(rendered.fixedBoxes);
+			}
 		}
 		else
 		{
@@ -2979,7 +3282,7 @@ bool Browser::tickProgressiveLayout()
 		tab.renderedDomVersion = tab.doc.mutationVersion;
 	}
 
-	const int max = maxPageScroll(tab.page);
+	const int max = maxPageScroll(tab.page, tab.pdfZoomPercent);
 	tab.scrollY = std::min(std::max(0, desiredScroll), max);
 	pendingScrollY_ = -1;
 	layoutPending_ = false;
@@ -2989,7 +3292,8 @@ bool Browser::tickProgressiveLayout()
 
 	if (tab.page.truncated && desiredScroll > max)
 	{
-		const int nextIndex = (desiredScroll + pageViewHeight(tab.page) - 1) /
+		const int nextIndex = (desiredScroll +
+			pageViewHeight(tab.page, tab.pdfZoomPercent) - 1) /
 			NW_PAGE_SEGMENT_HEIGHT;
 		requestSegment(tabIdx, nextIndex, desiredScroll);
 	}
@@ -3002,8 +3306,9 @@ bool Browser::canScrollBy(int dy) const
 {
 	if (tabs_.empty()) return false;
 	const Tab& tab = tabs_[current_];
-	if (!tab.pageReady || tab.page.height <= pageViewHeight(tab.page)) return false;
-	const int max = maxPageScroll(tab.page);
+	if (!tab.pageReady || tab.page.height <=
+		pageViewHeight(tab.page, tab.pdfZoomPercent)) return false;
+	const int max = maxPageScroll(tab.page, tab.pdfZoomPercent);
 	if (dy < 0) return tab.scrollY > 0;
 	if (dy > 0)
 		return tab.scrollY < max ||

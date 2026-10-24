@@ -43,6 +43,7 @@ SOURCES		:=	source \
 				source/video \
 				source/diag \
 				source/image
+SOURCES		+=	source/pdf
 
 DATA		:=	data
 INCLUDES	:=	include

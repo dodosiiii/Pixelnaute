@@ -64,12 +64,14 @@ public:
 	int linePitch(float userScale) const;
 
 	// Largeur d'une chaine UTF-8 (px) a l'echelle donnee.
-	float measure(const std::string& utf8, float userScale) const;
+	float measure(const std::string& utf8, float userScale,
+		float letterSpacing = 0.0f) const;
 
 	// Dessine une ligne de texte (sans retour chariot) dans le bitmap.
 	// y = haut de la ligne. Retourne la largeur dessinee.
 	float drawLine(Bitmap& bmp, const std::string& utf8, int x, int y,
-		float userScale, uint32_t color, bool bold, bool underline) const;
+		float userScale, uint32_t color, bool bold, bool underline,
+		bool italic = false, float letterSpacing = 0.0f) const;
 
 	// Decoupe un texte en mots en tenant compte de la largeur dispo.
 	static std::vector<std::pair<size_t, size_t>> splitWords(const std::string& utf8);

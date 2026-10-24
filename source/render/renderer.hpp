@@ -16,7 +16,8 @@ public:
 	void shutdown();
 
 	// Reconstruit l'image de l'ecran a partir de la page + offset de defilement.
-	void draw(const PageModel& page, int scrollY);
+	void draw(const PageModel& page, int scrollY, int scrollX = 0,
+		int zoomPercent = 100);
 
 	// Images de la page (vignettes), dessinees par-dessus la texture.
 	void setImageStore(ImageStore* store) { images_ = store; }
@@ -32,10 +33,13 @@ private:
 	bool dirty_ = true;
 	int layoutW_ = 0, layoutH_ = 0;
 	int lastScroll_ = -1;
+	int lastScrollX_ = -1;
 	Tex3DS_SubTexture subtex_{};
 	C2D_Image image{};
 	ImageStore* images_ = nullptr;
 
-	void upload(const PageModel& page, int scrollY);
-	void drawImages(const PageModel& page, int scrollY);
+	void upload(const PageModel& page, int scrollY, int scrollX, float scale);
+	void drawImages(const PageModel& page, int scrollY, int scrollX,
+		float scale);
+	void drawFixedBoxes(const PageModel& page, int scrollX, float scale);
 };

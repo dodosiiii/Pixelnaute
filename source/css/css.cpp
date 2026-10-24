@@ -374,6 +374,7 @@ static int parseCssLength(const std::string& token, int base = 16,
 					base, percentBase, depth + 1));
 				start = i + 1;
 			}
+
 		}
 		if ((isClamp && values.size() == 3) ||
 			((isMin || isMax) && values.size() >= 2))
@@ -406,6 +407,19 @@ static int parseCssLength(const std::string& token, int base = 16,
 	if (val > 100000.0f) val = 100000.0f;
 	if (val < -100000.0f) val = -100000.0f;
 	return (int)val;
+}
+
+static bool parseCssPercent(const std::string& value, int& percent)
+{
+	const std::string token = strTrim(value);
+	if (token.empty() || token.back() != '%') return false;
+	char* end = nullptr;
+	const float parsed = strtof(token.c_str(), &end);
+	if (end == token.c_str() || strcmp(end, "%") != 0 || !isfinite(parsed))
+		return false;
+	percent = (int)std::max(-100000.0f, std::min(100000.0f,
+		parsed * 100.0f));
+	return true;
 }
 
 static std::vector<std::string> splitCssWhitespace(const std::string& text)
@@ -726,12 +740,170 @@ static void parseDeclarationValues(const std::string& prop, const std::string& v
 		out.declared |= CssPropUnderline;
 		return;
 	}
+	if (p == "text-transform")
+	{
+		if (v == "uppercase") out.textTransform = CssTextTransformUppercase;
+		else if (v == "lowercase") out.textTransform = CssTextTransformLowercase;
+		else if (v == "capitalize") out.textTransform = CssTextTransformCapitalize;
+		else if (v == "none") out.textTransform = CssTextTransformNone;
+		else return;
+		out.declared |= CssPropTextTransform;
+		return;
+	}
+	if (p == "letter-spacing")
+	{
+		if (v == "normal")
+		{
+			out.letterSpacing = 0.0f;
+			out.letterSpacingIsEm = false;
+		}
+		else
+		{
+			char* end = nullptr;
+			float spacing = strtof(v.c_str(), &end);
+			if (end == v.c_str() || !isfinite(spacing)) return;
+			const std::string unit = toLower(strTrim(std::string(end)));
+			if (unit == "em")
+				out.letterSpacingIsEm = true;
+			else if (unit == "px" || unit.empty())
+				out.letterSpacingIsEm = false;
+			else
+				return;
+			out.letterSpacing = std::max(-100.0f, std::min(100.0f, spacing));
+		}
+		out.declared |= CssPropLetterSpacing;
+		return;
+	}
+	if (p == "white-space")
+	{
+		if (v == "normal") out.whiteSpace = CssWhiteSpaceNormal;
+		else if (v == "nowrap") out.whiteSpace = CssWhiteSpaceNoWrap;
+		else if (v == "pre") out.whiteSpace = CssWhiteSpacePre;
+		else if (v == "pre-line") out.whiteSpace = CssWhiteSpacePreLine;
+		else if (v == "pre-wrap") out.whiteSpace = CssWhiteSpacePreWrap;
+		else return;
+		out.declared |= CssPropWhiteSpace;
+		return;
+	}
 	if (p == "text-align")
 	{
 		if (v == "center") out.align = 1;
-		else if (v == "right") out.align = 2;
+		else if (v == "right" || v == "end") out.align = 2;
+		else if (v == "justify") out.align = 3;
+		else if (v != "left" && v != "start") return;
 		else out.align = 0;
 		out.declared |= CssPropAlign;
+		return;
+	}
+	if (p == "vertical-align")
+	{
+		if (v == "middle") out.verticalAlignMiddle = true;
+		else if (v == "top" || v == "bottom" || v == "baseline")
+			out.verticalAlignMiddle = false;
+		else
+			return;
+		out.declared |= CssPropVerticalAlign;
+		return;
+	}
+	if (p == "position")
+	{
+		if (v == "static")
+		{
+			out.positionRelative = false;
+			out.positionAbsolute = false;
+			out.positionFixed = false;
+		}
+		else if (v == "relative")
+		{
+			out.positionRelative = true;
+			out.positionAbsolute = false;
+			out.positionFixed = false;
+		}
+		else if (v == "absolute")
+		{
+			out.positionRelative = false;
+			out.positionAbsolute = true;
+			out.positionFixed = false;
+		}
+		else if (v == "fixed")
+		{
+			out.positionRelative = false;
+			out.positionAbsolute = false;
+			out.positionFixed = true;
+		}
+		else
+			return;
+		out.declared |= CssPropPosition;
+		return;
+	}
+	if (p == "left" || p == "right" || p == "top" || p == "bottom")
+	{
+		const int offset = v == "auto" ? 0 : parseCssLength(v);
+		int percent = 0;
+		const bool isPercent = parseCssPercent(v, percent);
+		if (p == "left")
+		{
+			out.positionLeft = offset;
+			out.positionLeftPercent = percent;
+			out.positionLeftIsPercent = isPercent;
+			out.declared |= CssPropLeft;
+		}
+		else if (p == "right")
+		{
+			out.positionRight = offset;
+			out.positionRightPercent = percent;
+			out.positionRightIsPercent = isPercent;
+			out.declared |= CssPropRight;
+		}
+		else if (p == "top")
+		{
+			out.positionTop = offset;
+			out.positionTopPercent = percent;
+			out.positionTopIsPercent = isPercent;
+			out.declared |= CssPropTop;
+		}
+		else
+		{
+			out.positionBottom = offset;
+			out.positionBottomPercent = percent;
+			out.positionBottomIsPercent = isPercent;
+			out.declared |= CssPropBottom;
+		}
+		return;
+	}
+	if (p == "overflow" || p == "overflow-x" || p == "overflow-y")
+	{
+		const std::vector<std::string> values = splitCssWhitespace(v);
+		if (values.empty() || (p == "overflow" && values.size() > 2)) return;
+		auto known = [](const std::string& value)
+		{
+			return value == "visible" || value == "hidden" ||
+				value == "clip" || value == "auto" || value == "scroll";
+		};
+		if (!known(values[0]) ||
+			(p == "overflow" && values.size() > 1 && !known(values[1])))
+			return;
+		auto clips = [](const std::string& value)
+		{
+			return value == "hidden" || value == "clip" ||
+				value == "auto" || value == "scroll";
+		};
+		if (p == "overflow")
+		{
+			out.overflowXClip = clips(values[0]);
+			out.overflowYClip = clips(values.size() > 1 ? values[1] : values[0]);
+			out.declared |= CssPropOverflowX | CssPropOverflowY;
+		}
+		else if (p == "overflow-x")
+		{
+			out.overflowXClip = clips(values[0]);
+			out.declared |= CssPropOverflowX;
+		}
+		else
+		{
+			out.overflowYClip = clips(values[0]);
+			out.declared |= CssPropOverflowY;
+		}
 		return;
 	}
 	if (p == "display")
@@ -739,39 +911,83 @@ static void parseDeclarationValues(const std::string& prop, const std::string& v
 		if (v == "none")
 		{
 			out.displayNone = true; out.block = false; out.displayInline = false;
+			out.displayInlineBlock = false;
 			out.flex = false; out.grid = false;
+			out.displayTable = false; out.displayTableRow = false;
+			out.displayTableCell = false;
 			out.declared |= CssPropDisplay | CssPropFlex | CssPropGrid;
 		}
 		else if (v == "block")
 		{
 			out.displayNone = false; out.block = true; out.displayInline = false;
+			out.displayInlineBlock = false;
 			out.flex = false; out.grid = false;
+			out.displayTable = false; out.displayTableRow = false;
+			out.displayTableCell = false;
 			out.declared |= CssPropDisplay | CssPropFlex | CssPropGrid;
 		}
 		else if (v == "flex")
 		{
 			out.displayNone = false; out.block = true; out.displayInline = false;
+			out.displayInlineBlock = false;
 			out.flex = true;
-			if (!(out.declared & CssPropFlexRow)) out.flexRow = true;
 			out.grid = false;
-			out.declared |= CssPropDisplay | CssPropFlex | CssPropFlexRow | CssPropGrid;
+			out.displayTable = false; out.displayTableRow = false;
+			out.displayTableCell = false;
+			out.declared |= CssPropDisplay | CssPropFlex | CssPropGrid;
 		}
 		else if (v == "grid" || v == "inline-grid")
 		{
 			out.displayNone = false; out.block = true; out.displayInline = false;
+			out.displayInlineBlock = false;
 			out.flex = false; out.grid = true;
+			out.displayTable = false; out.displayTableRow = false;
+			out.displayTableCell = false;
 			out.declared |= CssPropDisplay | CssPropFlex | CssPropGrid;
 		}
 		else if (v == "inline")
 		{
 			out.displayNone = false; out.block = false; out.displayInline = true;
+			out.displayInlineBlock = false;
 			out.flex = false; out.grid = false;
+			out.displayTable = false; out.displayTableRow = false;
+			out.displayTableCell = false;
 			out.declared |= CssPropDisplay | CssPropFlex | CssPropGrid;
 		}
 		else if (v == "inline-block")
 		{
-			out.displayNone = false; out.block = true; out.displayInline = false;
+			out.displayNone = false; out.block = false; out.displayInline = false;
+			out.displayInlineBlock = true;
 			out.flex = false; out.grid = false;
+			out.displayTable = false; out.displayTableRow = false;
+			out.displayTableCell = false;
+			out.declared |= CssPropDisplay | CssPropFlex | CssPropGrid;
+		}
+		else if (v == "table")
+		{
+			out.displayNone = false; out.block = true; out.displayInline = false;
+			out.displayInlineBlock = false;
+			out.flex = false; out.grid = false;
+			out.displayTable = true; out.displayTableRow = false;
+			out.displayTableCell = false;
+			out.declared |= CssPropDisplay | CssPropFlex | CssPropGrid;
+		}
+		else if (v == "table-row")
+		{
+			out.displayNone = false; out.block = true; out.displayInline = false;
+			out.displayInlineBlock = false;
+			out.flex = false; out.grid = false;
+			out.displayTable = false; out.displayTableRow = true;
+			out.displayTableCell = false;
+			out.declared |= CssPropDisplay | CssPropFlex | CssPropGrid;
+		}
+		else if (v == "table-cell")
+		{
+			out.displayNone = false; out.block = true; out.displayInline = false;
+			out.displayInlineBlock = false;
+			out.flex = false; out.grid = false;
+			out.displayTable = false; out.displayTableRow = false;
+			out.displayTableCell = true;
 			out.declared |= CssPropDisplay | CssPropFlex | CssPropGrid;
 		}
 		return;
@@ -900,8 +1116,23 @@ static void parseDeclarationValues(const std::string& prop, const std::string& v
 	if (p == "flex-direction")
 	{
 		out.flexRow = (v == "row" || v == "row-reverse");
+		out.flexReverse = (v == "row-reverse" || v == "column-reverse");
 		out.flex = true;
 		out.declared |= CssPropFlex | CssPropFlexRow;
+		return;
+	}
+	if (p == "flex-grow" || p == "flex")
+	{
+		std::string grow = p == "flex-grow" ? v : strTrim(v.substr(0,
+			v.find_first_of(" \t")));
+		char* end = nullptr;
+		const float parsed = strtof(grow.c_str(), &end);
+		if (end == grow.c_str() || *end != '\0' || !isfinite(parsed) ||
+			parsed < 0.0f || parsed > 100.0f)
+			return;
+		out.flexGrow = (int)(parsed * 100.0f + 0.5f);
+		out.flex = true;
+		out.declared |= CssPropFlex | CssPropFlexGrow;
 		return;
 	}
 	if (p == "flex-wrap")
@@ -998,9 +1229,32 @@ static void parseDeclarationValues(const std::string& prop, const std::string& v
 			m[2] = parseCssLength(tokens[2]);
 			m[3] = parseCssLength(tokens[3]);
 		}
+		int percentages[4] = {};
+		bool isPercent[4] = {};
+		if (!tokens.empty())
+		{
+			for (int side = 0; side < 4; ++side)
+			{
+				const size_t tokenIndex = tokens.size() == 1 ? 0 :
+					tokens.size() == 2 ? (side == 1 || side == 3 ? 1 : 0) :
+					tokens.size() == 3 ? (side == 0 ? 0 : side == 2 ? 2 : 1) :
+					(size_t)side;
+				if (tokenIndex < tokens.size())
+					isPercent[side] = parseCssPercent(tokens[tokenIndex],
+						percentages[side]);
+			}
+		}
 		if (p == "margin")
 		{
 			out.marginTop = m[0]; out.marginRight = m[1]; out.marginBottom = m[2]; out.marginLeft = m[3];
+			out.marginTopPercent = percentages[0];
+			out.marginRightPercent = percentages[1];
+			out.marginBottomPercent = percentages[2];
+			out.marginLeftPercent = percentages[3];
+			out.marginTopIsPercent = isPercent[0];
+			out.marginRightIsPercent = isPercent[1];
+			out.marginBottomIsPercent = isPercent[2];
+			out.marginLeftIsPercent = isPercent[3];
 			const size_t leftToken = tokens.size() >= 4 ? 3 : (tokens.size() == 3 ? 1 : (tokens.size() == 2 ? 1 : 0));
 			const size_t rightToken = tokens.size() >= 4 ? 1 : (tokens.size() == 3 ? 1 : (tokens.size() == 2 ? 1 : 0));
 			const bool autoLeft = !tokens.empty() && tokens[leftToken] == "auto";
@@ -1014,6 +1268,14 @@ static void parseDeclarationValues(const std::string& prop, const std::string& v
 		else
 		{
 			out.paddingTop = m[0]; out.paddingRight = m[1]; out.paddingBottom = m[2]; out.paddingLeft = m[3];
+			out.paddingTopPercent = percentages[0];
+			out.paddingRightPercent = percentages[1];
+			out.paddingBottomPercent = percentages[2];
+			out.paddingLeftPercent = percentages[3];
+			out.paddingTopIsPercent = isPercent[0];
+			out.paddingRightIsPercent = isPercent[1];
+			out.paddingBottomIsPercent = isPercent[2];
+			out.paddingLeftIsPercent = isPercent[3];
 			out.declared |= CssPropPaddingTop | CssPropPaddingRight |
 				CssPropPaddingBottom | CssPropPaddingLeft;
 		}
@@ -1022,50 +1284,94 @@ static void parseDeclarationValues(const std::string& prop, const std::string& v
 	if (p == "margin-top" || p == "margin-bottom" || p == "margin-left" || p == "margin-right")
 	{
 		int m = parseCssLength(v);
-		if (p == "margin-top") { out.marginTop = m; out.declared |= CssPropMarginTop; }
-		else if (p == "margin-bottom") { out.marginBottom = m; out.declared |= CssPropMarginBottom; }
-		else if (p == "margin-left") { out.marginLeft = m; out.marginLeftAuto = (v == "auto"); out.declared |= CssPropMarginLeft | CssPropMarginLeftAuto; }
-		else { out.marginRight = m; out.marginRightAuto = (v == "auto"); out.declared |= CssPropMarginRight | CssPropMarginRightAuto; }
+		int percent = 0;
+		const bool isPercent = parseCssPercent(v, percent);
+		if (p == "margin-top") { out.marginTop = m; out.marginTopPercent = percent; out.marginTopIsPercent = isPercent; out.declared |= CssPropMarginTop; }
+		else if (p == "margin-bottom") { out.marginBottom = m; out.marginBottomPercent = percent; out.marginBottomIsPercent = isPercent; out.declared |= CssPropMarginBottom; }
+		else if (p == "margin-left") { out.marginLeft = m; out.marginLeftPercent = percent; out.marginLeftIsPercent = isPercent; out.marginLeftAuto = (v == "auto"); out.declared |= CssPropMarginLeft | CssPropMarginLeftAuto; }
+		else { out.marginRight = m; out.marginRightPercent = percent; out.marginRightIsPercent = isPercent; out.marginRightAuto = (v == "auto"); out.declared |= CssPropMarginRight | CssPropMarginRightAuto; }
 		return;
 	}
 	if (p == "padding-top" || p == "padding-bottom" || p == "padding-left" || p == "padding-right")
 	{
 		int m = parseCssLength(v);
-		if (p == "padding-top") { out.paddingTop = m; out.declared |= CssPropPaddingTop; }
-		else if (p == "padding-bottom") { out.paddingBottom = m; out.declared |= CssPropPaddingBottom; }
-		else if (p == "padding-left") { out.paddingLeft = m; out.declared |= CssPropPaddingLeft; }
-		else { out.paddingRight = m; out.declared |= CssPropPaddingRight; }
+		int percent = 0;
+		const bool isPercent = parseCssPercent(v, percent);
+		if (p == "padding-top") { out.paddingTop = m; out.paddingTopPercent = percent; out.paddingTopIsPercent = isPercent; out.declared |= CssPropPaddingTop; }
+		else if (p == "padding-bottom") { out.paddingBottom = m; out.paddingBottomPercent = percent; out.paddingBottomIsPercent = isPercent; out.declared |= CssPropPaddingBottom; }
+		else if (p == "padding-left") { out.paddingLeft = m; out.paddingLeftPercent = percent; out.paddingLeftIsPercent = isPercent; out.declared |= CssPropPaddingLeft; }
+		else { out.paddingRight = m; out.paddingRightPercent = percent; out.paddingRightIsPercent = isPercent; out.declared |= CssPropPaddingRight; }
 		return;
 	}
 	if (p == "width")
 	{
-		int w = parseCssLength(v);
-		if (w > 0) { out.width = w; out.declared |= CssPropWidth; }
+		int percent = 0;
+		if (parseCssPercent(v, percent))
+		{
+			out.width = parseCssLength(v, 16, gCssViewportWidth);
+			out.widthPercent = percent;
+			out.widthIsPercent = true;
+			out.declared |= CssPropWidth;
+		}
+		else
+		{
+			int w = parseCssLength(v);
+			if (w > 0) { out.width = w; out.declared |= CssPropWidth; }
+		}
 		return;
 	}
 	if (p == "min-width" || p == "max-width")
 	{
+		int percent = 0;
+		const bool isPercent = parseCssPercent(v, percent);
 		const int w = parseCssLength(v, 16, gCssViewportWidth);
-		if (p == "min-width") { out.minWidth = w; out.declared |= CssPropMinWidth; }
-		else { out.maxWidth = w; out.declared |= CssPropMaxWidth; }
+		if (p == "min-width")
+		{
+			out.minWidth = w;
+			out.minWidthPercent = percent;
+			out.minWidthIsPercent = isPercent;
+			out.declared |= CssPropMinWidth;
+		}
+		else
+		{
+			out.maxWidth = w;
+			out.maxWidthPercent = percent;
+			out.maxWidthIsPercent = isPercent;
+			out.declared |= CssPropMaxWidth;
+		}
 		return;
 	}
 	if (p == "height" || p == "min-height" || p == "max-height")
 	{
 		const int h = parseCssLength(v, 16, cssViewportHeight());
+		int percent = 0;
+		const bool isPercent = parseCssPercent(v, percent);
 		if (p == "height" && h > 0)
 		{
 			out.height = h;
+			out.heightPercent = percent;
+			out.heightIsPercent = isPercent;
+			out.declared |= CssPropHeight;
+		}
+		else if (p == "height" && isPercent)
+		{
+			out.height = 0;
+			out.heightPercent = percent;
+			out.heightIsPercent = true;
 			out.declared |= CssPropHeight;
 		}
 		else if (p == "min-height")
 		{
 			out.minHeight = std::max(0, h);
+			out.minHeightPercent = percent;
+			out.minHeightIsPercent = isPercent;
 			out.declared |= CssPropMinHeight;
 		}
 		else if (p == "max-height")
 		{
 			out.maxHeight = std::max(0, h);
+			out.maxHeightPercent = percent;
+			out.maxHeightIsPercent = isPercent;
 			out.declared |= CssPropMaxHeight;
 		}
 		return;
@@ -1138,42 +1444,260 @@ static void parseDeclarationValues(const std::string& prop, const std::string& v
 		out.declared |= CssPropBoxShadow;
 		return;
 	}
-	if (p == "border" || p == "border-width" || p == "border-color")
+	const char* borderSides[] = { "top", "right", "bottom", "left" };
+	const uint64_t borderProperties[4][3] = {
+		{ CssPropBorderTopWidth, CssPropBorderTopColor, CssPropBorderTopStyle },
+		{ CssPropBorderRightWidth, CssPropBorderRightColor, CssPropBorderRightStyle },
+		{ CssPropBorderBottomWidth, CssPropBorderBottomColor, CssPropBorderBottomStyle },
+		{ CssPropBorderLeftWidth, CssPropBorderLeftColor, CssPropBorderLeftStyle }
+	};
+	CssBorderSide* sides[] = {
+		&out.borderTop, &out.borderRight, &out.borderBottom, &out.borderLeft
+	};
+	for (int sideIndex = -1; sideIndex < 4; ++sideIndex)
 	{
-		if (p == "border")
+		const std::string side = sideIndex < 0 ? "" :
+			std::string("-") + borderSides[sideIndex];
+		const std::string prefix = std::string("border") + side;
+		const bool shorthand = p == prefix;
+		const bool widthProperty = p == prefix + "-width";
+		const bool colorProperty = p == prefix + "-color";
+		const bool styleProperty = p == prefix + "-style";
+		if (!shorthand && !widthProperty && !colorProperty && !styleProperty)
+			continue;
+
+		std::vector<std::string> tokens = splitCssWhitespace(value);
+		if (tokens.empty()) return;
+		if (shorthand)
 		{
-			out.borderWidth = v == "none" ? 0 : 1;
-			size_t start = 0;
-			while (start < v.size())
+			const int firstSide = sideIndex < 0 ? 0 : sideIndex;
+			const int lastSide = sideIndex < 0 ? 3 : sideIndex;
+			for (int i = firstSide; i <= lastSide; ++i)
+				*sides[i] = CssBorderSide{ 1, 0xFF968A8A, CssBorderSolid };
+
+			for (const std::string& token : tokens)
 			{
-				while (start < v.size() && isspace((unsigned char)v[start])) ++start;
-				size_t end = v.find_first_of(" \t", start);
-				if (end == std::string::npos) end = v.size();
-				const std::string token = v.substr(start, end - start);
-				if (!token.empty())
+				const std::string lowerToken = toLower(token);
+				uint32_t parsedColor;
+				if (cssParseColor(token, parsedColor))
 				{
-					uint32_t color;
-					if (cssParseColor(token, color)) out.borderColor = color;
-					else if (token == "none") out.borderWidth = 0;
-					else if (token == "0") out.borderWidth = 0;
-					else if (token.find("px") != std::string::npos)
-						out.borderWidth = std::max(0, parseCssLength(token));
+					for (int i = firstSide; i <= lastSide; ++i)
+						sides[i]->color = parsedColor;
 				}
-				start = end;
+				else if (lowerToken == "none" || lowerToken == "hidden" ||
+					lowerToken == "solid" || lowerToken == "dashed" ||
+					lowerToken == "dotted")
+				{
+					const CssBorderStyle borderStyle =
+						lowerToken == "none" || lowerToken == "hidden" ? CssBorderNone :
+						lowerToken == "dashed" ? CssBorderDashed :
+						lowerToken == "dotted" ? CssBorderDotted : CssBorderSolid;
+					for (int i = firstSide; i <= lastSide; ++i)
+						sides[i]->style = borderStyle;
+				}
+				else
+				{
+					int width = 0;
+					if (lowerToken == "thin") width = 1;
+					else if (lowerToken == "medium") width = 3;
+					else if (lowerToken == "thick") width = 5;
+					else
+					{
+						char* end = nullptr;
+						strtof(lowerToken.c_str(), &end);
+						if (end == lowerToken.c_str() ||
+							(*end != '\0' && strcmp(end, "px") != 0 &&
+							 strcmp(end, "em") != 0 && strcmp(end, "rem") != 0 &&
+							 strcmp(end, "pt") != 0))
+							continue;
+						width = std::max(0, parseCssLength(lowerToken));
+					}
+					for (int i = firstSide; i <= lastSide; ++i)
+						sides[i]->width = width;
+				}
 			}
-		}
-		else if (p == "border-width")
-		{
-			out.borderWidth = std::max(0, parseCssLength(v));
+			for (int i = firstSide; i <= lastSide; ++i)
+				out.declared |= borderProperties[i][0] |
+					borderProperties[i][1] | borderProperties[i][2];
 		}
 		else
 		{
-			uint32_t color;
-			if (cssParseColor(v, color)) out.borderColor = color;
+			int targets[4];
+			int targetCount = 0;
+			if (sideIndex >= 0)
+			{
+				targets[targetCount++] = sideIndex;
+				if (widthProperty)
+				{
+					const std::string token = toLower(tokens[0]);
+					sides[sideIndex]->width = token == "thin" ? 1 :
+						token == "medium" ? 3 : token == "thick" ? 5 :
+						std::max(0, parseCssLength(token));
+				}
+				else if (styleProperty)
+				{
+					const std::string token = toLower(tokens[0]);
+					if (token == "none" || token == "hidden")
+						sides[sideIndex]->style = CssBorderNone;
+					else if (token == "dashed")
+						sides[sideIndex]->style = CssBorderDashed;
+					else if (token == "dotted")
+						sides[sideIndex]->style = CssBorderDotted;
+					else if (token == "solid")
+						sides[sideIndex]->style = CssBorderSolid;
+					else return;
+				}
+				else
+				{
+					uint32_t color;
+					if (!cssParseColor(tokens[0], color)) return;
+					sides[sideIndex]->color = color;
+				}
+			}
+			else if (widthProperty || styleProperty)
+			{
+				int values[4] = {};
+				const int count = std::min(4, (int)tokens.size());
+				for (int i = 0; i < count; ++i)
+				{
+					if (widthProperty)
+					{
+						const std::string token = toLower(tokens[i]);
+						values[i] = token == "thin" ? 1 : token == "medium" ? 3 :
+							token == "thick" ? 5 : std::max(0, parseCssLength(token));
+					}
+					else
+					{
+						const std::string token = toLower(tokens[i]);
+						values[i] = token == "none" || token == "hidden"
+							? CssBorderNone : token == "dashed" ? CssBorderDashed :
+							token == "dotted" ? CssBorderDotted : CssBorderSolid;
+					}
+				}
+				for (int i = 0; i < 4; ++i)
+				{
+					int value = 0;
+					if (count == 1) value = values[0];
+					else if (count == 2) value = values[i == 1 || i == 3 ? 1 : 0];
+					else if (count == 3) value = values[i == 0 ? 0 : i == 2 ? 2 : 1];
+					else if (count >= 4) value = values[i];
+					else continue;
+					if (widthProperty) sides[i]->width = value;
+					else sides[i]->style = (CssBorderStyle)value;
+					targets[targetCount++] = i;
+				}
+			}
+			else
+			{
+				uint32_t colors[4];
+				const int count = std::min(4, (int)tokens.size());
+				for (int i = 0; i < count; ++i)
+					if (!cssParseColor(tokens[i], colors[i])) return;
+				for (int i = 0; i < 4; ++i)
+				{
+					int colorIndex = count == 1 ? 0 :
+						count == 2 ? (i == 1 || i == 3 ? 1 : 0) :
+						count == 3 ? (i == 0 ? 0 : i == 2 ? 2 : 1) : i;
+					sides[i]->color = colors[colorIndex];
+					targets[targetCount++] = i;
+				}
+			}
+
+			for (int i = 0; i < targetCount; ++i)
+			{
+				const int target = targets[i];
+				out.declared |= borderProperties[target][widthProperty ? 0 :
+					colorProperty ? 1 : 2];
+			}
 		}
-		out.declared |= CssPropBorder;
+
+		if (sideIndex < 0)
+		{
+			out.borderWidth = out.borderTop.width;
+			out.borderColor = out.borderTop.color;
+			out.borderStyle = out.borderTop.style;
+			out.declared |= CssPropBorder;
+		}
 		return;
 	}
+}
+
+static bool parseImageFit(const std::string& value, CssImageFit& fit)
+{
+	const std::string normalized = toLower(strTrim(value));
+	if (normalized == "fill") fit = CssImageFitFill;
+	else if (normalized == "contain") fit = CssImageFitContain;
+	else if (normalized == "cover") fit = CssImageFitCover;
+	else return false;
+	return true;
+}
+
+static bool parseImagePositionComponent(const std::string& token,
+	bool horizontal, int& position)
+{
+	if (token == "center")
+	{
+		position = 50;
+		return true;
+	}
+	if (horizontal && token == "left") { position = 0; return true; }
+	if (horizontal && token == "right") { position = 100; return true; }
+	if (!horizontal && token == "top") { position = 0; return true; }
+	if (!horizontal && token == "bottom") { position = 100; return true; }
+	if (token.empty() || token.back() != '%') return false;
+
+	char* end = nullptr;
+	const double parsed = strtod(token.c_str(), &end);
+	if (end != token.c_str() + token.size() - 1 ||
+		!(parsed >= 0.0 && parsed <= 100.0))
+		return false;
+	position = (int)(parsed + 0.5);
+	return true;
+}
+
+static bool parseImagePosition(const std::string& value, int& x, int& y)
+{
+	const std::string normalized = toLower(strTrim(value));
+	std::vector<std::string> tokens;
+	for (size_t start = 0; start < normalized.size();)
+	{
+		while (start < normalized.size() &&
+			isspace((unsigned char)normalized[start])) ++start;
+		if (start == normalized.size()) break;
+		const size_t end = normalized.find_first_of(" \t\r\n", start);
+		tokens.push_back(normalized.substr(start,
+			end == std::string::npos ? std::string::npos : end - start));
+		if (tokens.size() > 2) return false;
+		if (end == std::string::npos) break;
+		start = end + 1;
+	}
+	if (tokens.empty()) return false;
+	if (tokens.size() == 1)
+	{
+		if (tokens[0] == "left" || tokens[0] == "right")
+		{
+			x = tokens[0] == "left" ? 0 : 100;
+			y = 50;
+			return true;
+		}
+		if (tokens[0] == "top" || tokens[0] == "bottom")
+		{
+			x = 50;
+			y = tokens[0] == "top" ? 0 : 100;
+			return true;
+		}
+		if (tokens[0] == "center")
+		{
+			x = y = 50;
+			return true;
+		}
+		if (!parseImagePositionComponent(tokens[0], true, x)) return false;
+		y = 50;
+		return true;
+	}
+
+	return parseImagePositionComponent(tokens[0], true, x) &&
+		parseImagePositionComponent(tokens[1], false, y);
 }
 
 static void applyProperty(Style& out, const Style& source, uint64_t property)
@@ -1203,32 +1727,132 @@ static void applyProperty(Style& out, const Style& source, uint64_t property)
 	case CssPropBold: out.bold = source.bold; break;
 	case CssPropItalic: out.italic = source.italic; break;
 	case CssPropUnderline: out.underline = source.underline; break;
+	case CssPropWhiteSpace: out.whiteSpace = source.whiteSpace; break;
+	case CssPropTextTransform: out.textTransform = source.textTransform; break;
+	case CssPropLetterSpacing:
+		out.letterSpacing = source.letterSpacing;
+		out.letterSpacingIsEm = source.letterSpacingIsEm;
+		break;
 	case CssPropAlign: out.align = source.align; break;
-	case CssPropMarginTop: out.marginTop = source.marginTop; break;
-	case CssPropMarginRight: out.marginRight = source.marginRight; break;
-	case CssPropMarginBottom: out.marginBottom = source.marginBottom; break;
-	case CssPropMarginLeft: out.marginLeft = source.marginLeft; break;
-	case CssPropPaddingTop: out.paddingTop = source.paddingTop; break;
-	case CssPropPaddingRight: out.paddingRight = source.paddingRight; break;
-	case CssPropPaddingBottom: out.paddingBottom = source.paddingBottom; break;
-	case CssPropPaddingLeft: out.paddingLeft = source.paddingLeft; break;
-	case CssPropWidth: out.width = source.width; break;
-	case CssPropMinWidth: out.minWidth = source.minWidth; break;
-	case CssPropMaxWidth: out.maxWidth = source.maxWidth; break;
+	case CssPropMarginTop:
+		out.marginTop = source.marginTop;
+		out.marginTopPercent = source.marginTopPercent;
+		out.marginTopIsPercent = source.marginTopIsPercent;
+		break;
+	case CssPropMarginRight:
+		out.marginRight = source.marginRight;
+		out.marginRightPercent = source.marginRightPercent;
+		out.marginRightIsPercent = source.marginRightIsPercent;
+		break;
+	case CssPropMarginBottom:
+		out.marginBottom = source.marginBottom;
+		out.marginBottomPercent = source.marginBottomPercent;
+		out.marginBottomIsPercent = source.marginBottomIsPercent;
+		break;
+	case CssPropMarginLeft:
+		out.marginLeft = source.marginLeft;
+		out.marginLeftPercent = source.marginLeftPercent;
+		out.marginLeftIsPercent = source.marginLeftIsPercent;
+		break;
+	case CssPropPaddingTop:
+		out.paddingTop = source.paddingTop;
+		out.paddingTopPercent = source.paddingTopPercent;
+		out.paddingTopIsPercent = source.paddingTopIsPercent;
+		break;
+	case CssPropPaddingRight:
+		out.paddingRight = source.paddingRight;
+		out.paddingRightPercent = source.paddingRightPercent;
+		out.paddingRightIsPercent = source.paddingRightIsPercent;
+		break;
+	case CssPropPaddingBottom:
+		out.paddingBottom = source.paddingBottom;
+		out.paddingBottomPercent = source.paddingBottomPercent;
+		out.paddingBottomIsPercent = source.paddingBottomIsPercent;
+		break;
+	case CssPropPaddingLeft:
+		out.paddingLeft = source.paddingLeft;
+		out.paddingLeftPercent = source.paddingLeftPercent;
+		out.paddingLeftIsPercent = source.paddingLeftIsPercent;
+		break;
+	case CssPropWidth:
+		out.width = source.width;
+		out.widthPercent = source.widthPercent;
+		out.widthIsPercent = source.widthIsPercent;
+		break;
+	case CssPropMinWidth:
+		out.minWidth = source.minWidth;
+		out.minWidthPercent = source.minWidthPercent;
+		out.minWidthIsPercent = source.minWidthIsPercent;
+		break;
+	case CssPropMaxWidth:
+		out.maxWidth = source.maxWidth;
+		out.maxWidthPercent = source.maxWidthPercent;
+		out.maxWidthIsPercent = source.maxWidthIsPercent;
+		break;
 	case CssPropBoxSizing: out.borderBox = source.borderBox; break;
 	case CssPropFlex: out.flex = source.flex; break;
-	case CssPropFlexRow: out.flexRow = source.flexRow; break;
+	case CssPropFlexRow:
+		out.flexRow = source.flexRow;
+		out.flexReverse = source.flexReverse;
+		break;
 	case CssPropFlexWrap: out.flexWrap = source.flexWrap; break;
 	case CssPropJustify: out.justifyContent = source.justifyContent; break;
+	case CssPropFlexGrow: out.flexGrow = source.flexGrow; break;
+	case CssPropOverflowX: out.overflowXClip = source.overflowXClip; break;
+	case CssPropOverflowY: out.overflowYClip = source.overflowYClip; break;
+	case CssPropPosition:
+		out.positionRelative = source.positionRelative;
+		out.positionAbsolute = source.positionAbsolute;
+		out.positionFixed = source.positionFixed;
+		break;
+	case CssPropLeft:
+		out.positionLeft = source.positionLeft;
+		out.positionLeftPercent = source.positionLeftPercent;
+		out.positionLeftIsPercent = source.positionLeftIsPercent;
+		break;
+	case CssPropRight:
+		out.positionRight = source.positionRight;
+		out.positionRightPercent = source.positionRightPercent;
+		out.positionRightIsPercent = source.positionRightIsPercent;
+		break;
+	case CssPropTop:
+		out.positionTop = source.positionTop;
+		out.positionTopPercent = source.positionTopPercent;
+		out.positionTopIsPercent = source.positionTopIsPercent;
+		break;
+	case CssPropBottom:
+		out.positionBottom = source.positionBottom;
+		out.positionBottomPercent = source.positionBottomPercent;
+		out.positionBottomIsPercent = source.positionBottomIsPercent;
+		break;
 	case CssPropMarginLeftAuto: out.marginLeftAuto = source.marginLeftAuto; break;
 	case CssPropMarginRightAuto: out.marginRightAuto = source.marginRightAuto; break;
-	case CssPropHeight: out.height = source.height; break;
-	case CssPropMinHeight: out.minHeight = source.minHeight; break;
-	case CssPropMaxHeight: out.maxHeight = source.maxHeight; break;
+	case CssPropHeight:
+		out.height = source.height;
+		out.heightPercent = source.heightPercent;
+		out.heightIsPercent = source.heightIsPercent;
+		break;
+	case CssPropMinHeight:
+		out.minHeight = source.minHeight;
+		out.minHeightPercent = source.minHeightPercent;
+		out.minHeightIsPercent = source.minHeightIsPercent;
+		break;
+	case CssPropMaxHeight:
+		out.maxHeight = source.maxHeight;
+		out.maxHeightPercent = source.maxHeightPercent;
+		out.maxHeightIsPercent = source.maxHeightIsPercent;
+		break;
 	case CssPropDisplay:
 		out.displayNone = source.displayNone;
 		out.block = source.block;
 		out.displayInline = source.displayInline;
+		out.displayInlineBlock = source.displayInlineBlock;
+		out.displayTable = source.displayTable;
+		out.displayTableRow = source.displayTableRow;
+		out.displayTableCell = source.displayTableCell;
+		break;
+	case CssPropVerticalAlign:
+		out.verticalAlignMiddle = source.verticalAlignMiddle;
 		break;
 	case CssPropGrid: out.grid = source.grid; break;
 	case CssPropGridColumns: out.gridColumns = source.gridColumns; break;
@@ -1238,7 +1862,20 @@ static void applyProperty(Style& out, const Style& source, uint64_t property)
 	case CssPropBorder:
 		out.borderWidth = source.borderWidth;
 		out.borderColor = source.borderColor;
+		out.borderStyle = source.borderStyle;
 		break;
+	case CssPropBorderTopWidth: out.borderTop.width = source.borderTop.width; break;
+	case CssPropBorderTopColor: out.borderTop.color = source.borderTop.color; break;
+	case CssPropBorderTopStyle: out.borderTop.style = source.borderTop.style; break;
+	case CssPropBorderRightWidth: out.borderRight.width = source.borderRight.width; break;
+	case CssPropBorderRightColor: out.borderRight.color = source.borderRight.color; break;
+	case CssPropBorderRightStyle: out.borderRight.style = source.borderRight.style; break;
+	case CssPropBorderBottomWidth: out.borderBottom.width = source.borderBottom.width; break;
+	case CssPropBorderBottomColor: out.borderBottom.color = source.borderBottom.color; break;
+	case CssPropBorderBottomStyle: out.borderBottom.style = source.borderBottom.style; break;
+	case CssPropBorderLeftWidth: out.borderLeft.width = source.borderLeft.width; break;
+	case CssPropBorderLeftColor: out.borderLeft.color = source.borderLeft.color; break;
+	case CssPropBorderLeftStyle: out.borderLeft.style = source.borderLeft.style; break;
 	case CssPropBorderRadius: out.borderRadius = source.borderRadius; break;
 	case CssPropBoxShadow:
 		out.shadowX = source.shadowX;
@@ -1257,14 +1894,23 @@ static void applyProperty(Style& out, const Style& source, uint64_t property)
 static const uint64_t kCssProperties[] =
 {
 	CssPropColor, CssPropBackground, CssPropFontSize, CssPropBold, CssPropItalic,
-	CssPropUnderline, CssPropAlign, CssPropMarginTop, CssPropMarginRight,
+	CssPropUnderline, CssPropAlign, CssPropVerticalAlign, CssPropLetterSpacing,
+	CssPropMarginTop, CssPropMarginRight,
+	CssPropWhiteSpace, CssPropTextTransform,
 	CssPropMarginBottom, CssPropMarginLeft, CssPropPaddingTop,
 	CssPropPaddingRight, CssPropPaddingBottom, CssPropPaddingLeft,
 	CssPropWidth, CssPropMinWidth, CssPropMaxWidth, CssPropBoxSizing,
 	CssPropHeight, CssPropMinHeight, CssPropMaxHeight,
 	CssPropDisplay, CssPropMono, CssPropFlex, CssPropFlexRow,
-	CssPropFlexWrap, CssPropJustify, CssPropMarginLeftAuto, CssPropMarginRightAuto,
-	CssPropListStyle, CssPropBorder, CssPropRowGap, CssPropColumnGap,
+	CssPropFlexWrap, CssPropJustify, CssPropFlexGrow,
+	CssPropOverflowX, CssPropOverflowY, CssPropPosition, CssPropLeft,
+	CssPropRight, CssPropTop, CssPropBottom,
+	CssPropMarginLeftAuto, CssPropMarginRightAuto,
+	CssPropListStyle, CssPropBorder, CssPropBorderTopWidth,
+	CssPropBorderTopColor, CssPropBorderTopStyle, CssPropBorderRightWidth,
+	CssPropBorderRightColor, CssPropBorderRightStyle, CssPropBorderBottomWidth,
+	CssPropBorderBottomColor, CssPropBorderBottomStyle, CssPropBorderLeftWidth,
+	CssPropBorderLeftColor, CssPropBorderLeftStyle, CssPropRowGap, CssPropColumnGap,
 	CssPropLineHeight, CssPropBorderRadius, CssPropBoxShadow,
 	CssPropGridColumns, CssPropGridColumnSpan, CssPropGrid
 };
@@ -1324,6 +1970,33 @@ static void parseDeclaration(const std::string& prop, const std::string& value, 
 				return;
 			}
 		out.customProperties.push_back({ property, cleaned, important });
+		return;
+	}
+
+	const std::string normalizedProperty = toLower(property);
+	if (normalizedProperty == "object-fit")
+	{
+		CssImageFit fit;
+		if (parseImageFit(cleaned, fit) &&
+			(!out.imageFitSet || !out.imageFitImportant || important))
+		{
+			out.imageFit = fit;
+			out.imageFitSet = true;
+			out.imageFitImportant = important;
+		}
+		return;
+	}
+	if (normalizedProperty == "object-position")
+	{
+		int x = 50, y = 50;
+		if (parseImagePosition(cleaned, x, y) &&
+			(!out.imagePositionSet || !out.imagePositionImportant || important))
+		{
+			out.imagePositionX = x;
+			out.imagePositionY = y;
+			out.imagePositionSet = true;
+			out.imagePositionImportant = important;
+		}
 		return;
 	}
 
@@ -1519,12 +2192,17 @@ static void parseCompound(const std::string& token, CssCompoundSelector& comp, i
 			if (close != std::string::npos)
 			{
 				std::string inner = strTrim(token.substr(i + 1, close - i - 1));
-				size_t eq = inner.find('=');
 				CssAttrSelector a;
-				if (eq != std::string::npos)
+				size_t op = inner.find_first_of("~|^$*=");
+				if (op != std::string::npos)
 				{
-					a.name = toLower(strTrim(inner.substr(0, eq)));
-					std::string val = strTrim(inner.substr(eq + 1));
+					a.name = toLower(strTrim(inner.substr(0, op)));
+					a.operation = inner[op];
+					size_t valueStart = op + 1;
+					if (a.operation != '=' && valueStart < inner.size() &&
+						inner[valueStart] == '=')
+						++valueStart;
+					std::string val = strTrim(inner.substr(valueStart));
 					if (val.size() >= 2 && ((val.front() == '"' && val.back() == '"') ||
 					                        (val.front() == '\'' && val.back() == '\'')))
 						val = val.substr(1, val.size() - 2);
@@ -1578,12 +2256,27 @@ static void parseCompound(const std::string& token, CssCompoundSelector& comp, i
 				comp.lastChild = true;
 				spec += 10;
 			}
+			else if (pseudo == ":only-child")
+			{
+				comp.onlyChild = true;
+				spec += 10;
+			}
 			else if (pseudo == ":nth-child")
 			{
 				if (parseNthChildArgument(pseudoArgument, comp.nthChildA,
 					comp.nthChildB))
 				{
 					comp.nthChildSet = true;
+					spec += 10;
+				}
+				else comp.unsupported = true;
+			}
+			else if (pseudo == ":nth-of-type")
+			{
+				if (parseNthChildArgument(pseudoArgument, comp.nthOfTypeA,
+					comp.nthOfTypeB))
+				{
+					comp.nthOfTypeSet = true;
 					spec += 10;
 				}
 				else comp.unsupported = true;
@@ -1680,10 +2373,51 @@ static bool matchCompound(const Document& doc, int nodeIdx, const CssCompoundSel
 	{
 		const char* val = node.getAttr(a.name.c_str());
 		if (!val) return false;
-		if (a.hasValue && std::string(val) != a.value) return false;
+		if (!a.hasValue) continue;
+		const std::string actual(val);
+		bool matches = false;
+		switch (a.operation)
+		{
+		case '=': matches = actual == a.value; break;
+		case '^': matches = !a.value.empty() &&
+			actual.size() >= a.value.size() &&
+			actual.compare(0, a.value.size(), a.value) == 0; break;
+		case '$': matches = !a.value.empty() &&
+			actual.size() >= a.value.size() &&
+			actual.compare(actual.size() - a.value.size(), a.value.size(),
+				a.value) == 0; break;
+		case '*': matches = !a.value.empty() &&
+			actual.find(a.value) != std::string::npos; break;
+		case '~':
+		{
+			size_t start = 0;
+			while (start < actual.size())
+			{
+				while (start < actual.size() &&
+					isspace((unsigned char)actual[start])) ++start;
+				const size_t end = actual.find_first_of(" \t\r\n", start);
+				if (actual.substr(start, end == std::string::npos
+					? std::string::npos : end - start) == a.value)
+				{
+					matches = true;
+					break;
+				}
+				if (end == std::string::npos) break;
+				start = end + 1;
+			}
+			break;
+		}
+		case '|': matches = actual == a.value ||
+			(actual.size() > a.value.size() &&
+			 actual.compare(0, a.value.size(), a.value) == 0 &&
+			 actual[a.value.size()] == '-'); break;
+		default: break;
+		}
+		if (!matches) return false;
 	}
 
-	if (sel.firstChild || sel.lastChild || sel.nthChildSet)
+	if (sel.firstChild || sel.lastChild || sel.onlyChild || sel.nthChildSet ||
+		sel.nthOfTypeSet)
 	{
 		int parent = node.parent;
 		if (parent < 0 || (size_t)parent >= doc.nodes.size())
@@ -1691,6 +2425,8 @@ static bool matchCompound(const Document& doc, int nodeIdx, const CssCompoundSel
 		const Node& pNode = doc.nodes[parent];
 		int elementIndex = 0;
 		int elementCount = 0;
+		int typeIndex = 0;
+		int typeCount = 0;
 		for (int child : pNode.children)
 		{
 			if (child < 0 || (size_t)child >= doc.nodes.size() ||
@@ -1699,10 +2435,16 @@ static bool matchCompound(const Document& doc, int nodeIdx, const CssCompoundSel
 			++elementCount;
 			if (child == nodeIdx)
 				elementIndex = elementCount;
+			if (doc.nodes[child].tag == node.tag)
+			{
+				++typeCount;
+				if (child == nodeIdx) typeIndex = typeCount;
+			}
 		}
 		if (elementIndex == 0) return false;
 		if (sel.firstChild && elementIndex != 1) return false;
 		if (sel.lastChild && elementIndex != elementCount) return false;
+		if (sel.onlyChild && elementCount != 1) return false;
 		if (sel.nthChildSet)
 		{
 			const int difference = elementIndex - sel.nthChildB;
@@ -1714,32 +2456,20 @@ static bool matchCompound(const Document& doc, int nodeIdx, const CssCompoundSel
 				difference / sel.nthChildA < 0)
 				return false;
 		}
+		if (sel.nthOfTypeSet)
+		{
+			const int difference = typeIndex - sel.nthOfTypeB;
+			if (sel.nthOfTypeA == 0)
+			{
+				if (difference != 0) return false;
+			}
+			else if (difference % sel.nthOfTypeA != 0 ||
+				difference / sel.nthOfTypeA < 0)
+				return false;
+		}
 	}
 
 	return true;
-}
-
-static bool hasUnsupportedSiblingCombinator(const std::string& selector)
-{
-	int parentheses = 0;
-	int brackets = 0;
-	char quote = 0;
-	for (char c : selector)
-	{
-		if (quote)
-		{
-			if (c == quote) quote = 0;
-			continue;
-		}
-		if ((c == '\'' || c == '"') && brackets > 0) quote = c;
-		else if (c == '(') ++parentheses;
-		else if (c == ')' && parentheses > 0) --parentheses;
-		else if (c == '[') ++brackets;
-		else if (c == ']' && brackets > 0) --brackets;
-		else if (parentheses == 0 && brackets == 0 && (c == '+' || c == '~'))
-			return true;
-	}
-	return false;
 }
 
 static bool matchRule(const Document& doc, int nodeIdx, const CssRule& rule)
@@ -1780,7 +2510,32 @@ static bool matchRule(const Document& doc, int nodeIdx, const CssRule& rule)
 	{
 		char comb = rule.selectorChain[i].combinator;
 		const auto& nextSel = rule.selectorChain[i + 1];
-		if (comb == '>')
+		if (comb == '+' || comb == '~')
+		{
+			const int parent = doc.nodes[cur].parent;
+			if (parent < 0 || (size_t)parent >= doc.nodes.size()) return false;
+			const std::vector<int>& siblings = doc.nodes[parent].children;
+			size_t position = siblings.size();
+			for (size_t sibling = 0; sibling < siblings.size(); ++sibling)
+				if (siblings[sibling] == cur) { position = sibling; break; }
+			if (position == siblings.size()) return false;
+			bool found = false;
+			while (position > 0)
+			{
+				const int sibling = siblings[--position];
+				if (sibling < 0 || (size_t)sibling >= doc.nodes.size() ||
+					!doc.nodes[sibling].isElement())
+					continue;
+				if (matchCompound(doc, sibling, nextSel))
+				{
+					cur = sibling;
+					found = true;
+				}
+				if (found || comb == '+') break;
+			}
+			if (!found) return false;
+		}
+		else if (comb == '>')
 		{
 			cur = doc.nodes[cur].parent;
 			if (cur < 0 || !matchCompound(doc, cur, nextSel)) return false;
@@ -1813,10 +2568,6 @@ void CssEngine::parseRule(const std::string& text)
 	if (endBrace != std::string::npos) body = body.substr(0, endBrace);
 
 	if (selector.empty()) return;
-	// Les combinateurs de freres ne sont pas implementees : ignorer la regle
-	// au complet plutot que de la decouper en selecteurs descendants faux.
-	if (hasUnsupportedSiblingCombinator(selector)) return;
-
 	// Decoupe en composants selon les combinateurs (' ' ou '>')
 	struct RawToken { std::string text; char comb; };
 	std::vector<RawToken> rawTokens;
@@ -1827,9 +2578,10 @@ void CssEngine::parseRule(const std::string& text)
 		if (pos >= selector.size()) break;
 
 		char comb = 0;
-		if (selector[pos] == '>')
+		if (selector[pos] == '>' || selector[pos] == '+' ||
+			selector[pos] == '~')
 		{
-			comb = '>';
+			comb = selector[pos];
 			pos++;
 			while (pos < selector.size() && (selector[pos] == ' ' || selector[pos] == '\t')) pos++;
 		}
@@ -1849,7 +2601,7 @@ void CssEngine::parseRule(const std::string& text)
 			else if (c == '[') ++brackets;
 			else if (c == ']' && brackets > 0) --brackets;
 			else if (parentheses == 0 && brackets == 0 &&
-				(c == ' ' || c == '\t' || c == '>'))
+				(c == ' ' || c == '\t' || c == '>' || c == '+' || c == '~'))
 				break;
 			++next;
 		}
@@ -1884,56 +2636,263 @@ void CssEngine::parseRule(const std::string& text)
 
 	if (rule.tag.empty() && rule.cls.empty() && rule.id.empty() &&
 		target.attrs.empty() && !target.firstChild && !target.lastChild &&
-		!target.nthChildSet && !target.root)
+		!target.onlyChild && !target.nthChildSet &&
+		!target.nthOfTypeSet && !target.root && !target.hover &&
+		!target.focus && !target.checked && !target.disabled &&
+		target.notSelector.empty())
 		return;
 
 	parseCssDeclarations(body, rule.declarations);
 	for (const CssDeclaration& declaration : rule.declarations)
 		parseDeclaration(declaration.property, declaration.value, rule.style);
+	const size_t ruleIndex = rules_.size();
 	rules_.push_back(rule);
+	if (!target.id.empty())
+		rulesById_[target.id].push_back(ruleIndex);
+	else if (!target.classes.empty())
+		rulesByClass_[target.classes[0]].push_back(ruleIndex);
+	else if (!target.tag.empty() && target.tag != "*")
+		rulesByTag_[target.tag].push_back(ruleIndex);
+	else if (target.tag == "*" && target.attrs.empty() &&
+		!target.firstChild && !target.lastChild && !target.onlyChild &&
+		!target.nthChildSet && !target.nthOfTypeSet && !target.root &&
+		!target.hover && !target.focus && !target.checked &&
+		!target.disabled && target.notSelector.empty())
+		universalRules_.push_back(ruleIndex);
+	else
+		fallbackRules_.push_back(ruleIndex);
 }
 
-static int mediaWidth(const std::string& query, size_t valuePos)
+static bool mediaDimension(const std::string& value, float& pixels)
 {
 	char* end = nullptr;
-	const float value = strtof(query.c_str() + valuePos, &end);
-	if (end == query.c_str() + valuePos || value <= 0.0f) return 0;
+	const float number = strtof(value.c_str(), &end);
+	if (end == value.c_str() || !isfinite(number) || number < 0.0f)
+		return false;
 	const std::string unit = toLower(strTrim(std::string(end)));
-	float pixels = value;
-	if (unit.find("rem") == 0 || unit.find("em") == 0) pixels *= 16.0f;
-	else if (unit.find("pt") == 0) pixels *= 4.0f / 3.0f;
-	else if (unit.find("vw") == 0) pixels *= (float)gCssViewportWidth / 100.0f;
-	return (int)pixels;
+	pixels = number;
+	if (unit == "rem" || unit == "em") pixels *= 16.0f;
+	else if (unit == "pt") pixels *= 4.0f / 3.0f;
+	else if (unit == "vw")
+		pixels *= (float)gCssViewportWidth / 100.0f;
+	else if (unit == "vh")
+		pixels *= (float)cssViewportHeight() / 100.0f;
+	else if (unit != "px" && !(unit.empty() && number == 0.0f))
+		return false;
+	return true;
+}
+
+static bool splitMediaAnd(const std::string& query,
+	std::vector<std::string>& clauses)
+{
+	size_t start = 0;
+	int parentheses = 0;
+	for (size_t i = 0; i < query.size(); ++i)
+	{
+		if (query[i] == '(')
+			++parentheses;
+		else if (query[i] == ')')
+		{
+			if (--parentheses < 0) return false;
+		}
+		else if (parentheses == 0 && query.compare(i, 3, "and") == 0 &&
+			(i == 0 || isspace((unsigned char)query[i - 1])) &&
+			(i + 3 == query.size() ||
+				isspace((unsigned char)query[i + 3])))
+		{
+			clauses.push_back(strTrim(query.substr(start, i - start)));
+			start = i + 3;
+			i += 2;
+		}
+	}
+	if (parentheses != 0) return false;
+	clauses.push_back(strTrim(query.substr(start)));
+	return std::all_of(clauses.begin(), clauses.end(),
+		[](const std::string& clause) { return !clause.empty(); });
+}
+
+static bool evalMediaFeature(const std::string& clause, bool& matches)
+{
+	if (clause.size() < 2 || clause.front() != '(' || clause.back() != ')')
+		return false;
+	const std::string feature = strTrim(clause.substr(1,
+		clause.size() - 2));
+	const size_t colon = feature.find(':');
+	if (colon == std::string::npos) return false;
+	const std::string name = strTrim(feature.substr(0, colon));
+	const std::string value = strTrim(feature.substr(colon + 1));
+	if (name == "orientation")
+	{
+		if (value != "portrait" && value != "landscape") return false;
+		matches = value == "landscape"
+			? gCssViewportWidth > cssViewportHeight()
+			: gCssViewportWidth <= cssViewportHeight();
+		return true;
+	}
+	if (name != "min-width" && name != "max-width" &&
+		name != "min-height" && name != "max-height")
+		return false;
+	float limit = 0.0f;
+	if (!mediaDimension(value, limit)) return false;
+	const float dimension = name.find("width") != std::string::npos
+		? (float)gCssViewportWidth : (float)cssViewportHeight();
+	if (name == "min-width" || name == "min-height")
+		matches = dimension >= limit;
+	else
+		matches = dimension <= limit;
+	return true;
+}
+
+static bool evalMediaQuerySingle(const std::string& query)
+{
+	std::string q = toLower(strTrim(query));
+	bool negate = false;
+	if (strStartsWith(q, "not ") || strStartsWith(q, "only "))
+	{
+		negate = strStartsWith(q, "not ");
+		q = strTrim(q.substr(q.find(' ') + 1));
+	}
+	std::vector<std::string> clauses;
+	if (!splitMediaAnd(q, clauses)) return false;
+	bool matches = true;
+	size_t firstFeature = 0;
+	if (clauses[0].front() != '(')
+	{
+		if (clauses[0] == "print")
+			matches = false;
+		else if (clauses[0] != "screen" && clauses[0] != "all")
+			matches = false;
+		firstFeature = 1;
+	}
+	for (size_t i = firstFeature; i < clauses.size(); ++i)
+	{
+		bool featureMatches = false;
+		if (!evalMediaFeature(clauses[i], featureMatches))
+			featureMatches = false;
+		matches = matches && featureMatches;
+	}
+	return negate ? !matches : matches;
 }
 
 static bool evalMediaQuery(const std::string& query)
 {
-	std::string q = toLower(query);
-	if (q.find("print") != std::string::npos && q.find("screen") == std::string::npos)
+	size_t start = 0;
+	int parentheses = 0;
+	for (size_t i = 0; i <= query.size(); ++i)
+	{
+		if (i < query.size())
+		{
+			if (query[i] == '(') ++parentheses;
+			else if (query[i] == ')' && parentheses > 0) --parentheses;
+		}
+		if (i != query.size() && (query[i] != ',' || parentheses != 0))
+			continue;
+		if (evalMediaQuerySingle(strTrim(query.substr(start, i - start))))
+			return true;
+		start = i + 1;
+	}
+	return false;
+}
+
+static bool splitSupportsOperator(const std::string& condition,
+	const char* operation, std::vector<std::string>& parts)
+{
+	const size_t operationLength = strlen(operation);
+	size_t start = 0;
+	int parentheses = 0;
+	for (size_t i = 0; i < condition.size(); ++i)
+	{
+		if (condition[i] == '(')
+			++parentheses;
+		else if (condition[i] == ')')
+		{
+			if (--parentheses < 0) return false;
+		}
+		else if (parentheses == 0 &&
+			condition.compare(i, operationLength, operation) == 0 &&
+			(i == 0 || isspace((unsigned char)condition[i - 1])) &&
+			(i + operationLength == condition.size() ||
+				isspace((unsigned char)condition[i + operationLength])))
+		{
+			parts.push_back(strTrim(condition.substr(start, i - start)));
+			start = i + operationLength;
+			i += operationLength - 1;
+		}
+	}
+	if (parentheses != 0) return false;
+	if (parts.empty()) return true;
+	parts.push_back(strTrim(condition.substr(start)));
+	return std::all_of(parts.begin(), parts.end(),
+		[](const std::string& part) { return !part.empty(); });
+}
+
+static bool unwrapSupportsCondition(std::string& condition)
+{
+	if (condition.empty() || condition.front() != '(') return false;
+	int parentheses = 0;
+	for (size_t i = 0; i < condition.size(); ++i)
+	{
+		if (condition[i] == '(')
+			++parentheses;
+		else if (condition[i] == ')')
+		{
+			if (--parentheses < 0) return false;
+			if (parentheses == 0 && i + 1 < condition.size())
+				return false;
+		}
+	}
+	if (parentheses != 0) return false;
+	condition = strTrim(condition.substr(1, condition.size() - 2));
+	return !condition.empty();
+}
+
+static bool evalSupportsCondition(const std::string& input, int depth = 0)
+{
+	if (depth >= 16) return false;
+	std::string condition = toLower(strTrim(input));
+	if (condition.empty()) return false;
+	if (condition.front() == '(')
+	{
+		std::string unwrapped = condition;
+		if (unwrapSupportsCondition(unwrapped))
+		{
+			const size_t colon = unwrapped.find(':');
+			if (colon != std::string::npos &&
+				unwrapped.find_first_of("()") == std::string::npos)
+			{
+				Style parsed;
+				parseDeclaration(strTrim(unwrapped.substr(0, colon)),
+					strTrim(unwrapped.substr(colon + 1)), parsed);
+				return parsed.declared != 0 || parsed.imageFitSet ||
+					parsed.imagePositionSet;
+			}
+			return evalSupportsCondition(unwrapped, depth + 1);
+		}
+	}
+	if (strStartsWith(condition, "not "))
+	{
+		const std::string operand = strTrim(condition.substr(4));
+		if (operand.empty()) return false;
+		const bool result = evalSupportsCondition(operand, depth + 1);
+		return !result;
+	}
+
+	std::vector<std::string> parts;
+	if (!splitSupportsOperator(condition, "or", parts)) return false;
+	if (!parts.empty())
+	{
+		for (const std::string& part : parts)
+			if (evalSupportsCondition(part, depth + 1)) return true;
 		return false;
-
-	size_t mw = q.find("max-width");
-	if (mw != std::string::npos)
-	{
-		size_t colon = q.find(':', mw);
-		if (colon != std::string::npos)
-		{
-			int maxW = mediaWidth(q, colon + 1);
-			if (maxW > 0 && gCssViewportWidth > maxW) return false;
-		}
 	}
-
-	size_t minw = q.find("min-width");
-	if (minw != std::string::npos)
+	if (!splitSupportsOperator(condition, "and", parts)) return false;
+	if (!parts.empty())
 	{
-		size_t colon = q.find(':', minw);
-		if (colon != std::string::npos)
-		{
-			int minW = mediaWidth(q, colon + 1);
-			if (minW > 0 && gCssViewportWidth < minW) return false;
-		}
+		for (const std::string& part : parts)
+			if (!evalSupportsCondition(part, depth + 1)) return false;
+		return true;
 	}
-	return true;
+	return false;
 }
 
 void CssEngine::setViewportWidth(int width)
@@ -2010,15 +2969,19 @@ void CssEngine::parseStylesheet(const std::string& css, int sourceOrder)
 
 		if (strStartsWith(selector, "@media"))
 		{
-			if (evalMediaQuery(selector))
+			if (evalMediaQuery(strTrim(selector.substr(6))))
 			{
 				// Evaluer le bloc imbrique avec la largeur courante (400 ou 640 px).
 				parseStylesheet(body);
 			}
 		}
-		else if (strStartsWith(selector, "@supports") || strStartsWith(selector, "@layer"))
+		else if (strStartsWith(selector, "@supports"))
 		{
-			// Parser directement le contenu du bloc
+			if (evalSupportsCondition(strTrim(selector.substr(9))))
+				parseStylesheet(body);
+		}
+		else if (strStartsWith(selector, "@layer"))
+		{
 			parseStylesheet(body);
 		}
 		else if (selector.empty() || selector[0] != '@')
@@ -2085,6 +3048,10 @@ Style CssEngine::resolve(const Document& doc, int nodeIdx, const Style& parent) 
 	out.fontSize = parent.fontSize;
 	out.bold = parent.bold;
 	out.italic = parent.italic;
+	out.whiteSpace = parent.whiteSpace;
+	out.textTransform = parent.textTransform;
+	out.letterSpacing = parent.letterSpacing;
+	out.letterSpacingIsEm = parent.letterSpacingIsEm;
 	out.align = parent.align;
 	out.mono = parent.mono;
 	out.lineHeight = parent.lineHeight;
@@ -2142,12 +3109,52 @@ Style CssEngine::resolve(const Document& doc, int nodeIdx, const Style& parent) 
 		}
 	};
 
-	for (const CssRule& rule : rules_)
+	std::vector<size_t> candidates;
+	const Node& targetNode = doc.nodes[(size_t)nodeIdx];
+	candidates.reserve(universalRules_.size() + fallbackRules_.size() + 8);
+	candidates.insert(candidates.end(), universalRules_.begin(),
+		universalRules_.end());
+	candidates.insert(candidates.end(), fallbackRules_.begin(),
+		fallbackRules_.end());
+	auto appendIndexedRules = [&](const auto& index, const std::string& key)
+	{
+		const auto found = index.find(key);
+		if (found != index.end())
+			candidates.insert(candidates.end(), found->second.begin(),
+				found->second.end());
+	};
+	appendIndexedRules(rulesByTag_, targetNode.tag);
+	if (const char* id = targetNode.getAttr("id"))
+		appendIndexedRules(rulesById_, id);
+	if (const char* classList = targetNode.getAttr("class"))
+	{
+		const std::string classes(classList);
+		size_t start = 0;
+		while (start < classes.size())
+		{
+			while (start < classes.size() &&
+				isspace((unsigned char)classes[start])) ++start;
+			const size_t end = classes.find_first_of(" \t\r\n", start);
+			if (start < classes.size())
+				appendIndexedRules(rulesByClass_,
+					classes.substr(start, end == std::string::npos
+						? std::string::npos : end - start));
+			if (end == std::string::npos) break;
+			start = end + 1;
+		}
+	}
+	std::sort(candidates.begin(), candidates.end());
+	candidates.erase(std::unique(candidates.begin(), candidates.end()),
+		candidates.end());
+	for (size_t candidate : candidates)
+	{
+		const CssRule& rule = rules_[candidate];
 		if (matchRule(doc, nodeIdx, rule))
 		{
 			matchingRules.push_back(&rule);
 			collectCustomProperties(rule.declarations, rule.specificity, rule.order);
 		}
+	}
 
 	if (const char* inlineStyle = node.getAttr("style"))
 	{
@@ -2175,6 +3182,10 @@ Style CssEngine::resolve(const Document& doc, int nodeIdx, const Style& parent) 
 		bestOrder[p] = -1;
 		bestImportant[p] = false;
 	}
+	int bestImageFitSpec = -1, bestImageFitOrder = -1;
+	bool bestImageFitImportant = false;
+	int bestImagePositionSpec = -1, bestImagePositionOrder = -1;
+	bool bestImagePositionImportant = false;
 
 	auto applyDeclarations = [&](const std::vector<CssDeclaration>& declarations,
 		int specificity, int order)
@@ -2208,13 +3219,74 @@ Style CssEngine::resolve(const Document& doc, int nodeIdx, const Style& parent) 
 					}
 				}
 			}
+			if (parsed.imageFitSet &&
+				outranks(parsed.imageFitImportant, specificity, order,
+					bestImageFitImportant, bestImageFitSpec, bestImageFitOrder))
+			{
+				out.imageFit = parsed.imageFit;
+				out.imageFitSet = true;
+				out.imageFitImportant = parsed.imageFitImportant;
+				bestImageFitSpec = specificity;
+				bestImageFitOrder = order;
+				bestImageFitImportant = parsed.imageFitImportant;
+			}
+			if (parsed.imagePositionSet &&
+				outranks(parsed.imagePositionImportant, specificity, order,
+					bestImagePositionImportant, bestImagePositionSpec,
+					bestImagePositionOrder))
+			{
+				out.imagePositionX = parsed.imagePositionX;
+				out.imagePositionY = parsed.imagePositionY;
+				out.imagePositionSet = true;
+				out.imagePositionImportant = parsed.imagePositionImportant;
+				bestImagePositionSpec = specificity;
+				bestImagePositionOrder = order;
+				bestImagePositionImportant = parsed.imagePositionImportant;
+			}
 		}
 	};
-
+	bool floatRight = false;
+	int floatSpecificity = -1;
+	int floatOrder = -1;
+	bool floatImportant = false;
+	auto applyFloatDeclarations = [&](const std::vector<CssDeclaration>& declarations,
+		int specificity, int order)
+	{
+		for (const CssDeclaration& declaration : declarations)
+		{
+			if (toLower(strTrim(declaration.property)) != "float") continue;
+			std::string value = declaration.value;
+			const bool important = stripImportant(value);
+			std::string substituted;
+			if (!substituteCssVariables(value, out.customProperties,
+				substituted))
+				continue;
+			value = toLower(strTrim(substituted));
+			if (value != "right" && value != "left" && value != "none")
+				continue;
+			if (!outranks(important, specificity, order, floatImportant,
+				floatSpecificity, floatOrder))
+				continue;
+			floatRight = value == "right";
+			floatImportant = important;
+			floatSpecificity = specificity;
+			floatOrder = order;
+		}
+	};
+	for (const CssRule* rule : matchingRules)
+		applyFloatDeclarations(rule->declarations, rule->specificity,
+			rule->order);
+	applyFloatDeclarations(inlineDeclarations, 1000000, 1000000);
 	for (const CssRule* rule : matchingRules)
 		applyDeclarations(rule->declarations, rule->specificity, rule->order);
 	applyDeclarations(inlineDeclarations, 1000000, 1000000);
+	out.floatRight = floatRight;
 
+	if (out.letterSpacingIsEm)
+	{
+		out.letterSpacing *= (float)(out.fontSize > 0 ? out.fontSize : 16);
+		out.letterSpacingIsEm = false;
+	}
 	if (out.lineHeightRelative && !out.lineHeightUnitless)
 	{
 		const int fontSize = out.fontSize > 0 ? out.fontSize : 16;
@@ -2246,6 +3318,26 @@ int cssSelfTest()
 		if (s.fontSize != 20) CSS_SELF_FAIL();
 		if (!s.bold) CSS_SELF_FAIL();
 		if (!s.colorSet) CSS_SELF_FAIL();
+	}
+	{
+		Document doc;
+		const int node = doc.createElement(-1, "img");
+		doc.setAttr(node, "class", "thumbnail");
+		doc.setAttr(node, "style", "object-fit: fill; object-position: center !important");
+		const int supportedNode = doc.createElement(-1, "img");
+		doc.setAttr(supportedNode, "class", "supported");
+		CssEngine css;
+		css.parseStylesheet(".thumbnail { object-fit: cover !important; "
+			"object-position: 75% 25% !important; } "
+			"img { object-fit: contain; object-position: left top; } "
+			"@supports (object-fit: cover) { "
+			".supported { object-fit: contain; } }");
+		const Style resolved = css.resolve(doc, node, defaultStyle());
+		const Style supported = css.resolve(doc, supportedNode, defaultStyle());
+		if (resolved.imageFit != CssImageFitCover ||
+			resolved.imagePositionX != 50 || resolved.imagePositionY != 50 ||
+			supported.imageFit != CssImageFitContain)
+			CSS_SELF_FAIL();
 	}
 	{
 		CssEngine css;
@@ -2282,6 +3374,36 @@ int cssSelfTest()
 			CSS_SELF_FAIL();
 	}
 	{
+		Document doc;
+		const int parent = doc.createElement(-1, "section");
+		const int first = doc.createElement(parent, "div");
+		const int adjacent = doc.createElement(parent, "p");
+		const int later = doc.createElement(parent, "p");
+		const int onlyParent = doc.createElement(-1, "div");
+		const int onlyChild = doc.createElement(onlyParent, "p");
+		doc.setAttr(first, "class", "item selected");
+		doc.setAttr(adjacent, "data-kind", "article-card");
+		doc.setAttr(adjacent, "lang", "en-US");
+		CssEngine css;
+		css.parseStylesheet(
+			".item + p { color: red; } "
+			".selected ~ p { background: blue; } "
+			"[data-kind^=article][lang|=en] { font-weight: bold; } "
+			"p:only-child { text-decoration: underline; } "
+			"p:nth-of-type(2) { font-size: 20px; }");
+		const Style adjacentStyle = css.resolve(doc, adjacent, defaultStyle());
+		const Style laterStyle = css.resolve(doc, later, defaultStyle());
+		const Style onlyStyle = css.resolve(doc, onlyChild, defaultStyle());
+		if (adjacentStyle.color != 0xFF0000FF ||
+			!adjacentStyle.bgSet || adjacentStyle.bg != 0xFFFF0000 ||
+			!adjacentStyle.bold || adjacentStyle.fontSize != 0 ||
+			!onlyStyle.underline ||
+			laterStyle.color != 0xE8E8EC || !laterStyle.bgSet ||
+			laterStyle.bg != 0xFFFF0000 ||
+			laterStyle.fontSize != 20)
+			CSS_SELF_FAIL();
+	}
+	{
 		CssEngine css;
 		css.parseStylesheet(".first, h2 { color: red; } "
 			"@media screen and (max-width: 400px) { p { color: blue; } "
@@ -2289,6 +3411,40 @@ int cssSelfTest()
 		if (css.rules().size() != 4) CSS_SELF_FAIL();
 		else if (css.rules()[0].cls != "first" || css.rules()[1].tag != "h2" ||
 			css.rules()[2].tag != "p" || css.rules()[3].cls != "nested")
+			CSS_SELF_FAIL();
+	}
+	{
+		Document doc;
+		const int root = doc.createElement(-1, "main");
+		std::vector<int> nodes;
+		for (int i = 0; i < 128; ++i)
+		{
+			const int node = doc.createElement(root, "p");
+			doc.setAttr(node, "class", "target extra");
+			doc.setAttr(node, "data-state", "ready");
+			nodes.push_back(node);
+		}
+		CssEngine css;
+		std::string stylesheet = "* { color: red; } ";
+		for (int i = 0; i < 512; ++i)
+			stylesheet += ".unused-" + itos(i) + " { padding: 1px; } ";
+		stylesheet += ".target { color: blue; } "
+			"[data-state=ready] { font-weight: bold; }";
+		css.parseStylesheet(stylesheet);
+		if (css.rules().size() != 515) CSS_SELF_FAIL();
+		for (int node : nodes)
+		{
+			const Style resolved = css.resolve(doc, node, defaultStyle());
+			if (resolved.color != 0xFFFF0000 || !resolved.bold)
+			{
+				CSS_SELF_FAIL();
+				break;
+			}
+		}
+		css.clear();
+		css.parseStylesheet("* { color: green; }");
+		const Style resolved = css.resolve(doc, nodes[0], defaultStyle());
+		if (css.rules().size() != 1 || resolved.color != 0xFF008000)
 			CSS_SELF_FAIL();
 	}
 	{
@@ -2405,6 +3561,55 @@ int cssSelfTest()
 	}
 	{
 		Style s;
+		parseInlineStyle("width: 50%; min-width: 25%; max-width: 80%; "
+			"white-space: pre-wrap; text-transform: uppercase;", s);
+		if (!s.widthIsPercent || s.widthPercent != 5000 ||
+			!s.minWidthIsPercent || s.minWidthPercent != 2500 ||
+			!s.maxWidthIsPercent || s.maxWidthPercent != 8000 ||
+			s.whiteSpace != CssWhiteSpacePreWrap ||
+			s.textTransform != CssTextTransformUppercase)
+			CSS_SELF_FAIL();
+		parseInlineStyle("overflow: hidden auto;", s);
+		if (!s.overflowXClip || !s.overflowYClip) CSS_SELF_FAIL();
+		parseInlineStyle("overflow-x: visible; overflow-y: scroll;", s);
+		if (s.overflowXClip || !s.overflowYClip) CSS_SELF_FAIL();
+		parseInlineStyle("height: 50%; min-height: 25%; max-height: 75%;", s);
+		if (!s.heightIsPercent || s.heightPercent != 5000 ||
+			!s.minHeightIsPercent || s.minHeightPercent != 2500 ||
+			!s.maxHeightIsPercent || s.maxHeightPercent != 7500)
+			CSS_SELF_FAIL();
+		parseInlineStyle("position: relative; left: 12px; bottom: 3px;", s);
+		if (!s.positionRelative || s.positionLeft != 12 ||
+			s.positionBottom != 3)
+			CSS_SELF_FAIL();
+		parseInlineStyle("left: 10%; top: 25%;", s);
+		if (!s.positionLeftIsPercent || s.positionLeftPercent != 1000 ||
+			!s.positionTopIsPercent || s.positionTopPercent != 2500)
+			CSS_SELF_FAIL();
+		Style unsupportedPosition;
+		parseInlineStyle("position: absolute;", unsupportedPosition);
+		if (!unsupportedPosition.positionAbsolute ||
+			!(unsupportedPosition.declared & CssPropPosition))
+			CSS_SELF_FAIL();
+		parseInlineStyle("position: fixed;", unsupportedPosition);
+		if (!unsupportedPosition.positionFixed ||
+			unsupportedPosition.positionAbsolute)
+			CSS_SELF_FAIL();
+		parseInlineStyle("margin: 1% 2% 3% 4%; padding: 5% 6%;", s);
+		if (!s.marginTopIsPercent || s.marginTopPercent != 100 ||
+			!s.marginRightIsPercent || s.marginRightPercent != 200 ||
+			!s.marginBottomIsPercent || s.marginBottomPercent != 300 ||
+			!s.marginLeftIsPercent || s.marginLeftPercent != 400 ||
+			!s.paddingTopIsPercent || s.paddingTopPercent != 500 ||
+			!s.paddingRightIsPercent || s.paddingRightPercent != 600 ||
+			!s.paddingBottomIsPercent || s.paddingBottomPercent != 500 ||
+			!s.paddingLeftIsPercent || s.paddingLeftPercent != 600)
+			CSS_SELF_FAIL();
+		parseInlineStyle("flex: 1.5;", s);
+		if (!s.flex || s.flexGrow != 150) CSS_SELF_FAIL();
+	}
+	{
+		Style s;
 		parseInlineStyle("width: 999999999999999999999px; height: 12qu; margin-left: 1e999px;", s);
 		if (s.width != 100000 || s.height != 0 || s.marginLeft != 0)
 			CSS_SELF_FAIL();
@@ -2475,10 +3680,193 @@ int cssSelfTest()
 			CSS_SELF_FAIL();
 	}
 	{
+		Document doc;
+		const int node = doc.createElement(-1, "p");
+		CssEngine css;
+		css.setViewportWidth(640);
+		css.parseStylesheet(
+			"@media screen and (max-width: 400px), "
+			"screen and (min-width: 600px) { p { color: red; } }");
+		Style resolved = css.resolve(doc, node, defaultStyle());
+		if (css.rules().size() != 1 || resolved.color != 0xFF0000FF)
+			CSS_SELF_FAIL();
+
+		css.clear();
+		css.setViewportWidth(500);
+		css.parseStylesheet(
+			"@media screen and (max-width: 400px), "
+			"screen and (min-width: 600px) { p { color: red; } }");
+		resolved = css.resolve(doc, node, defaultStyle());
+		if (!css.rules().empty() || resolved.colorSet)
+			CSS_SELF_FAIL();
+	}
+	{
+		Document doc;
+		const int node = doc.createElement(-1, "p");
+		CssEngine css;
+		css.parseStylesheet(
+			"@supports (display: flex) and (color: red) { "
+			"p { color: blue; } } "
+			"@supports (unknown-property: value) { "
+			"p { background: red; } }");
+		Style resolved = css.resolve(doc, node, defaultStyle());
+		if (css.rules().size() != 1 ||
+			resolved.color != 0xFFFF0000 || resolved.bgSet)
+			CSS_SELF_FAIL();
+
+		css.clear();
+		css.parseStylesheet(
+			"@supports not (unknown-property: value) { "
+			"p { color: blue; } }");
+		resolved = css.resolve(doc, node, defaultStyle());
+		if (css.rules().size() != 1 || resolved.color != 0xFFFF0000)
+			CSS_SELF_FAIL();
+
+		css.clear();
+		css.parseStylesheet(
+			"@supports (unknown-property: value) or (color: red) { "
+			"p { color: blue; } }");
+		resolved = css.resolve(doc, node, defaultStyle());
+		if (css.rules().size() != 1 || resolved.color != 0xFFFF0000)
+			CSS_SELF_FAIL();
+
+		css.clear();
+		css.parseStylesheet(
+			"@supports (color: red) and (unknown-property: value) { "
+			"p { color: blue; } }");
+		resolved = css.resolve(doc, node, defaultStyle());
+		if (!css.rules().empty() || resolved.colorSet)
+			CSS_SELF_FAIL();
+
+		css.clear();
+		css.parseStylesheet(
+			"@supports ((unknown-property: value) and (color: red)) or "
+			"(display: flex) { p { color: blue; } }");
+		resolved = css.resolve(doc, node, defaultStyle());
+		if (css.rules().size() != 1 || resolved.color != 0xFFFF0000)
+			CSS_SELF_FAIL();
+
+		css.clear();
+		css.parseStylesheet(
+			"@supports only (color: red) { p { color: blue; } }");
+		resolved = css.resolve(doc, node, defaultStyle());
+		if (!css.rules().empty() || resolved.colorSet)
+			CSS_SELF_FAIL();
+	}
+	{
+		Document doc;
+		const int node = doc.createElement(-1, "p");
+		CssEngine css;
+		css.parseStylesheet(
+			"@media not screen and (max-width: 400px) { "
+			"p { color: red; } }");
+		Style resolved = css.resolve(doc, node, defaultStyle());
+		if (!css.rules().empty() || resolved.colorSet)
+			CSS_SELF_FAIL();
+
+		css.clear();
+		css.parseStylesheet(
+			"@media not screen and (min-width: 500px) { "
+			"p { color: red; } }");
+		resolved = css.resolve(doc, node, defaultStyle());
+		if (css.rules().size() != 1 || resolved.color != 0xFF0000FF)
+			CSS_SELF_FAIL();
+
+		css.clear();
+		css.parseStylesheet(
+			"@media screen and (prefers-color-scheme: dark) { "
+			"p { color: red; } }");
+		resolved = css.resolve(doc, node, defaultStyle());
+		if (!css.rules().empty() || resolved.colorSet)
+			CSS_SELF_FAIL();
+
+		css.clear();
+		css.parseStylesheet(
+			"@media screen and (max-width: 0px) { p { color: red; } }");
+		resolved = css.resolve(doc, node, defaultStyle());
+		if (!css.rules().empty() || resolved.colorSet)
+			CSS_SELF_FAIL();
+	}
+	{
+		Document doc;
+		const int node = doc.createElement(-1, "p");
+		CssEngine css;
+		css.parseStylesheet(
+			"@media screen and (orientation: landscape) { p { color: red; } } "
+			"@media screen and (min-height: 200px) { p { font-weight: 700; } }");
+		const Style resolved = css.resolve(doc, node, defaultStyle());
+		if (css.rules().size() != 2 || resolved.color != 0xFF0000FF ||
+			!resolved.bold)
+			CSS_SELF_FAIL();
+	}
+	{
 		Style s;
 		parseInlineStyle("display: inline; list-style: none; border: 2px solid #123456;", s);
 		if (!s.displayInline || !s.listStyleNone || s.borderWidth != 2 ||
-			s.borderColor != 0xFF563412)
+			s.borderColor != 0xFF563412 || s.borderStyle != CssBorderSolid)
+			CSS_SELF_FAIL();
+		parseInlineStyle("display: table;", s);
+		if (!s.displayTable || s.displayTableRow || s.displayTableCell)
+			CSS_SELF_FAIL();
+		parseInlineStyle("display: table-row;", s);
+		if (s.displayTable || !s.displayTableRow || s.displayTableCell)
+			CSS_SELF_FAIL();
+		parseInlineStyle("display: table-cell;", s);
+		if (s.displayTable || s.displayTableRow || !s.displayTableCell)
+			CSS_SELF_FAIL();
+		parseInlineStyle("display: inline-block;", s);
+		if (!s.displayInlineBlock || s.displayInline || s.block)
+			CSS_SELF_FAIL();
+		parseInlineStyle("vertical-align: middle", s);
+		if (!s.verticalAlignMiddle) CSS_SELF_FAIL();
+		parseInlineStyle("letter-spacing: 0.5px", s);
+		if (s.letterSpacing < 0.49f || s.letterSpacing > 0.51f)
+			CSS_SELF_FAIL();
+		parseInlineStyle("letter-spacing: 0.1em", s);
+		if (!s.letterSpacingIsEm || s.letterSpacing < 0.09f ||
+			s.letterSpacing > 0.11f)
+			CSS_SELF_FAIL();
+		parseInlineStyle("border: 3px dotted red;", s);
+		if (s.borderWidth != 3 || s.borderStyle != CssBorderDotted ||
+			s.borderColor != 0xFF0000FF)
+			CSS_SELF_FAIL();
+		parseInlineStyle("border-style: dashed;", s);
+		if (s.borderStyle != CssBorderDashed) CSS_SELF_FAIL();
+		parseInlineStyle("border-style: none;", s);
+		if (s.borderStyle != CssBorderNone)
+			CSS_SELF_FAIL();
+	}
+	{
+		Document doc;
+		const int node = doc.createElement(-1, "div");
+		doc.setAttr(node, "style", "border: 2px solid red; "
+			"border-top: 4px dashed blue; border-left-width: 3px");
+		CssEngine css;
+		const Style s = css.resolve(doc, node, defaultStyle());
+		if (s.borderTop.width != 4 || s.borderTop.color != 0xFFFF0000 ||
+			s.borderTop.style != CssBorderDashed ||
+			s.borderRight.width != 2 || s.borderRight.color != 0xFF0000FF ||
+			s.borderRight.style != CssBorderSolid ||
+			s.borderBottom.width != 2 || s.borderBottom.color != 0xFF0000FF ||
+			s.borderLeft.width != 3 || s.borderLeft.color != 0xFF0000FF)
+			CSS_SELF_FAIL();
+		doc.setAttr(node, "style",
+			"border-top: 4px dashed blue !important; border: 2px solid red");
+		Style importantSide = css.resolve(doc, node, defaultStyle());
+		if (importantSide.borderTop.width != 4 ||
+			importantSide.borderTop.color != 0xFFFF0000 ||
+			importantSide.borderTop.style != CssBorderDashed ||
+			importantSide.borderRight.width != 2 ||
+			importantSide.borderRight.color != 0xFF0000FF)
+			CSS_SELF_FAIL();
+		doc.setAttr(node, "style",
+			"border: 2px solid red !important; border-top: 4px dashed blue");
+		Style importantShorthand = css.resolve(doc, node, defaultStyle());
+		if (importantShorthand.borderTop.width != 2 ||
+			importantShorthand.borderTop.color != 0xFF0000FF ||
+			importantShorthand.borderTop.style != CssBorderSolid ||
+			importantShorthand.borderRight.width != 2 ||
+			importantShorthand.borderRight.color != 0xFF0000FF)
 			CSS_SELF_FAIL();
 	}
 	{

@@ -186,6 +186,7 @@ bool storageInit()
 	::mkdir(NW_SD_ROOT, 0777);
 	::mkdir(NW_SD_CACHE, 0777);
 	::mkdir(NW_SD_DOWN, 0777);
+	::mkdir(NW_SD_PDFS, 0777);
 	const std::string segments = std::string(NW_SD_CACHE) + "/page-segments";
 	::mkdir(segments.c_str(), 0777);
 	return fileExists(NW_SD_ROOT) || errno == 0;
